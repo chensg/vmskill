@@ -35,6 +35,7 @@
 白字 + 黑描边、黑场淡入淡出、pass_a 加 vignette、pass_c 留颗粒。
 纸本画面里这三样都是"脏"，暗调实拍里它们是"对"。做纸本版时记得全部翻回去。
 """
+import json
 import os
 import subprocess
 import sys
@@ -381,6 +382,29 @@ SRC_NATIVE = None
 
 # 运镜实测下限：渲出来的首尾帧平均绝对差。亮度可觉察差约 2~3 级，取 4。
 MOTION_MIN = 4.0
+
+
+# ================= 诵读（可选）=================
+# **和讲述模式正好相反。** 讲述片的旁白是连着说的，时间轴由语音落点推出来；
+# 词是一句一镜、句间大段的静，那个「密→疏」的结构本身就是内容 ——
+# 让诵读去驱动它，结构就散了。所以这里是：**时间轴不动，语音放进去**。
+#
+# 落点也不用手写：每条诵读挂在它那句字幕上，字幕先出、语音后跟 VO_LEAD 秒。
+# 手工在十几个偏移量上凑，一定会漏一两处，而漏掉的那处要到成片才听得出来。
+#
+# VO 留空 = 无诵读，整条链路自动跳过（前几支都是这么跑的）。
+VO_DIR = "vo"
+VO = [
+    # ("东风夜放花千树", "VO_01.mp3"),
+]
+VO_LEAD = 0.5               # 字幕先出多久，语音才进来
+VO_TAIL_MIN = 0.3           # 语音读完之后，字幕至少还要留这么久
+VO_TARGET = -18.0           # 诵读比讲述旁白轻：它是画面的一部分，不是信息载体
+VO_FADE = 0.06              # 极短淡入淡出，只为掐掉 TTS 的头尾爆音
+# 音乐侧链躲闪。诵读稀疏，所以压得比讲述片浅、放得比讲述片慢。
+VO_DUCK = dict(threshold=0.08, ratio=4, attack=40, release=600)
+VO_CACHE = "vo_times.json"
+_VO_CACHE = {}
 
 
 # ================= 以下一般不用改 =================
@@ -829,6 +853,9 @@ def check_timeline():
         if not os.path.exists(os.path.join(SRC, f)):
             warn.append("音效还没就位（缺文件会自动跳过，不影响出片）")
             break
+    for txt, f in VO:
+        if not os.path.exists(vo_path(f)):
+            warn.append("缺诵读: " + f)
     if not os.path.exists(MUSIC):
         warn.append("音乐还没就位")
     elif MUSIC_IN is None:
@@ -855,6 +882,7 @@ def check_timeline():
     bad += check_xfades()
     bad += check_moves()
     bad += check_resolution()
+    bad += check_vo()
     bad += check_fx()
     bad += check_safe()
     print("\n片长 %.1fs (%d:%04.1f)  镜头 %d  字幕 %d 条  诗文页 %d 列  %dx%d"
@@ -1137,6 +1165,144 @@ def integrated_lufs(path):
         return None
 
 
+def vo_path(f):
+    return os.path.join(VO_DIR, f if f.lower().endswith((".mp3", ".wav", ".m4a"))
+                        else f + ".mp3")
+
+
+def vo_dur(f):
+    """量一条诵读的实测时长，按 (文件, mtime, 大小) 缓存。缺文件返回 None。"""
+    p = vo_path(f)
+    if not os.path.exists(p):
+        return None
+    st = os.stat(p)
+    key = "%s|%d|%d" % (f, int(st.st_mtime), st.st_size)
+    if not _VO_CACHE:
+        try:
+            _VO_CACHE.update(json.load(open(VO_CACHE, encoding="utf-8")))
+        except (ValueError, OSError, IOError):
+            pass
+    if key not in _VO_CACHE:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                            "format=duration", "-of", "csv=p=0", p],
+                           capture_output=True, text=True)
+        try:
+            _VO_CACHE[key] = float(r.stdout.strip())
+        except ValueError:
+            return None
+        try:
+            json.dump(_VO_CACHE, open(VO_CACHE, "w", encoding="utf-8"))
+        except (OSError, IOError):
+            pass
+    return _VO_CACHE[key]
+
+
+def vo_plan():
+    """把 VO 表落到时间轴上。返回 [(文本, 文件, 语音起, 时长, 字幕起, 字幕止), ...]。
+
+    落点由字幕推出来（字幕起 + VO_LEAD），不手写偏移量。缺文件的条目时长为 None。
+    """
+    out = []
+    for txt, f in VO:
+        hit = [(s, e) for s, e, t, y in LINES if y == "M" and t == txt]
+        if not hit:
+            sys.exit("!!! 诵读 %s 对不上任何一条正文字幕：%s" % (f, txt))
+        s, e = hit[0]
+        out.append((txt, f, s + VO_LEAD, vo_dur(f), s, e))
+    return out
+
+
+def check_vo():
+    """诵读的两条硬约束：**不能跨转场**，**必须在字幕消失前读完**。
+
+    跨转场的语音会在画面切开的瞬间被拦腰截断，听感上像卡带；
+    读不完的语音会被下一句字幕压上去，两句叠在一起。
+    这两样在参数表上都看不出来，而且只要漏一句就毁一处。
+    """
+    if not VO:
+        return []
+    bad, cuts = [], cut_points()
+    for txt, f, vs, d, ls, le in vo_plan():
+        if d is None:
+            continue                       # 缺文件由 check_timeline 统一提示
+        ve = vs + d
+        if ve > le - VO_TAIL_MIN:
+            bad.append("诵读『%s』%.2fs，到 %.1fs 才读完，而字幕 %.1fs 就收了"
+                       % (txt, d, ve, le))
+        for c in cuts:
+            if vs - 0.15 < c < ve + 0.15:
+                bad.append("诵读『%s』(%.1f~%.1fs) 被 %.1fs 的转场切开" % (txt, vs, ve, c))
+    return bad
+
+
+def vosync():
+    """量诵读、打出落点表。改了配音先跑它（缓存按 mtime 自动失效）。"""
+    if not VO:
+        print("VO 表是空的 —— 这一支无诵读。")
+        return
+    if os.path.exists(VO_CACHE):
+        os.remove(VO_CACHE)
+    _VO_CACHE.clear()
+    plan, miss = vo_plan(), 0
+    print("")
+    print("=== 诵读落点（字幕起 + VO_LEAD %.2fs）===" % VO_LEAD)
+    print("   语速 = 字数 / 实测时长；古诗词诵读通行在 2.2~3.6 字/秒")
+    tot = 0.0
+    for txt, f, vs, d, ls, le in plan:
+        if d is None:
+            print("  %-12s %-12s (缺文件)" % (txt[:12], f)); miss += 1; continue
+        n = sum(1 for ch in txt if ch not in "，。：；、？！|")
+        tot += d
+        slack = le - (vs + d)
+        flag = "" if slack >= VO_TAIL_MIN else "  << 读不完，字幕先收了"
+        print("  %-12s %-12s %5.2fs  %d字 %.1f字/秒  语音 %5.1f~%5.1f  "
+              "字幕 %5.1f~%5.1f  余 %5.2fs%s"
+              % (txt[:12], f, d, n, n / d, vs, vs + d, ls, le, slack, flag))
+    print("")
+    print("  诵读净时长 %.1fs，占片长 %.1fs 的 %.0f%%（词的诵读本来就该是稀的）"
+          % (tot, total_len(), 100 * tot / max(1e-6, total_len())))
+    if miss:
+        print("  还缺 %d 条。" % miss)
+
+
+def vo_bus(ins, parts, mixed, k, total):
+    """把诵读接进混音链，并让音乐给它侧链躲闪。
+
+    每条**单独**按实测响度归一到 VO_TARGET —— TTS 逐条的电平能差好几 dB，
+    写死一个增益就会有的听不见、有的冒出来。
+    """
+    if not VO:
+        return k
+    plan = [p for p in vo_plan() if p[3] is not None]
+    if not plan:
+        print("   诵读文件一条都没有，跳过")
+        return k
+    bus = []
+    print("")
+    print("   诵读增益（逐条按实测反算到 %.1f LUFS）：" % VO_TARGET)
+    for txt, f, vs, d, ls, le in plan:
+        meas = integrated_lufs(vo_path(f))
+        g = VO_TARGET - meas if meas is not None else 0.0
+        print("     %-12s 实测 %6.1f → %+5.1f dB" % (f, meas if meas else 0, g))
+        ins += ["-i", vo_path(f)]
+        parts.append("[%d:a]aresample=48000,aformat=fltp:cl=stereo,volume=%.1fdB,"
+                     "afade=t=in:st=0:d=%.2f,afade=t=out:st=%.3f:d=%.2f,"
+                     "adelay=%d|%d,apad[v%d]"
+                     % (k, g, VO_FADE, max(0.0, d - VO_FADE), VO_FADE,
+                        int(vs * 1000), int(vs * 1000), k))
+        bus.append("[v%d]" % k)
+        k += 1
+    parts.append("%samix=inputs=%d:normalize=0:dropout_transition=0,atrim=0:%.3f[vo]"
+                 % ("".join(bus), len(bus), total))
+    parts.append("[vo]asplit=2[voa][vosc]")
+    parts.append("[m][vosc]sidechaincompress=threshold=%.3f:ratio=%d:attack=%d:"
+                 "release=%d[md]" % (VO_DUCK["threshold"], VO_DUCK["ratio"],
+                                     VO_DUCK["attack"], VO_DUCK["release"]))
+    mixed[0] = "[md]"                       # 音乐换成躲闪之后的
+    mixed.append("[voa]")
+    return k
+
+
 def build_audio():
     total = total_len()
     mi = MUSIC_IN or 0.0
@@ -1147,6 +1313,7 @@ def build_audio():
                  % (mi, mi + total, MUSIC_GAIN, total, MUSIC_FADE_IN, total - 5))
     mixed.append("[m]")
     k = 1
+    k = vo_bus(ins, parts, mixed, k, total)
     for f, t, tgt, fi, fo, dur in SFX:
         path = os.path.join(SRC, f)
         if not os.path.exists(path):
@@ -1181,7 +1348,8 @@ def build_audio():
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(parts), "-map", "[a]",
            "-c:a", "pcm_s24le", "-t", "%.3f" % total, "mix.wav"],
-        "混音: 音乐(从 %.1fs 切入) + %d 条音效" % (mi, len(mixed) - 1))
+        "混音: 音乐(从 %.1fs 切入%s) + %d 条音效"
+        % (mi, "，侧链躲闪" if VO else "", len(SFX)))
 
 
 def measure_loudness(path):
@@ -1686,10 +1854,11 @@ def cover():
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
     if what in ("prep", "probe", "trace", "fx", "still", "measure", "cover",
-                "pick", "pixels", "motion"):
+                "pick", "pixels", "motion", "vosync"):
         {"prep": prep, "probe": probe, "trace": trace, "fx": make_fx, "still": still,
          "measure": measure, "cover": cover, "pick": pick_music_in,
-         "pixels": pixels, "motion": motion}[what]()
+         "pixels": pixels, "motion": motion,
+         "vosync": vosync}[what]()
         sys.exit(0)
     ok = check_timeline()
     if what == "check":
