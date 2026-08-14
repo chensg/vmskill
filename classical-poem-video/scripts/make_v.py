@@ -365,6 +365,24 @@ SFX = [
 SFX_GAIN_WARN = 12.0        # 需要提这么多 dB 以上，说明素材本身太轻，底噪会一起上来
 
 
+# ================= 素材的原生尺寸 =================
+# **文件尺寸会骗人。** 放大一下 941x1672 就变成 2896x5152，尺寸检查从此必然通过，
+# 而细节还是 941 那么多 —— 有效分辨率只有下限的 0.65 倍，成片会软。
+#
+# 试过从像素上**自动**判"是不是放大的"，判不出来：把图降到恰好原生尺寸再放大回来，
+# 残差 0.23~0.57 灰阶，而原生 4K 是 0.53~0.83 —— 一个量级，分不开
+# （放大器不是简单重采样时尤其如此）。1:1 目视也不可靠：两张图的"软"可能只是画风。
+# 唯一站得住的证据是**生成器吐出来的原始文件**。
+#
+# 所以这一条**只能靠记录，不能靠检测**：把生成器实际出的尺寸写在这里。
+#   None       = 文件尺寸就是生成器出的尺寸
+#   (941,1672) = 生成器只出到 941x1672，项目里的大图是放大上去的
+SRC_NATIVE = None
+
+# 运镜实测下限：渲出来的首尾帧平均绝对差。亮度可觉察差约 2~3 级，取 4。
+MOTION_MIN = 4.0
+
+
 # ================= 以下一般不用改 =================
 def run(args, desc):
     print("\n>>> " + desc)
@@ -836,6 +854,7 @@ def check_timeline():
             warn.append("读不出音乐时长")
     bad += check_xfades()
     bad += check_moves()
+    bad += check_resolution()
     bad += check_fx()
     bad += check_safe()
     print("\n片长 %.1fs (%d:%04.1f)  镜头 %d  字幕 %d 条  诗文页 %d 列  %dx%d"
@@ -1203,6 +1222,172 @@ def pass_a():
             "镜头 %d/%d  %.1fs" % (i, len(SHOTS), s["dur"]))
 
 
+def native_factor(w, h):
+    """源图的有效边长 / 文件边长。SRC_NATIVE 没写就是 1.0。"""
+    if not SRC_NATIVE:
+        return 1.0
+    return min(SRC_NATIVE[0] / float(w), SRC_NATIVE[1] / float(h))
+
+
+def img_dims(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+                       capture_output=True, text=True)
+    try:
+        return tuple(int(x) for x in r.stdout.strip().split(","))
+    except ValueError:
+        return None
+
+
+def check_resolution():
+    """裁后短边够不够 —— **按有效分辨率算，不按文件尺寸算**。
+
+    规则：裁成目标比例之后短边至少是成片对应边的 1.5 倍（竖版即 >=1440）。
+    低于这条线要么运镜做不动，要么成片发软。941x1672 那次是下限的 0.65 倍，
+    而文件上写的是 2896x5152 —— 只查文件尺寸的检查对它一声不吭。
+    """
+    bad, rows = [], []
+    zmax = max(max(s["z"]) for s in SHOTS) if SHOTS else 1.0
+    for i, c in enumerate(CLIPS, 1):
+        p = os.path.join(SRC, c["src"])
+        if not os.path.exists(p):
+            continue
+        d = img_dims(p)
+        if not d:
+            continue
+        w, h = d
+        f = native_factor(w, h)
+        cw = min(w, h * W / float(H)) / c["zoom"]      # 裁成成片比例、按 zoom 收紧后的短边
+        eff = cw * f
+        rows.append((i, c["src"], w, h, f, eff, eff / zmax / float(W)))
+        if eff < W * 1.5 - 1:
+            bad.append("%s 裁后有效短边 %.0f，不足下限 %d（成片对应边的 1.5 倍）"
+                       % (c["src"], eff, int(W * 1.5)))
+    if rows:
+        print("")
+        print("=== 素材分辨率（有效值）===")
+        if SRC_NATIVE:
+            print("   SRC_NATIVE=%dx%d —— 文件是放大上去的，下面按原生尺寸折算"
+                  % SRC_NATIVE)
+        else:
+            print("   SRC_NATIVE 未设 —— 按文件尺寸算。"
+                  "**如果图是放大上来的，这里的数字全是假的**")
+        for i, s, w, h, f, eff, pp in rows:
+            flag = "" if eff >= W * 1.5 - 1 else "  << 不足 %d" % int(W * 1.5)
+            print("  %-2d %-20s 文件 %dx%d  x%.2f  裁后有效短边 %5.0f  "
+                  "最紧取景 %.2f 源像素/输出像素%s" % (i, s[:20], w, h, f, eff, pp, flag))
+    return bad
+
+
+def pixels():
+    """从每张源图裁 1:1 原始像素贴片拼一张，**用眼睛看有没有真细节**。
+
+    自动判不出来（见 SRC_NATIVE 处的注释），所以做成必须看一眼的东西 ——
+    和 still 之于字幕是同一个套路。放大上来的图在 1:1 下是平滑的插值面，
+    没有逐像素的纹理和颗粒。
+
+    但记住：**目视只是辅助**。要确认，去看生成器吐出来的原始文件的尺寸。
+    """
+    N, cols = 360, 4
+    cells, missing = [], []
+    for i, c in enumerate(CLIPS, 1):
+        p = os.path.join(SRC, c["src"])
+        if not os.path.exists(p):
+            missing.append(c["src"]); continue
+        d = img_dims(p)
+        if not d:
+            missing.append(c["src"]); continue
+        w, h = d
+        s = SHOTS[i - 1] if i <= len(SHOTS) else None
+        fx, fy = s["f1"] if s else (0.5, 0.5)
+        x = max(0, min(w - N, int(fx * w) - N // 2))
+        y = max(0, min(h - N, int(fy * h) - N // 2))
+        out = "_px%02d.png" % i
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", p,
+                        "-vf", "crop=%d:%d:%d:%d" % (N, N, x, y),
+                        "-frames:v", "1", out], capture_output=True)
+        if os.path.exists(out):
+            cells.append(out)
+    if not cells:
+        sys.exit("!!! 一张源图都没有")
+    ins = []
+    for f in cells:
+        ins += ["-i", f]
+    lay = []
+    for k in range(len(cells)):
+        cx = "0" if k % cols == 0 else "+".join("w%d" % j for j in range(k % cols))
+        cy = "0" if k // cols == 0 else "+".join("h%d" % (j * cols) for j in range(k // cols))
+        lay.append("%s_%s" % (cx, cy))
+    fc = "".join("[%d:v]" % k for k in range(len(cells))) \
+        + "xstack=inputs=%d:layout=%s:fill=black" % (len(cells), "|".join(lay))
+    run(["ffmpeg", "-y", "-v", "error"] + ins
+        + ["-filter_complex", fc, "-frames:v", "1", "_pixels.png"],
+        "1:1 贴片联系表 %d 格" % len(cells))
+    for f in cells:
+        os.remove(f)
+    print("")
+    print("  _pixels.png —— 每格 %dx%d 原始像素，按 CLIPS 顺序，取各镜落幅焦点处。" % (N, N))
+    print("  有逐像素的纹理和颗粒 = 真分辨率；平滑的插值面 = 放大上来的。")
+    if missing:
+        print("  缺图 %d 张：%s" % (len(missing), ", ".join(missing[:4])))
+
+
+def motion():
+    """量每一镜**渲出来**的首尾帧差 —— 运镜到底看不看得出来。
+
+    trace 的落幅平坦度是出图阶段的筛子，对暗调图天生爱误报：大片夜空本来就是平的，
+    整帧极差 147 的一张好图照样能报 8/16 行平坦。真正要紧的不是落幅那一帧长什么样，
+    而是这一镜从头走到尾画面变了多少 —— 那个只能在 shots/ 上量。
+    判据：首尾帧平均绝对差 >= MOTION_MIN（亮度可觉察差约 2~3 级，取 4）。
+
+    读不出的镜头（还在写、moov atom 没落盘）**不算通过**：跳过之后照样打印
+    "全部都看得出来"，就又造出一个不会报警的检查。
+    """
+    if not os.path.isdir("shots"):
+        sys.exit("!!! 还没有 shots/，先跑 a")
+    GW, GH = 96, 171
+
+    def frame(f, t):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.3f" % t, "-i", f,
+                              "-frames:v", "1", "-vf",
+                              "scale=%d:%d:flags=area,format=gray" % (GW, GH),
+                              "-f", "rawvideo", "-"], capture_output=True).stdout
+        return raw if len(raw) == GW * GH else None
+
+    print("")
+    print("=== 运镜实测（渲出来的首尾帧差，判据：均差 >= %.1f 级）===" % MOTION_MIN)
+    bad, skipped = [], []
+    for i, s in enumerate(SHOTS, 1):
+        f = "shots/shot%02d.mp4" % i
+        if not os.path.exists(f):
+            print("  镜%-3d (未渲染)" % i); skipped.append(i); continue
+        a, b = frame(f, 0.05), frame(f, max(0.1, s["dur"] - 0.1))
+        if a is None or b is None:
+            print("  镜%-3d (读不出帧，可能还在渲)" % i); skipped.append(i); continue
+        d = sorted(abs(a[k] - b[k]) for k in range(GW * GH))
+        mean = sum(d) / len(d)
+        flag = ""
+        if POEMS and i > len(SHOTS) - len(POEMS):
+            flag = "  (诗文页，本来就该几乎静止 —— 不适用)"
+        elif mean < MOTION_MIN:
+            flag = "  << 肉眼看不出在动，加大 z 跨度或换一张有结构的图"
+            bad.append(i)
+        print("  镜%-3d %-18s 均差 %5.1f  中位 %3d  p90 %3d  最大 %3d%s"
+              % (i, CLIPS[i - 1]["src"][:18], mean, d[len(d) // 2],
+                 d[int(len(d) * 0.9)], d[-1], flag))
+    if bad:
+        print("")
+        print("  %d 镜运镜看不出来: %s" % (len(bad), ", ".join(str(i) for i in bad)))
+    if skipped:
+        print("")
+        print("  !! %d 镜没量到: %s —— **不算通过**，渲完再跑一次"
+              % (len(skipped), ", ".join(str(i) for i in skipped)))
+    if not bad and not skipped:
+        print("")
+        print("  %d 镜运镜全部看得出来。" % len(SHOTS))
+    return not bad and not skipped
+
+
 def pass_b():
     ins = []
     for i in range(1, len(SHOTS) + 1):
@@ -1500,9 +1685,11 @@ def cover():
 
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if what in ("prep", "probe", "trace", "fx", "still", "measure", "cover", "pick"):
+    if what in ("prep", "probe", "trace", "fx", "still", "measure", "cover",
+                "pick", "pixels", "motion"):
         {"prep": prep, "probe": probe, "trace": trace, "fx": make_fx, "still": still,
-         "measure": measure, "cover": cover, "pick": pick_music_in}[what]()
+         "measure": measure, "cover": cover, "pick": pick_music_in,
+         "pixels": pixels, "motion": motion}[what]()
         sys.exit(0)
     ok = check_timeline()
     if what == "check":
