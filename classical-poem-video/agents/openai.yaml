@@ -1,0 +1,7 @@
+interface:
+  display_name: "静帧短片制作（古诗词 / 历史小故事）"
+  short_description: "把一首古诗词、或一个历史小故事，做成带运镜、字幕、配乐、音效的竖版/横版短片，本地 ffmpeg 合成"
+  default_prompt: "Use $classical-poem-video to turn this into a vertical 1080x1920 short. For a 古诗词: one shot per line, Ken Burns moves, 楷体 vertical subtitles, an end-title poem page. For a 历史小故事/冷知识: TTS narration driving the timeline, horizontal bottom-left subtitles, music ducked under the voice, and a CLAIMS fact-grading table so no hypothesis gets narrated as fact. Either way: generated score and sound effects, a cover, and `check` (讲述模式先跑 `sync`) locked before touching any material."
+
+policy:
+  allow_implicit_invocation: true

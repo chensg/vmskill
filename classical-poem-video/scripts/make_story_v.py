@@ -1,0 +1,1333 @@
+# -*- coding: utf-8 -*-
+"""
+历史小故事短片 · 竖版构建脚本模板 (1080x1920，有旁白)
+
+  python make_story_v.py sync    # 量旁白实测时长 -> 时间轴。改了配音先跑它
+  python make_story_v.py check   # 事实分级/语速/时间轴/安全区/运镜自检。永远先跑
+  python make_story_v.py prep    # 裁 9:16 + 统一调色 -> img01..N，并自动 probe
+  python make_story_v.py probe   # 只打亮度网格
+  python make_story_v.py trace   # 量镜头真正经过的区域（缺图会跳过）
+  python make_story_v.py a       # 每张图做 Ken Burns -> shots/
+  python make_story_v.py motion  # 量每镜渲出来的首尾帧差 —— 运镜看不看得出来
+  python make_story_v.py b       # 转场串成无字无声 master.mp4
+  python make_story_v.py pick    # maximin 选音乐切入点，填回 MUSIC_IN
+  python make_story_v.py c       # 旁白+音乐(侧链躲闪)+音效 + 烧字幕 -> 成片
+  python make_story_v.py still   # 烧预览并抽静帧，用眼睛验字幕
+  python make_story_v.py measure # 从无字 master 量字幕底亮度
+  python make_story_v.py cover   # 封面
+
+和诗片模板 make_v.py 最大的三处不同（详见 references/storytelling.md）：
+  1. SHOTS **不写 dur** —— 每镜时长由属于它的旁白实测时长算出来
+  2. 字幕横排、左下、黑体 —— 竖版右侧 x>=929 / y 864~1632 是平台操作栏
+  3. 多一张 CLAIMS 表 —— 讲历史最大的风险不是字看不清，是把推断说成史实
+"""
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+os.chdir(HERE)
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+# ================= 这一支的内容 =================
+# 下面这一整块是《没有夏天的那一年》——一支**已经跑完并交付**的讲述片，
+# 留着当参照：CLAIMS / NARR / SHOTS / CLIPS 四张表长什么样、数值大致在什么量级。
+# 做新的一支就整块换掉，其余逻辑一律不用碰。
+TITLE, SUBTITLE = "没有夏天的那一年", "1816"
+OUT_NAME = "成片_竖版.mp4"
+COVER_NAME = "封面_竖版.png"
+COVER_FROM = 4
+
+# ---- 事实分级 ----
+# 讲历史故事唯一致命的错误是把推断说成史实。三个级别：
+#   史实 —— 正常讲
+#   概数 —— 稿子里就不要给精确值（「上百立方公里」比「150 立方公里」安全且一样有力）
+#   假说 —— **必须在片内说出来**，不能只写在简介里。看简介的人不到十分之一
+# 有"假说"却在最后三句里一个字都没提，check 会报警。
+CLAIMS = [
+    ("C1", "史实", "1815 年 4 月坦博拉爆发，有确切记载以来规模最大", "VEI 7，主爆发 4/10"),
+    ("C2", "概数", "上百立方公里碎屑 + 大量二氧化硫进平流层", "松散体积估计 150~180km³"),
+    ("C3", "史实", "1816 年无夏之年，北半球异常寒冷", "Year Without a Summer"),
+    ("C4", "史实", "新英格兰六月降雪；欧洲整夏阴冷多雨", "别写成『欧洲六月下雪』"),
+    ("C5", "史实", "1816–17 欧洲大饥荒，西方最后一次大规模生存危机", "John D. Post"),
+    ("C6", "史实", "燕麦暴涨，马被大量宰杀、饿死", "1816–17 有记载"),
+    ("C7", "史实", "德莱斯 1817 造出无踏板木制两轮车", "Laufmaschine"),
+    ("C8", "概数", "试骑十几公里，不到一小时", "各版本 13~14.4km，稿里不说死"),
+    ("C9", "假说", "马匹危机 → 德莱斯发明 这条因果链", "Lessing 提出；德莱斯本人没写过"),
+]
+
+# ---- 旁白 ----
+# 一条 = 一句 VO = 一屏字幕。txt 里的 ｜ 是**手工断行位置**，不上屏。
+#   shot  这一句落在第几镜(1 起)
+#   pre/post  这一句前后的静默，不写就用 PRE_DEF/POST_DEF。只在要留戏的地方写：
+#             冷开场 1.2~1.6；转折句前 0.8；金句前 0.8 后 1.2
+#   est   估算秒数，**只在 mp3 还没生成时**用来先排片（中文讲述约 4.6 字/秒）
+#
+# 镜与镜之间的气口**不用手写** —— timeline() 会把每镜首句的 pre 抬到 GAP_PRE、
+# 末句的 post 抬到 GAP_POST。转场落在这段静默的正中，于是永远压不到字幕。
+# 手工在 13 个边界上凑这两个数，一定会漏掉一两处，而漏掉的那处要到成片才看得出来。
+VO_DIR = "vo"
+PRE_DEF, POST_DEF = 0.18, 0.28
+GAP_PRE, GAP_POST = 0.45, 0.70
+NARR = [
+    dict(vo="VO_01a", shot=1,  pre=1.5, est=3.48,
+         txt="你今天骑的自行车，｜是一座火山炸出来的。"),
+    dict(vo="VO_01b", shot=1,  est=1.22, txt="这不是比喻。"),
+    dict(vo="VO_02a", shot=2,  est=4.66,
+         txt="1815年4月，印尼松巴哇岛，｜坦博拉火山爆发。"),
+    dict(vo="VO_02b", shot=2,  est=4.44,
+         txt="这是有确切记载以来，｜规模最大的一次火山喷发。"),
+    dict(vo="VO_03a", shot=3,  est=3.86, txt="它把上百立方公里的碎屑，｜送进了平流层。"),
+    dict(vo="VO_03b", shot=3,  est=1.63, txt="还有大量二氧化硫。"),
+    dict(vo="VO_03c", shot=3,  est=3.07, txt="那层灰，绕着地球飘了一整年。"),
+    dict(vo="VO_04a", shot=4,  est=3.46, txt="于是1816年，｜北半球没有夏天。"),
+    dict(vo="VO_04b", shot=4,  est=4.66, txt="新英格兰六月下雪，｜欧洲整个夏天阴冷多雨。"),
+    dict(vo="VO_05a", shot=5,  est=3.24, txt="庄稼大面积绝收，｜粮价一路飞涨。"),
+    dict(vo="VO_05b", shot=5,  est=2.66, txt="那是西方世界最后一次大饥荒。"),
+    dict(vo="VO_06a", shot=6,  pre=0.80, est=3.24, txt="但真正改写了历史的，｜是另一件事——"),
+    dict(vo="VO_06b", shot=6,  post=0.90, est=2.16, txt="马，也吃粮食。"),
+    dict(vo="VO_07",  shot=7,  est=5.26, txt="燕麦价格跟着涨上天。｜养不起的马，被宰掉，被饿死。"),
+    dict(vo="VO_08",  shot=8,  est=4.25, txt="一夜之间，欧洲最主要的交通工具｜成了奢侈品。"),
+    dict(vo="VO_09a", shot=9,  est=5.88, txt="1817年，德国人卡尔·冯·德莱斯｜做出一台木头两轮车。"),
+    dict(vo="VO_09b", shot=9,  est=4.25, txt="没有踏板，没有链条，｜靠两只脚蹬着地走。"),
+    dict(vo="VO_10a", shot=10, est=5.45, txt="6月12日，他骑着它跑了个来回：｜十几公里，不到一个钟头。"),
+    dict(vo="VO_10b", shot=10, est=3.24, txt="同样的路，走路要三四个钟头。"),
+    dict(vo="VO_11",  shot=11, post=0.80, est=5.06,
+         txt="这台车后来长出了踏板、｜链条和齿轮，变成了自行车。"),
+    dict(vo="VO_12a", shot=12, pre=0.80, est=2.02, txt="一座火山饿死了马，"),
+    dict(vo="VO_12b", shot=12, post=1.20, est=2.21, txt="人类只好自己长出轮子。"),
+    dict(vo="VO_13a", shot=13, pre=0.60, est=4.03,
+         txt="多说一句：这条因果链，｜是科技史学界的主流推断。"),
+    dict(vo="VO_13b", shot=13, est=2.04, txt="德莱斯本人没有这么写过。"),
+    dict(vo="VO_13c", shot=13, post=1.60, est=3.41, txt="但1816年那个没有夏天的年份，｜是真的。"),
+]
+
+# ---- 尾板 ----（可选。t 是相对最后一镜起点的偏移）
+ENDCARD = dict(head=TITLE, sub="1816 · 无夏之年", t0=1.2, t1=99.0, y=560)
+
+# ================= 明暗极性 =================
+# 讲述片基本都是暗调实拍 -> light_on_dark（近白字 + 不透明黑描边 + 投影）。
+# 拿不准先出一张图跑 probe/trace，看实测再定，不要先入为主。
+POLARITY = "light_on_dark"
+TITLE_POLARITY = "light_on_dark"
+
+SCRIM_ALPHA = 0.30          # 字幕在左下，所以 scrim 压的是**底部**，不是右侧
+SCRIM_Y0, SCRIM_SOFT, SCRIM_POW = 1180, 340, 1.4
+
+# ================= 全局参数 =================
+W, H, FPS = 1080, 1920, 30
+PREP = (2160, 3840)
+UP = (3240, 5760)
+XFADE = 1.0                 # 讲述片的默认转场比诗片短。任何一镜可写 xf= 覆盖
+TAIL = 1.0                  # 最后一镜在旁白收完之后再留多久
+FADE_IN, FADE_OUT = 1.2, 3.0
+FADE_COLOR = "black"
+VIGNETTE = "vignette=PI/5"  # 暗调实拍可以加；纸质画面一律不加。trace 会自动建模它
+
+SRC = os.path.join("..", "素材")
+FONTS = os.path.join("..", "fonts")
+SUB_FONT = "Microsoft YaHei"        # 讲述是现代口吻，用黑体不用楷体
+MUSIC = os.path.join(SRC, "00_music_main.mp3")
+
+# 有旁白，音乐要低 3~4dB，而且必须**侧链躲闪** —— 只调低音量是不够的：
+# 压到听不见音乐就没意义，压不够旁白就发浑。
+MUSIC_GAIN = -12.5
+MUSIC_IN = 0.0              # 跑 pick 得到
+MUSIC_FADE_IN = 0.8
+DUCK = dict(threshold=0.06, ratio=6, attack=25, release=350)   # release 短了音乐会喘
+
+VO_TARGET = -16.0           # 每条旁白**单独**归一到这个响度，顺带抹平 TTS 的忽大忽小
+TARGET_I, TARGET_TP = -15.0, -1.5
+
+# 音效：(文件, 起点秒, **目标响度**, 淡入, 淡出, 时长)
+# 第三列是目标响度不是增益 —— 生成的音效实测能差 45dB，写死 dB 一定有的听不见有的盖过音乐
+SFX = [
+    # ("02_火山轰鸣.mp3", 9.0, -26.0, 1.2, 2.0, 8.0),
+]
+SFX_GAIN_WARN = 12.0
+
+# 调色用量的判断依据是**量出来的直方图**，不是画种。
+#
+# 讲述片的生成器交回来的暗调片子几乎一定是技术性欠曝的：这一支实测
+# median 14 / p25 1~8 / mean 21~24。对这种片子加反差是**负的** ——
+# `eq=contrast=1.04` 把 median 从 14 压到 8、p25 从 8 压到 2。
+#
+# 也不能用 `eq=gamma` 抬：gamma 把黑位一起抬起来（p1 从 1 涨到 14），
+# 火山那道黑山脊会变成灰的。要的是**只抬中间调、保住真黑**，所以用 curves。
+# 实测这条把 median 14→23、p75 29→47，而 p1 仍是 0~1。
+#
+# 换素材必须重新量再定，不要照抄这条。
+GRADE = ("curves=all='0/0 0.08/0.13 0.28/0.42 0.60/0.70 1/1',"
+         "eq=saturation=0.98")
+
+# 素材与裁切。裁后短边 >= 1440x2560，否则运镜做不动。
+# 讲述片镜数多，但**不必一镜一图**：同一场景出一张大图、用两次不同取景窗更省。
+CLIPS = [
+    dict(src="01_现代自行车.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="02_坦博拉爆发.png", zoom=1.00, cx=0.50, cy=0.45, tweak=""),
+    dict(src="03_灰柱平流层.png", zoom=1.00, cx=0.50, cy=0.40, tweak=""),
+    dict(src="04_六月的雪.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="05_绝收麦田.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="06_空马厩.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="07_燕麦与马.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="08_空驿道.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="09_德莱斯工坊.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="10_曼海姆试骑.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="11_自行车演化.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="12_灰云与剪影.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+    dict(src="13_尾板.png", zoom=1.00, cx=0.50, cy=0.50, tweak=""),
+]
+
+# 分镜。**没有 dur** —— 时长由旁白算出来。
+# 缩放 z 时焦点只能落在 [1/(2z), 1-1/(2z)]，想走 d 比例行程必须 z >= 1/(1-d)：
+#   10%->1.12  20%->1.25  30%->1.43  40%->1.67
+# 写了位移不给足缩放 = 原地微缩放，check_moves() 会报警。
+# xf 是"这一镜转到下一镜"用多久，转场是叙事标点，不该是常数。
+SHOTS = [
+    dict(z=(1.12, 1.34), f0=(0.500, 0.540), f1=(0.500, 0.440), xf=0.5),  # 钩子后硬切
+    dict(z=(1.16, 1.36), f0=(0.500, 0.565), f1=(0.500, 0.400)),          # 推近+下摇
+    dict(z=(1.18, 1.42), f0=(0.500, 0.570), f1=(0.500, 0.360)),          # 灰柱上摇
+    dict(z=(1.30, 1.30), f0=(0.395, 0.500), f1=(0.605, 0.500)),          # 横移
+    dict(z=(1.34, 1.14), f0=(0.500, 0.420), f1=(0.500, 0.545), xf=1.8),  # 拉远 + 段落翻页
+    dict(z=(1.20, 1.44), f0=(0.500, 0.545), f1=(0.540, 0.460), xf=0.4),  # 转折后短切
+    dict(z=(1.22, 1.40), f0=(0.460, 0.440), f1=(0.540, 0.560)),
+    dict(z=(1.38, 1.16), f0=(0.560, 0.520), f1=(0.445, 0.500), xf=1.4),  # 拉远：空驿道
+    dict(z=(1.16, 1.38), f0=(0.500, 0.555), f1=(0.500, 0.420)),
+    dict(z=(1.34, 1.34), f0=(0.390, 0.500), f1=(0.610, 0.500)),          # 跟拍横移
+    dict(z=(1.18, 1.40), f0=(0.500, 0.545), f1=(0.500, 0.440), xf=2.0),  # 金句长叠化
+    dict(z=(1.30, 1.12), f0=(0.500, 0.455), f1=(0.500, 0.535), xf=1.2),  # 金句：慢拉
+    dict(z=(1.08, 1.16), f0=(0.500, 0.500), f1=(0.500, 0.500)),          # 尾板：极慢推
+]
+
+# ================= 字幕版式（横排、左下）=================
+# 竖版右侧 x 929~1080 / y 864~1632 是抖音小红书的操作栏（真机验过）。
+# 诗片的竖排字幕靠**上移**避开；横排字幕是宽的，靠**收窄 + 靠左**避开。
+SUB_CX = 475                # 列心，不是 540
+SUB_MAX_W = 830             # 右缘 890 < 操作栏左沿 929
+SUB_FS = 54
+SUB_BOT = 1440              # 字块底
+SUB_LH = 74
+SUB_SEP = "｜"              # 手工断行符，不上屏。不要交给自动换行
+# 行宽按**字形宽度**算，不按字数：ASCII 只有汉字的一半多一点，
+# 「1815 年 4 月，印尼松巴哇岛，」按字数是 18 个超标，按宽度只有 14.4 个字，够得下。
+ASCII_W = 0.55
+
+# ================= 平台安全区（竖版）=================
+SAFE_RAIL = (929, 864, 1080, 1632)   # 右侧操作栏，2026-08-13 真机比过
+SAFE_TOP = 173                       # 顶部导航下沿，同上
+SAFE_BOTTOM = 1560                   # 底部发布文案区上沿 —— **还没在真机上比过**，保守估值
+
+# ---- 语速 ----
+# 第一版写的是"VO 字/秒落在 3.8~5.5"。那是个坏判据，而且坏在一个值得记住的地方：
+# 它量的不是任何真正要紧的东西，于是只能靠不断调常数去迁就数据。
+#   「马，也吃粮食。」5 字 1 逗号 = 2.3 字/秒 —— 短句里停顿占大头，指标本身不成立
+#   扣掉逗号停顿之后，另外两句又变成"太快" —— 按下葫芦浮起瓢
+#
+# 真正要防的其实是两件独立的事，分开量就都不用调常数了：
+#   一、**字幕读不读得完** —— 字数 / 在屏时间。这是硬判据，直接对应观众体验。
+#       中文字幕的舒适上限通行值 7 字/秒（区间 5~9），取下沿。
+#   二、**这一批里有没有离群的一条** —— 同一个音色、同一套参数，某条比中位数慢
+#       三成，多半是 TTS 卡在专名上了（人名、地名、年份是重灾区）。
+#       拿这一批自己的中位数当基准，不需要任何绝对常数，换音色也不用改。
+READ_MAX = 7.0                       # 字幕可读上限，字/秒。硬判据
+PACE_OUTLIER_LO, PACE_OUTLIER_HI = 0.70, 1.35   # 相对本批中位数。只提示，不拦
+PACE_MIN_CHARS = 10                  # 少于这么多字不参与离群判断
+
+# 运镜实测下限：渲出来的首尾帧平均绝对差。亮度可觉察差约 2~3 级，取 4。
+MOTION_MIN = 4.0
+
+VO_CACHE = "vo_times.json"
+_VO = None
+_VIG_CACHE = {}
+_SCRIM_CACHE = {}
+
+
+# ================= 以下一般不用改 =================
+def run(args, desc):
+    print("\n>>> " + desc)
+    if subprocess.run(args).returncode != 0:
+        sys.exit("!!! 失败: " + desc)
+
+
+def vo_path(n):
+    f = n["vo"] if n["vo"].lower().endswith((".mp3", ".wav", ".m4a")) else n["vo"] + ".mp3"
+    return os.path.join(VO_DIR, f)
+
+
+def vo_durs():
+    """量每条旁白的实测时长，按 (文件, mtime, 大小) 缓存。
+
+    时间轴是**量出来的，不是排出来的** —— 换了配音重新生成，时间轴自动跟着变。
+    手工回填一定会漏一条，而漏掉的那一条要到成片才听得出来。
+    mp3 还没生成时回退到 est，并让 check 大字提醒时间轴是估算的。"""
+    global _VO
+    if _VO is not None:
+        return _VO
+    cache = {}
+    if os.path.exists(VO_CACHE):
+        try:
+            cache = json.load(open(VO_CACHE, encoding="utf-8"))
+        except (ValueError, OSError):
+            cache = {}
+    out, missing, dirty = {}, [], False
+    for n in NARR:
+        p = vo_path(n)
+        if not os.path.exists(p):
+            missing.append(n["vo"]); out[n["vo"]] = (n["est"], False); continue
+        st = os.stat(p)
+        key = "%s|%d|%d" % (n["vo"], int(st.st_mtime), st.st_size)
+        if key not in cache:
+            r = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                                "format=duration", "-of", "csv=p=0", p],
+                               capture_output=True, text=True)
+            try:
+                cache[key] = float(r.stdout.strip())
+            except ValueError:
+                cache[key] = n["est"]
+            dirty = True
+        out[n["vo"]] = (cache[key], True)
+    if dirty:
+        try:
+            json.dump(cache, open(VO_CACHE, "w", encoding="utf-8"))
+        except OSError:
+            pass
+    _VO = (out, missing)
+    return _VO
+
+
+def pads(k, per):
+    """第 k 条旁白前后的静默。镜与镜之间的气口自动抬到 GAP_PRE / GAP_POST ——
+    转场就落在这段静默的正中，于是永远压不到字幕。"""
+    n = NARR[k]
+    pre = n.get("pre", PRE_DEF)
+    post = n.get("post", POST_DEF)
+    if k == per[n["shot"] - 1][0]:
+        pre = max(pre, GAP_PRE)
+    if k == per[n["shot"] - 1][-1]:
+        post = max(post, GAP_POST)
+    return pre, post
+
+
+def timeline():
+    """由旁白实测时长推出整条时间轴。
+
+    内容时间是连续的：镜 i 占 [S_i, S_i + D_i)，D_i = Σ(pre + 实测 + post)。
+    **xfade 骑在边界正中**（起点 S_{i+1} − xf/2），所以每镜要渲的长度是
+
+        dur_i = D_i + xf(i)/2 + xf(i−1)/2
+
+    这样 total = Σdur − Σxf = ΣD，而转场中点恰好落在 S_{i+1} ——
+    也就是两句旁白之间那段静默的正中。转场只挂在边界上、不去骑字幕，
+    是讲述片和诗片最容易搞错的一处：诗片一句一镜，气口天然在句间；
+    讲述片旁白是连着的，不把边界对准静默，十三个转场会条条压字。
+
+    返回 (lines, durs, total, starts)：
+      lines = [(字幕起, 字幕止, 文本, 镜号, 旁白起, 旁白时长), ...]
+      starts = 每镜的**内容**起点 S_i（不是渲出来那段片子的起点，见 clip_starts）
+    """
+    durs_map, _ = vo_durs()
+    n_shots = len(SHOTS)
+    per = [[] for _ in range(n_shots)]
+    for k, n in enumerate(NARR):
+        if not 1 <= n["shot"] <= n_shots:
+            sys.exit("!!! 旁白 %s 的 shot=%d 超出 %d 镜" % (n["vo"], n["shot"], n_shots))
+        per[n["shot"] - 1].append(k)
+    D = []
+    for i in range(n_shots):
+        if per[i]:
+            d = sum(sum(pads(k, per)) + durs_map[NARR[k]["vo"]][0] for k in per[i])
+        else:
+            d = SHOTS[i].get("dur", 3.0)        # 没有旁白的镜必须自己写 dur
+        D.append(d + (TAIL if i == n_shots - 1 else 0.0))
+    starts, t = [], 0.0
+    for d in D:
+        starts.append(t); t += d
+    lines = []
+    for i in range(n_shots):
+        c = starts[i]
+        for k in per[i]:
+            n = NARR[k]
+            pre, post = pads(k, per)
+            vd = durs_map[n["vo"]][0]
+            vs = c + pre
+            # 字幕比声音早 0.10s 起、晚一点收 —— 早一点跟上，晚一点让人读完
+            lines.append((max(0.0, vs - 0.10), vs + vd + min(post, 0.35),
+                          n["txt"], i + 1, vs, vd))
+            c = vs + vd + post
+    durs = [D[i] + (xf(i) / 2 if i < n_shots - 1 else 0.0)
+            + (xf(i - 1) / 2 if i > 0 else 0.0) for i in range(n_shots)]
+    return lines, durs, sum(D), starts
+
+
+def xf(i):
+    """镜 i(0 起) 转到下一镜的溶解时长。转场是叙事标点，不该是常数：
+    钩子后 0.4~0.5 硬切；段落翻页 1.8~2.2 长溶解；转折后 0.4 短切；金句 2.0 叠化。"""
+    return SHOTS[i].get("xf", XFADE)
+
+
+def total_len():
+    return timeline()[2]
+
+
+def shot_starts():
+    return timeline()[3]
+
+
+def clip_starts():
+    """每镜渲出来那段片子在成片上的起点 = S_i − xf(i−1)/2（转场骑在边界正中）。
+    trace 反查取景窗时要用它算镜内局部时刻，用 S_i 会偏半个转场。"""
+    st = shot_starts()
+    return [st[i] - (xf(i - 1) / 2 if i > 0 else 0.0) for i in range(len(SHOTS))]
+
+
+def cut_points():
+    """转场中点 = 内容边界 S_{i+1}，也就是两句旁白之间那段静默的正中。"""
+    return shot_starts()[1:]
+
+
+def shot_of(t):
+    n = 1
+    for i, s in enumerate(shot_starts(), 1):
+        if t >= s - 1e-6:
+            n = i
+    return n
+
+
+def sub_lines(txt):
+    return [p for p in txt.split(SUB_SEP) if p]
+
+
+def text_w(s):
+    """一行字的像素宽。按字形宽度算，不按字数 —— 数字和西文只有汉字的一半多一点，
+    按字数判会把「1815 年 4 月，印尼松巴哇岛，」这种排得下的行误判成超标。"""
+    return sum(ASCII_W if ord(c) < 0x2E80 else 1.0 for c in s) * SUB_FS
+
+
+def sub_box(txt, pad=8):
+    """字幕在画面上的外接矩形（x0, x1, y0, y1），用来量它压着的底、判安全区。"""
+    parts = sub_lines(txt)
+    w = max(text_w(p) for p in parts)
+    top = SUB_BOT - len(parts) * SUB_LH
+    return (max(0, int(SUB_CX - w / 2 - pad)), min(W, int(SUB_CX + w / 2 + pad)),
+            max(0, int(top - pad)), min(H, int(SUB_BOT + pad)))
+
+
+# ================= 渲染前的自检 =================
+def check_claims():
+    """讲历史唯一致命的错误是把推断说成史实。"""
+    bad = []
+    print("\n=== 事实分级 ===")
+    for cid, lvl, what, note in CLAIMS:
+        print("  %-4s %-4s %-34s %s" % (cid, lvl, what, note))
+    hyp = [c for c in CLAIMS if c[1] == "假说"]
+    if hyp:
+        tail = "".join(n["txt"] for n in NARR[-3:])
+        hit = any(w in tail for w in ("推断", "假说", "存疑", "并没有", "没有这么", "不是"))
+        if not hit:
+            bad.append("CLAIMS 里有 %d 条『假说』(%s)，但最后三句旁白里没有自我拆解。"
+                       "假说必须**在片内**说出来 —— 看简介的人不到十分之一"
+                       % (len(hyp), "/".join(c[0] for c in hyp)))
+        else:
+            print("  -> %d 条假说，结尾已自我拆解" % len(hyp))
+    return bad
+
+
+def n_chars(txt):
+    return sum(1 for ch in "".join(sub_lines(txt)) if ch not in "，。：；、？！—…「」《》 ")
+
+
+def check_pace():
+    """两件独立的事，分开量（为什么不用「VO 字/秒落在某个区间」见常数处的注释）：
+
+    一、**字幕读不读得完** —— 字数 / 在屏时间，硬判据。
+    二、**这一批里有没有离群的一条** —— 拿本批中位数当基准，不用绝对常数。
+        同一个音色同一套参数，某条明显偏慢，多半是 TTS 卡在专名上了。
+    """
+    durs_map, _ = vo_durs()
+    lines = timeline()[0]
+    bad = []
+    rows = []
+    for n, ln in zip(NARR, lines):
+        d, real = durs_map[n["vo"]]
+        c = n_chars(n["txt"])
+        rows.append((n["vo"], d, real, c, c / d if d else 0, ln[1] - ln[0]))
+    pool = sorted(p for _, _, real, c, p, _ in rows if real and c >= PACE_MIN_CHARS)
+    med = pool[len(pool) // 2] if pool else 0
+
+    print("\n=== 旁白与字幕（本批中位语速 %.1f 字/秒）===" % med)
+    print("   在屏 = 字幕停留时间；读速上限 %.1f 字/秒" % READ_MAX)
+    for vo, d, real, c, p, on in rows:
+        flag = ""
+        if on > 0 and c / on > READ_MAX:
+            flag = "  << 字幕读不完"
+            bad.append("字幕『%s』%d 字只停 %.1fs（%.1f 字/秒），超过可读上限 %.1f"
+                       % (vo, c, on, c / on, READ_MAX))
+        elif real and c >= PACE_MIN_CHARS and med:
+            r = p / med
+            if not (PACE_OUTLIER_LO <= r <= PACE_OUTLIER_HI):
+                flag = "  << 比本批中位%s %.0f%%，检查专名是否读不顺" % (
+                    "慢" if r < 1 else "快", abs(1 - r) * 100)
+        print("  %-11s %5.2fs %2d字  语速 %.1f  在屏 %4.1fs  读速 %.1f%s%s"
+              % (vo, d, c, p, on, c / on if on else 0,
+                 "" if real else "  (估算)", flag))
+    return bad
+
+
+def check_subs():
+    bad = []
+    for st, en, txt, _, _, vd in timeline()[0]:
+        parts = sub_lines(txt)
+        if len(parts) > 2:
+            bad.append("字幕『%s』断成了 %d 行，一屏最多两行" % (txt, len(parts)))
+        for p in parts:
+            if text_w(p) > SUB_MAX_W:
+                bad.append("字幕行『%s』宽 %.0fpx，超过一行上限 %dpx —— "
+                           "在稿子里用 %s 手工断行" % (p, text_w(p), SUB_MAX_W, SUB_SEP))
+        if en - st < vd:
+            bad.append("字幕『%s』在屏 %.1fs，短于它自己的旁白 %.1fs" % (txt, en - st, vd))
+    return bad
+
+
+def check_safe():
+    """屏上文字有没有撞进平台的操作栏 / 顶部导航 / 底部发布文案区。
+    这类问题在成片文件里完全看不出来，只有把片子放进 App 才会发现 ——
+    而那时图早就出完了。所以拿来当自检。"""
+    rx0, ry0, rx1, ry1 = SAFE_RAIL
+    bad = []
+
+    def hit(name, x0, x1, y0, y1):     # 参数顺序跟 sub_box 一致：(x0, x1, y0, y1)
+        if y0 < SAFE_TOP:
+            bad.append("%s 顶端 %d 进了顶部导航区(<%d)" % (name, y0, SAFE_TOP))
+        if y1 > SAFE_BOTTOM:
+            bad.append("%s 底端 %d 进了底部发布文案区(>%d)，把 SUB_BOT 往上收"
+                       % (name, y1, SAFE_BOTTOM))
+        if x1 > rx0 and x0 < rx1 and y1 > ry0 and y0 < ry1:
+            bad.append("%s 的框 x %d~%d / y %d~%d 压进右侧操作栏(x>=%d, y %d~%d)，"
+                       "**收窄 SUB_MAX_W 或左移 SUB_CX**" % (name, x0, x1, y0, y1, rx0, ry0, ry1))
+
+    for _, _, txt, _, _, _ in timeline()[0]:
+        hit("字幕『%s』" % txt, *sub_box(txt))
+    if ENDCARD:
+        hw = text_w(ENDCARD["head"]) / SUB_FS * 88
+        hit("尾板标题", W // 2 - hw // 2, W // 2 + hw // 2,
+            ENDCARD["y"] - 42, ENDCARD["y"] + 42)
+    return bad
+
+
+def selftest_safe():
+    """回归：把字幕放回会撞的位置，检查必须报警。
+    一个永远不报警的检查比没有检查更糟。"""
+    global SUB_CX, SUB_BOT
+    kx, kb = SUB_CX, SUB_BOT
+    SUB_CX, SUB_BOT = 540, 1500      # 居中 + 压低 = 同时撞操作栏和文案区
+    n = len(check_safe())
+    SUB_CX, SUB_BOT = kx, kb
+    now = len(check_safe())
+    print("回归自测: 撞的位置(CX=540,BOT=1500) 报警 %d 条 —— %s"
+          % (n, "对" if n else "**检查失效了**"))
+    print("          当前位置(CX=%d,BOT=%d) 报警 %d 条 —— %s"
+          % (SUB_CX, SUB_BOT, now, "对" if now == 0 else "还在撞"))
+    return n > 0 and now == 0
+
+
+def check_xfades():
+    starts = shot_starts()
+    total = total_len()
+    D = [(starts[i + 1] if i + 1 < len(starts) else total) - starts[i]
+         for i in range(len(SHOTS))]
+    bad = []
+    for i in range(len(SHOTS) - 1):
+        x = xf(i)
+        if x <= 0:
+            bad.append("镜 %d 的转场 %.2fs 必须大于 0" % (i + 1, x))
+        elif x > min(D[i], D[i + 1]) - 1e-6:
+            bad.append("镜 %d 的转场 %.2fs 不短于相邻镜的内容时长(%.1fs/%.1fs)"
+                       % (i + 1, x, D[i], D[i + 1]))
+    return bad
+
+
+def check_moves():
+    bad = []
+    for i, s in enumerate(SHOTS, 1):
+        z0, z1 = s["z"]
+        for (fx, fy), z, w in ((s["f0"], z0, "起"), (s["f1"], z1, "止")):
+            lo, hi = 1 / (2 * z), 1 - 1 / (2 * z)
+            for v, ax in ((fx, "x"), (fy, "y")):
+                if not (lo - 1e-6 <= v <= hi + 1e-6):
+                    bad.append("镜 %d %s幅 f%s=%.3f 超出 z=%.2f 的可达范围 [%.3f,%.3f]"
+                               % (i, w, ax, v, z, lo, hi))
+        want = abs(s["f1"][1] - s["f0"][1]) + abs(s["f1"][0] - s["f0"][0])
+        zmax = max(z0, z1); can = max(0.0, 1 - 1 / zmax)
+        if want > can + 1e-6:
+            bad.append("镜 %d 想走 %.0f%% 行程，但 z 最大只到 %.2f，实际只能走 %.0f%% "
+                       "(需要 z>=%.2f)" % (i, want * 100, zmax, can * 100,
+                                           1 / max(1e-6, 1 - want)))
+    return bad
+
+
+def check_timeline():
+    lines, durs, total, _ = timeline()
+    _, missing = vo_durs()
+    cuts = cut_points()
+    bad, warn = [], []
+    bad += check_claims()
+    bad += check_pace()
+    bad += check_subs()
+    bad += check_safe()
+    bad += check_xfades()
+    bad += check_moves()
+
+    for st, en, txt, _, _, _ in lines:
+        for c in cuts:
+            if st - 0.25 < c < en + 0.25:
+                bad.append("转场 %.1fs 压到了字幕『%s』" % (c, txt))
+        if en > total + 1e-6:
+            bad.append("字幕『%s』结束于 %.1fs，超出片长 %.1fs" % (txt, en, total))
+    for c in CLIPS:
+        if not os.path.exists(os.path.join(SRC, c["src"])):
+            warn.append("缺素材: " + c["src"])
+    if len(CLIPS) != len(SHOTS):
+        bad.append("CLIPS %d 张对不上 SHOTS %d 镜" % (len(CLIPS), len(SHOTS)))
+
+    if missing:
+        warn.append("**时间轴是估算的** —— 还缺 %d 条旁白 (%s...)。"
+                    "配音生成之后跑 sync 会自动重算" % (len(missing), missing[0]))
+    if not os.path.exists(MUSIC):
+        warn.append("音乐还没就位")
+    else:
+        p = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                            "format=duration", "-of", "csv=p=0", MUSIC],
+                           capture_output=True, text=True)
+        try:
+            mdur = float(p.stdout.strip())
+            if MUSIC_IN + total > mdur + 1e-3:
+                bad.append("音乐不够长: 从 %.1fs 切入需要到 %.1fs，全曲只有 %.1fs"
+                           % (MUSIC_IN, MUSIC_IN + total, mdur))
+            else:
+                print("\n音乐: 全曲 %.1fs，从 %.1fs 切入，余地 %.1fs"
+                      % (mdur, MUSIC_IN, mdur - total))
+            # 诗片的判据是 1.6 倍（音乐是唯一音源，某处塌下去就毁了）。
+            # 讲述片全程有旁白盖着，音乐只在句间的缝里露出来，要挑的落点少得多，
+            # 所以放宽到 1.4 倍。照抄诗片那条会一直报一个不需要处理的警。
+            if mdur < total * 1.4:
+                warn.append("音乐只比片长多 %.0fs（不到片长的 0.4 倍），切入点几乎没得挑"
+                            % (mdur - total))
+        except ValueError:
+            warn.append("读不出音乐时长")
+
+    print("\n片长 %.1fs (%d:%04.1f)  镜头 %d  旁白 %d 条  %dx%d"
+          % (total, total // 60, total % 60, len(SHOTS), len(NARR), W, H))
+    print("每镜时长: " + "  ".join("%.1f" % d for d in durs))
+    print("转场落点: " + "  ".join("%.1f" % c for c in cuts))
+    selftest_safe()
+    for w in warn:
+        print("提示: " + w)
+    if bad:
+        print("\n!! 问题 %d 条:" % len(bad))
+        for b in bad:
+            print("   - " + b)
+    else:
+        print("\n自检通过。")
+    return not bad
+
+
+def sync():
+    """量旁白 -> 打出时间轴。改了配音先跑它（缓存会自动失效，不用手工清）。"""
+    if os.path.exists(VO_CACHE):
+        os.remove(VO_CACHE)
+    global _VO
+    _VO = None
+    lines, durs, total, _ = timeline()
+    durs_map, missing = vo_durs()
+    print("=== 旁白实测 ===")
+    for n in NARR:
+        d, real = durs_map[n["vo"]]
+        print("  镜%-3d %-11s %6.2fs %s  %s"
+              % (n["shot"], n["vo"], d, "" if real else "(估算)",
+                 "".join(sub_lines(n["txt"]))[:24]))
+    print("\n旁白净时长 %.1fs，加气口后片长 %.1fs" % (sum(durs_map[n["vo"]][0] for n in NARR), total))
+    st = shot_starts()
+    print("\n=== 每镜 ===")
+    for i, d in enumerate(durs):
+        print("  镜%-3d 起 %6.2f  dur %5.2f  xf %.2f"
+              % (i + 1, st[i], d, xf(i) if i < len(SHOTS) - 1 else 0.0))
+    if missing:
+        print("\n还缺 %d 条旁白，上面带 (估算) 的是按 est 排的。" % len(missing))
+
+
+# ================= 素材 =================
+def prep():
+    for i, c in enumerate(CLIPS, 1):
+        src = os.path.join(SRC, c["src"])
+        if not os.path.exists(src):
+            print("   跳过(缺图): " + c["src"]); continue
+        z, cx, cy = c["zoom"], c["cx"], c["cy"]
+        crop = ("crop=w='min(iw,ih/%.6f*9/16)':h='min(ih/%.6f,iw*16/9)':"
+                "x='clip(%.6f*iw-out_w/2,0,iw-out_w)':"
+                "y='clip(%.6f*ih-out_h/2,0,ih-out_h)'" % (z, z, cx, cy))
+        vf = crop + "," + GRADE + ("," + c["tweak"] if c["tweak"] else "")
+        vf += ",scale=%d:%d:flags=lanczos,setsar=1" % PREP
+        run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", vf,
+             "-frames:v", "1", "img%02d.png" % i],
+            "prep %d/%d  %s" % (i, len(CLIPS), c["src"]))
+    probe()
+
+
+def probe():
+    """9x16 亮度网格。能发现两类错误：落幅摇进无特征区域；字幕压在读不出的底上。
+    **但它量的是整张图，而镜头只经过其中一段，所以报警经常是误报** —— 跑完一定要跑 trace。"""
+    print("\n=== 亮度网格 (0-255, 9 列 x 16 行) ===")
+    for i in range(1, len(CLIPS) + 1):
+        f = "img%02d.png" % i
+        if not os.path.exists(f):
+            print("%s  (未生成)" % f); continue
+        p = subprocess.run(["ffmpeg", "-v", "error", "-i", f, "-vf",
+                            "scale=9:16:flags=area,format=gray", "-f", "rawvideo", "-"],
+                           capture_output=True)
+        raw = p.stdout
+        if len(raw) != 144:
+            print("%s  (读不出)" % f); continue
+        print("\n%s  %s" % (f, CLIPS[i - 1]["src"]))
+        for r in range(16):
+            print("   " + " ".join("%3d" % raw[r * 9 + c] for c in range(9)))
+
+
+def vig_factor(x0, x1, y0, y1):
+    """pass_a 里的 vignette 对画面上某矩形的平均衰减系数(1.0 = 不衰减)。
+
+    **少了这个，trace 和 measure 会系统性对不上**，而"对不上 = 运镜没走在你以为的
+    位置上"是全流水线唯一一处能自检运镜的判据 —— 一个长期报假警的检查等于没有检查。
+    做法：拿一张纯灰跑一遍 VIGNETTE，用画心的值归一，改参数自动跟着变。"""
+    if not VIGNETTE:
+        return 1.0
+    if "map" not in _VIG_CACHE:
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi",
+             "-i", "color=c=0xC8C8C8:s=%dx%d" % (W, H),
+             "-vf", VIGNETTE + ",format=gray", "-frames:v", "1",
+             "-f", "rawvideo", "-"], capture_output=True).stdout
+        _VIG_CACHE["map"] = raw if len(raw) == W * H else None
+    raw = _VIG_CACHE["map"]
+    if not raw:
+        return 1.0
+    ctr = raw[(H // 2) * W + W // 2]
+    if not ctr:
+        return 1.0
+    step = 8
+    v = [raw[y * W + x] for y in range(y0, y1, step) for x in range(x0, x1, step)]
+    return (sum(v) / len(v)) / ctr
+
+
+def scrim_factor(x0, x1, y0, y1):
+    """pass_c 里那层 scrim 对画面上某矩形的平均透过率（1.0 = 没压）。
+
+    和 vig_factor 是同一个道理，而且是同一个坑的第二只脚：**trace 必须和
+    pass_a/pass_c 建模同一条流水线**。只补了 vignette 不补 scrim，
+    trace 会系统性地比 measure 亮 —— 而"两者对不上 = 运镜没走对"
+    是全流水线唯一一处能自检运镜的判据，一旦有系统性偏差就等于废了。
+
+    做法同样是拿一张纯灰跑一遍真正的合成，按画心归一，改参数自动跟着变。
+    """
+    if SCRIM_ALPHA <= 0:
+        return 1.0
+    if "map" not in _SCRIM_CACHE:
+        if not os.path.exists("scrim.png"):
+            make_scrim()
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi",
+             "-i", "color=c=0xC8C8C8:s=%dx%d" % (W, H), "-i", "scrim.png",
+             "-filter_complex", "[0:v][1:v]overlay=0:0:shortest=1,format=gray",
+             "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True).stdout
+        _SCRIM_CACHE["map"] = raw if len(raw) == W * H else None
+    raw = _SCRIM_CACHE["map"]
+    if not raw:
+        return 1.0
+    step = 8
+    v = [raw[y * W + x] for y in range(y0, y1, step) for x in range(x0, x1, step)]
+    return (sum(v) / len(v)) / 200.0          # 0xC8 = 200
+
+
+def trace():
+    """量镜头**真正经过的区域** —— 出图阶段就能判一张图能不能用，缺图会跳过。
+
+    zoompan 的取景窗宽高各 1/z、窗心在 (fx,fy) 且被 clip 在图内，于是
+        src = (f - 1/(2z)) + (out/边长) * (1/z)
+    打扫过范围要取**并集**，不能打"起帧框顶→止帧框底"：上摇时落幅的框底在起幅框底
+    之上，那样打出来会把行程严重低估。"""
+    lines, durs, _, _ = timeline()
+    starts = clip_starts()          # 镜内局部时刻要按**渲出来那段片子**的起点算
+    dark = POLARITY == "dark_on_light"
+    ink = 40 if dark else 242
+    GW, GH = 724, 1288
+    cache = {}
+
+    def gray(i):
+        if i in cache:
+            return cache[i]
+        f = "img%02d.png" % i
+        if not os.path.exists(f):
+            f = os.path.join(SRC, CLIPS[i - 1]["src"])
+            if not os.path.exists(f):
+                cache[i] = None; return None
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", f, "-vf",
+                              "scale=%d:%d:flags=area,format=gray" % (GW, GH),
+                              "-f", "rawvideo", "-"], capture_output=True).stdout
+        cache[i] = raw if len(raw) == GW * GH else None
+        return cache[i]
+
+    def box(n, tl, x0o, x1o, y0o, y1o):
+        s = SHOTS[n - 1]
+        p = min(1.0, max(0.0, tl / durs[n - 1]))
+        z = s["z"][0] + (s["z"][1] - s["z"][0]) * p
+        half = 1 / (2 * z)
+        fx = min(max(s["f0"][0] + (s["f1"][0] - s["f0"][0]) * p, half), 1 - half)
+        fy = min(max(s["f0"][1] + (s["f1"][1] - s["f0"][1]) * p, half), 1 - half)
+        span = 1.0 / z
+        return (fx - half + x0o / W * span, fx - half + x1o / W * span,
+                fy - half + y0o / H * span, fy - half + y1o / H * span)
+
+    def stat(raw, b, vig):
+        x0, x1 = int(b[0] * GW), max(int(b[0] * GW) + 1, int(b[1] * GW))
+        y0, y1 = int(b[2] * GH), max(int(b[2] * GH) + 1, int(b[3] * GH))
+        x0, x1, y0, y1 = max(0, x0), min(GW, x1), max(0, y0), min(GH, y1)
+        v = sorted(raw[y * GW + x] * vig for y in range(y0, y1) for x in range(x0, x1))
+        return sum(v) / len(v), v[int(len(v) * 0.01)] if dark else v[int(len(v) * 0.99)]
+
+    print("\n=== 字幕实走轨迹（起/中/止，均值/1%%分位；判据：离字色 %d 至少 50 级）===" % ink)
+    print("    （已建模 vignette + scrim；跑完拿它和 measure 逐条对，差 5 级以内才算运镜对）")
+    worst = []
+    for st, en, txt, n, _, _ in lines:
+        raw = gray(n)
+        if raw is None:
+            print("  %-24s 镜%-3d (缺图)" % (txt, n)); continue
+        x0, x1, y0, y1 = sub_box(txt)
+        vig = vig_factor(x0, x1, y0, y1) * scrim_factor(x0, x1, y0, y1)
+        out, ys = [], []
+        for t in (st + 0.2, (st + en) / 2, max(st + 0.3, en - 0.2)):
+            b = box(n, t - starts[n - 1], x0, x1, y0, y1)
+            out.append(stat(raw, b, vig)); ys.append((b[2], b[3]))
+        w = min(o[1] for o in out) if dark else max(o[1] for o in out)
+        worst.append((w, txt, n))
+        flag = "" if abs(w - ink) >= 50 else "   << 不够，加 scrim 或换图"
+        print("  %-24s 镜%-3d y %.3f~%.3f  " % ("".join(sub_lines(txt))[:12], n,
+                                                min(a for a, _ in ys), max(b for _, b in ys))
+              + "  ".join("%3.0f/%3.0f" % o for o in out) + flag)
+    if worst:
+        m, who, n = min(worst) if dark else max(worst)
+        print("\n  最差处的底 %.0f，出现在『%s』(镜 %d)，离字色 %d 差 %.0f 级 —— %s"
+              % (m, "".join(sub_lines(who))[:12], n, ink, abs(m - ink),
+                 "够用" if abs(m - ink) >= 50 else "不够"))
+
+    print("\n=== 落幅平坦度（只量镜头真正停住的那一帧）===")
+    for n in range(1, len(SHOTS) + 1):
+        raw = gray(n)
+        if raw is None:
+            print("  镜%-3d (缺图)" % n); continue
+        b = box(n, durs[n - 1], 0, W, 0, H)
+        gx0, gx1 = int(b[0] * GW), int(b[1] * GW)
+        gy0, gy1 = int(b[2] * GH), int(b[3] * GH)
+        cells, flat = [], 0
+        for r in range(16):
+            row = []
+            for c in range(9):
+                sx0 = gx0 + (gx1 - gx0) * c // 9
+                sx1 = max(sx0 + 1, gx0 + (gx1 - gx0) * (c + 1) // 9)
+                sy0 = gy0 + (gy1 - gy0) * r // 16
+                sy1 = max(sy0 + 1, gy0 + (gy1 - gy0) * (r + 1) // 16)
+                v = [raw[y * GW + x] for y in range(sy0, min(GH, sy1))
+                     for x in range(sx0, min(GW, sx1))]
+                row.append(sum(v) / len(v))
+            cells.append(row)
+            if max(row) - min(row) < 12:
+                flat += 1
+        allv = [v for row in cells for v in row]
+        rng = max(allv) - min(allv)
+        note = ""
+        if flat >= 5:
+            note = "  << %d 行几乎无明暗变化，这一镜会像静止" % flat
+        elif rng < 25:
+            note = "  << 整帧极差只有 %.0f，运镜会看不出来" % rng
+        print("  镜%-3d %-16s 整帧极差 %3.0f  平坦行 %2d/16%s"
+              % (n, CLIPS[n - 1]["src"][:16], rng, flat, note))
+
+
+# ================= 渲染 =================
+def pass_a():
+    durs = timeline()[1]
+    os.makedirs("shots", exist_ok=True)
+    for i, s in enumerate(SHOTS, 1):
+        dur = durs[i - 1]
+        d = max(1, int(round(dur * FPS)) - 1)
+        z0, z1 = s["z"]; (x0, y0), (x1, y1) = s["f0"], s["f1"]
+        ze = "%.6f+(%.6f)*on/%d" % (z0, z1 - z0, d)
+        xe = ("max(0,min(iw-iw/zoom,(%.6f+(%.6f)*on/%d)*iw-(iw/zoom)/2))" % (x0, x1 - x0, d))
+        ye = ("max(0,min(ih-ih/zoom,(%.6f+(%.6f)*on/%d)*ih-(ih/zoom)/2))" % (y0, y1 - y0, d))
+        vf = ("scale=%d:%d:flags=lanczos," % UP
+              + "zoompan=z='%s':x='%s':y='%s':d=1:s=%dx%d:fps=%d," % (ze, xe, ye, W, H, FPS)
+              + (VIGNETTE + "," if VIGNETTE else "") + "setsar=1,format=yuv420p")
+        run(["ffmpeg", "-y", "-v", "error", "-stats", "-loop", "1",
+             "-framerate", str(FPS), "-t", "%.3f" % dur,
+             "-i", "img%02d.png" % i, "-vf", vf, "-c:v", "libx264", "-crf", "12",
+             "-preset", "medium", "-pix_fmt", "yuv420p", "shots/shot%02d.mp4" % i],
+            "镜头 %d/%d  %.1fs" % (i, len(SHOTS), dur))
+
+
+def motion():
+    """量每一镜**渲出来**的首尾帧差 —— 运镜到底看不看得出来。
+
+    `trace` 的落幅平坦度是出图阶段的筛子，它数的是"有几行几乎没有明暗变化"。
+    对暗调实拍它**天生爱误报**：大片夜空、暗地面本来就是平的，
+    整帧极差 147 的一张好图照样能报 8/16 行平坦。
+
+    真正要紧的不是落幅那一帧长什么样，而是**这一镜从头走到尾画面变了多少**。
+    那个只能在 shots/ 上量 —— 和 measure 之于 probe 是同一个关系：
+    筛子在源头上估，判据在流水线的真实输出上量。
+
+    判据：首尾帧的平均绝对差 < MOTION_MIN 就是"肉眼看不出在动"
+    （亮度的可觉察差约 2~3 级，取 4 作下限）。
+    """
+    if not os.path.isdir("shots"):
+        sys.exit("!!! 还没有 shots/，先跑 a")
+    durs = timeline()[1]
+    GW, GH = 96, 171
+
+    def frame(f, t):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.3f" % t, "-i", f,
+                              "-frames:v", "1", "-vf",
+                              "scale=%d:%d:flags=area,format=gray" % (GW, GH),
+                              "-f", "rawvideo", "-"], capture_output=True).stdout
+        return raw if len(raw) == GW * GH else None
+
+    print("\n=== 运镜实测（渲出来的首尾帧差，判据：均差 >= %.1f 级）===" % MOTION_MIN)
+    bad, skipped = [], []
+    for i in range(1, len(SHOTS) + 1):
+        f = "shots/shot%02d.mp4" % i
+        if not os.path.exists(f):
+            print("  镜%-3d (未渲染)" % i); skipped.append(i); continue
+        a, b = frame(f, 0.05), frame(f, max(0.1, durs[i - 1] - 0.1))
+        if a is None or b is None:
+            # 读不出多半是这一镜还在写（ffmpeg 还没收尾，moov atom 没落盘）。
+            # **不能当成通过。** 第一版跳过之后照样打印"全部都看得出来"，
+            # 又造出一个不会报警的检查 —— 这一条是被自己坑了一次之后加的。
+            print("  镜%-3d %-16s (读不出帧，可能还在渲)" % (i, CLIPS[i - 1]["src"][:16]))
+            skipped.append(i); continue
+        d = sorted(abs(a[k] - b[k]) for k in range(GW * GH))
+        mean = sum(d) / len(d)
+        flag = ""
+        if ENDCARD and i == len(SHOTS):
+            flag = "  (尾板，本来就该几乎静止 —— 不适用)"
+        elif mean < MOTION_MIN:
+            flag = "  << 肉眼看不出在动，加大 z 跨度或换一张有结构的图"
+            bad.append(i)
+        print("  镜%-3d %-16s 均差 %5.1f  中位 %3d  p90 %3d  最大 %3d%s"
+              % (i, CLIPS[i - 1]["src"][:16], mean, d[len(d) // 2],
+                 d[int(len(d) * 0.9)], d[-1], flag))
+    if bad:
+        print("\n  %d 镜运镜看不出来: %s" % (len(bad), ", ".join(str(i) for i in bad)))
+    if skipped:
+        print("\n  !! %d 镜没量到: %s —— **不算通过**，渲完再跑一次"
+              % (len(skipped), ", ".join(str(i) for i in skipped)))
+    if not bad and not skipped:
+        print("\n  %d 镜运镜全部看得出来。" % len(SHOTS))
+    return not bad and not skipped
+
+
+def pass_b():
+    _, durs, total, _ = timeline()
+    ins = []
+    for i in range(1, len(SHOTS) + 1):
+        ins += ["-i", "shots/shot%02d.mp4" % i]
+    parts, cur, off = [], "[0:v]", 0.0
+    for i in range(1, len(SHOTS)):
+        off += durs[i - 1] - xf(i - 1)
+        parts.append("%s[%d:v]xfade=transition=fade:duration=%.3f:offset=%.3f[x%d]"
+                     % (cur, i, xf(i - 1), off, i)); cur = "[x%d]" % i
+    parts.append("%sfade=t=in:st=0:d=%.2f:c=%s,fade=t=out:st=%.3f:d=%.2f:c=%s[v]"
+                 % (cur, FADE_IN, FADE_COLOR, total - FADE_OUT, FADE_OUT, FADE_COLOR))
+    run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
+        + ["-filter_complex", ";".join(parts), "-map", "[v]", "-c:v", "libx264",
+           "-crf", "14", "-preset", "medium", "-pix_fmt", "yuv420p",
+           "-r", str(FPS), "master.mp4"],
+        "拼接 %d 镜  总长 %.1fs" % (len(SHOTS), total))
+
+
+# ================= 音频 =================
+def integrated_lufs(path):
+    p = subprocess.run(["ffmpeg", "-hide_banner", "-i", path, "-af",
+                        "loudnorm=print_format=json", "-f", "null", "-"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        m = json.loads(p.stderr[p.stderr.rfind("{"):p.stderr.rfind("}") + 1])
+        return float(m["input_i"])
+    except (ValueError, KeyError):
+        return None
+
+
+def pick_music_in():
+    """maximin 选音乐切入点。
+
+    **讲述片的关键窗口和诗片不一样。** 诗片全程只有音乐，窗口取每句字幕的落点；
+    讲述片全程有旁白盖着，音乐在那些地方本来就该退到后面 ——
+    真正听得见音乐的是**旁白之间的缝**：冷开场、长转场、金句留白、尾板。
+    照搬诗片那套窗口会选错点。"""
+    if not os.path.exists(MUSIC):
+        sys.exit("!!! 音乐还没就位: " + MUSIC)
+    lines, durs, total, starts = timeline()
+    p = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", MUSIC,
+                        "-af", "ebur128=framelog=info", "-f", "null", "-"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    curve = []
+    for ln in p.stderr.splitlines():
+        if "t:" in ln and " M:" in ln:
+            try:
+                t = float(ln.split("t:")[1].split()[0])
+                m = float(ln.split(" M:")[1].split()[0])
+                if m > -70:
+                    curve.append((t, m))
+            except (IndexError, ValueError):
+                pass
+    if len(curve) < 50:
+        sys.exit("!!! 读不出响度曲线（ffmpeg 8.x 要 framelog=info，不是 verbose）")
+    mdur = curve[-1][0]
+    print("全曲 %.1fs，采样 %d 点，最低 %.1f / 最高 %.1f LUFS"
+          % (mdur, len(curve), min(m for _, m in curve), max(m for _, m in curve)))
+
+    keys = [("冷开场", 0.0, max(1.5, NARR[0]["pre"]))]
+    for i in range(len(SHOTS) - 1):          # 每个长转场都是一处听得见音乐的缝
+        if xf(i) >= 1.5:
+            keys.append(("镜%d→%d 长转场" % (i + 1, i + 2),
+                         max(0.0, starts[i + 1] - xf(i)), xf(i) + 1.5))
+    gaps = []                                # 旁白之间 >=0.9s 的静默
+    for a, b in zip(lines, lines[1:]):
+        g = b[4] - (a[4] + a[5])
+        if g >= 0.9:
+            gaps.append((a[4] + a[5], g))
+    gaps.sort(key=lambda x: -x[1])
+    for t, g in gaps[:3]:
+        keys.append(("留白 %.0fs" % t, t, g))
+    keys.append(("尾板", starts[-1], min(6.0, durs[-1])))
+    keys.append(("淡出", total - FADE_OUT, FADE_OUT))
+
+    def win_avg(off, a, d):
+        v = [m for t, m in curve if off + a <= t <= off + a + d]
+        return sum(v) / len(v) if v else -70.0
+
+    room = mdur - total
+    if room <= 0:
+        sys.exit("!!! 音乐比片子还短")
+    best, off = None, 0.0
+    while off <= room + 1e-6:
+        scores = [win_avg(off, a, d) for _, a, d in keys]
+        mn = min(scores)
+        if best is None or mn > best[0]:
+            best = (mn, off, scores)
+        off += 0.5
+    mn, off, scores = best
+    print("\nmaximin 选出切入点 %.1fs（余地 %.1fs，用到 %.1fs）" % (off, room, off + total))
+    for (name, _, _), s in zip(keys, scores):
+        print("   %-16s %.1f LUFS" % (name, s))
+    print("   全片最弱落点 %.1f LUFS" % mn)
+    print("   这一段的最深谷 %.1f LUFS"
+          % min(m for t, m in curve if off <= t <= off + total))
+    print("\n把 MUSIC_IN 改成 %.1f" % off)
+
+
+def build_audio():
+    """旁白 + 音乐(侧链躲闪) + 音效。
+
+    音乐**必须侧链躲闪**，只调低音量是不够的：压到听不见音乐就没意义，
+    压不够旁白就发浑。每条旁白**单独**归一到 VO_TARGET，顺带抹平 TTS 的忽大忽小。"""
+    lines, _, total, _ = timeline()
+    durs_map, missing = vo_durs()
+    if missing:
+        sys.exit("!!! 还缺 %d 条旁白，不能混音: %s" % (len(missing), ", ".join(missing[:3])))
+    ins, parts, vbus = ["-i", MUSIC], [], []
+    parts.append("[0:a]aresample=48000,aformat=fltp:cl=stereo,"
+                 "atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS,volume=%.1fdB,"
+                 "apad,atrim=0:%.3f,afade=t=in:st=0:d=%.2f,afade=t=out:st=%.3f:d=3[m]"
+                 % (MUSIC_IN, MUSIC_IN + total, MUSIC_GAIN, total,
+                    MUSIC_FADE_IN, max(0.0, total - 3)))
+    k = 1
+    print("\n=== 旁白增益（每条按实测反算到 %.1f LUFS）===" % VO_TARGET)
+    # lines 与 NARR 严格同序（timeline 按镜号分组、组内保序，而 NARR 本来就按镜号排），
+    # 所以按下标取起点，不要按文本去匹配 —— 两句话一字不差是很常见的
+    for j, n in enumerate(NARR):
+        path = vo_path(n)
+        meas = integrated_lufs(path)
+        g = VO_TARGET - meas if meas is not None else 0.0
+        print("   %-11s 实测 %6.1f → %+6.1f dB" % (n["vo"], meas if meas else 0, g))
+        vs = lines[j][4]
+        ins += ["-i", path]
+        parts.append("[%d:a]aresample=48000,aformat=fltp:cl=stereo,volume=%.1fdB,"
+                     "adelay=%d|%d,apad[v%d]" % (k, g, int(vs * 1000), int(vs * 1000), k))
+        vbus.append("[v%d]" % k)
+        k += 1
+    parts.append("%samix=inputs=%d:normalize=0:dropout_transition=0,atrim=0:%.3f[vo]"
+                 % ("".join(vbus), len(vbus), total))
+    parts.append("[vo]asplit=2[voa][vosc]")
+    parts.append("[m][vosc]sidechaincompress=threshold=%.3f:ratio=%d:attack=%d:release=%d[md]"
+                 % (DUCK["threshold"], DUCK["ratio"], DUCK["attack"], DUCK["release"]))
+    mixed = ["[md]", "[voa]"]
+    for f, t, tgt, fi, fo, dur in SFX:
+        path = os.path.join(SRC, f)
+        if not os.path.exists(path):
+            print("   跳过音效(缺文件): " + f); continue
+        meas = integrated_lufs(path)
+        g = tgt - meas if meas is not None else -20.0
+        flag = "  << 提得太多，底噪会一起上来，建议重生成" if g > SFX_GAIN_WARN else ""
+        print("   %-14s 实测 %6.1f → 目标 %6.1f，增益 %+6.1f dB%s" % (f, meas or 0, tgt, g, flag))
+        ins += ["-stream_loop", "-1", "-i", path]
+        parts.append("[%d:a]aresample=48000,aformat=fltp:cl=stereo,atrim=0:%.3f,"
+                     "asetpts=PTS-STARTPTS,volume=%.1fdB,afade=t=in:st=0:d=%.2f,"
+                     "afade=t=out:st=%.3f:d=%.2f,adelay=%d|%d,apad[s%d]"
+                     % (k, dur, g, fi, max(0.0, dur - fo), fo, int(t * 1000), int(t * 1000), k))
+        mixed.append("[s%d]" % k)
+        k += 1
+    parts.append("%samix=inputs=%d:normalize=0:dropout_transition=0,"
+                 "atrim=0:%.3f,alimiter=limit=0.95[a]" % ("".join(mixed), len(mixed), total))
+    run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
+        + ["-filter_complex", ";".join(parts), "-map", "[a]",
+           "-c:a", "pcm_s24le", "-t", "%.3f" % total, "mix.wav"],
+        "混音: 旁白 %d 条 + 音乐(从 %.1fs 切入，侧链躲闪) + 音效 %d 条"
+        % (len(NARR), MUSIC_IN, len(mixed) - 2))
+
+
+def measure_loudness(path):
+    p = subprocess.run(["ffmpeg", "-hide_banner", "-i", path, "-af",
+                        "loudnorm=I=%.1f:TP=%.1f:print_format=json" % (TARGET_I, TARGET_TP),
+                        "-f", "null", "-"], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    m = json.loads(p.stderr[p.stderr.rfind("{"):p.stderr.rfind("}") + 1])
+    print("   实测 I=%s LUFS  TP=%s dBTP" % (m["input_i"], m["input_tp"]))
+    return m
+
+
+# ================= 字幕 =================
+def _style(name, size, pol, spacing=0, align=5):
+    if pol == "dark_on_light":
+        pri, out, ol, sh = "&H00262A2D", "&H00EAF3F6", 3, 0
+    else:
+        pri, out, ol, sh = "&H00F2F2EC", "&H00000000", 3, 3
+    return ("Style: %s,%s,%d,%s,%s,%s,%s,0,0,0,0,100,100,%d,0,1,%d,%d,%d,20,20,0,1"
+            % (name, SUB_FONT, size, pri, pri, out, out, spacing, ol, sh, align))
+
+
+def styles_block():
+    return "[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour," \
+           "SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline," \
+           "StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow," \
+           "Alignment,MarginL,MarginR,MarginV,Encoding\n" \
+           + "\n".join([_style("T", 88, TITLE_POLARITY, 6),
+                        _style("TS", 44, TITLE_POLARITY, 8),
+                        _style("M", SUB_FS, POLARITY, 2)]) + "\n"
+
+
+def ts(t):
+    return "%d:%02d:%05.2f" % (t // 3600, t % 3600 // 60, t % 60)
+
+
+def make_ass():
+    lines, durs, _, starts = timeline()
+    ev = []
+    for st, en, txt, _, _, _ in lines:
+        parts = sub_lines(txt)
+        for j, p in enumerate(parts):
+            y = SUB_BOT - (len(parts) - 1 - j) * SUB_LH - SUB_FS // 2
+            ev.append("Dialogue: 0,%s,%s,M,,0,0,0,,{\\pos(%d,%d)}{\\fad(200,200)}%s"
+                      % (ts(st), ts(en), SUB_CX, y, p))
+    if ENDCARD:
+        t0 = starts[-1] + ENDCARD["t0"]
+        t1 = min(starts[-1] + ENDCARD["t1"], total_len())
+        ev.append("Dialogue: 0,%s,%s,T,,0,0,0,,{\\pos(%d,%d)}{\\fad(900,800)}%s"
+                  % (ts(t0), ts(t1), W // 2, ENDCARD["y"], ENDCARD["head"]))
+        ev.append("Dialogue: 0,%s,%s,TS,,0,0,0,,{\\pos(%d,%d)}{\\fad(900,800)}%s"
+                  % (ts(t0 + 0.5), ts(t1), W // 2, ENDCARD["y"] + 96, ENDCARD["sub"]))
+    with open("sub.ass", "w", encoding="utf-8-sig") as f:
+        f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
+                "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n" % (W, H)
+                + styles_block()
+                + "\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,"
+                  "MarginV,Effect,Text\n" + "\n".join(ev) + "\n")
+    print("已生成 sub.ass（%d 条）" % len(ev))
+
+
+def make_scrim():
+    """字幕在**左下**，所以 scrim 压的是底部，不是诗片的右侧。"""
+    if SCRIM_ALPHA <= 0:
+        return False
+    c = "white" if POLARITY == "dark_on_light" else "black"
+    v = "255" if c == "white" else "0"
+    run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         "color=c=%s:s=%dx%d,format=rgba," % (c, W, H)
+         + r"geq=r='%s':g='%s':b='%s':a='clip(255*%.3f*pow(max(0\,(Y-%d))/%d\,%.2f),0,255)'"
+         % (v, v, v, SCRIM_ALPHA, SCRIM_Y0, SCRIM_SOFT, SCRIM_POW),
+         "-frames:v", "1", "scrim.png"], "生成底部 scrim")
+    return True
+
+
+def video_chain(tag="[0:v]", scrim=False, grain=True):
+    fd = FONTS.replace("\\", "/")
+    pre = "%snoise=alls=2:allf=t[g];" % tag if grain else ""
+    base = "[g]" if grain else tag
+    if scrim:
+        return pre + "%s[1:v]overlay=0:0:shortest=1[s];[s]subtitles=sub.ass:fontsdir=%s[v]" \
+            % (base, fd)
+    return pre + "%ssubtitles=sub.ass:fontsdir=%s[v]" % (base, fd)
+
+
+def pass_c():
+    make_ass(); has = make_scrim(); total = total_len(); build_audio()
+    m = measure_loudness("mix.wav")
+    norm = ("loudnorm=I=%.1f:TP=%.1f:LRA=%s:measured_I=%s:measured_TP=%s:"
+            "measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true,aresample=48000"
+            % (TARGET_I, TARGET_TP, m["input_lra"], m["input_i"], m["input_tp"],
+               m["input_lra"], m["input_thresh"], m["target_offset"]))
+    ins = ["-i", "master.mp4"] + (["-loop", "1", "-i", "scrim.png"] if has else []) \
+        + ["-i", "mix.wav"]
+    fc = [video_chain("[0:v]", has), "[%d:a]" % (2 if has else 1) + norm + "[a]"]
+    out = os.path.join("..", OUT_NAME)
+    run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
+        + ["-filter_complex", ";".join(fc), "-map", "[v]", "-map", "[a]",
+           "-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart",
+           "-t", "%.3f" % total, out],
+        "归一到 %.1f LUFS + 烧字幕 -> %s" % (TARGET_I, out))
+    print("\n完成: " + out)
+
+
+def still():
+    """先整片烧低码率预览再抽帧。
+    不能对 master 直接 "-ss T -i" 抽帧再烧字幕 —— -ss 在 -i 前会把 PTS 重置为 0，
+    subtitles 滤镜按 PTS 找字幕，结果每张都去找 0 秒那一刻，一个字都渲染不出来。"""
+    if not os.path.exists("master.mp4"):
+        sys.exit("!!! 还没有 master.mp4，先跑 a + b")
+    make_ass(); has = make_scrim(); os.makedirs("stills", exist_ok=True)
+    ins = ["-i", "master.mp4"] + (["-loop", "1", "-i", "scrim.png"] if has else [])
+    run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
+        + ["-filter_complex", video_chain("[0:v]", has, grain=False), "-map", "[v]",
+           "-c:v", "libx264", "-crf", "30", "-preset", "ultrafast",
+           "-pix_fmt", "yuv420p", "-t", "%.3f" % total_len(), "preview.mp4"],
+        "烧字幕预览")
+    lines = timeline()[0]
+    for i, (st, en, txt, n, _, _) in enumerate(lines):
+        t = (st + en) / 2
+        run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % t, "-i", "preview.mp4",
+             "-frames:v", "1", "stills/%02d_%.0fs.png" % (i, t)],
+            "静帧 %.1fs  镜%d  %s" % (t, n, "".join(sub_lines(txt))[:14]))
+    print("\n%d 张静帧在 stills/ —— 逐张打开看过再宣布完成" % len(lines))
+
+
+def measure():
+    """量每条字幕压着的底。
+
+    **必须量无字的 master.mp4，不能量烧了字幕的 preview.mp4。**
+    在烧过字的帧上框出字幕区求最小值，量到的是字本身，不是它压着的底 ——
+    每条都会整整齐齐报同一个数，看起来像"条条都危险"，其实一条都没问题。
+
+    起/中/止各量一次：摇镜会把字幕拖过明暗分界，只量中间那一帧会漏掉最差的时刻。
+    跑完和 trace 逐条对：**对不上不是字幕的问题，是运镜没走在你以为的位置上**。
+
+    ---- 但要先把 scrim 补回来 ----
+    `master.mp4` 是 pass_b 的产物，**不含 scrim**（scrim 是 pass_c 才叠的）。
+    直接量它，量到的是"没压过的底"，会比成片亮一截 ——
+    实测 trace 报 166、measure 报 192，差 26 级，看起来像运镜错了，其实是
+    两边建模的流水线又不一样了（给 trace 补了 scrim，却没给 measure 补）。
+
+    scrim 和文字无关，所以可以放心地叠回来：抽帧之后 overlay 一次 scrim.png，
+    量到的就是成片里字幕真正压着的那个底。这是 vignette / scrim 那条教训的第三只脚。
+    """
+    if not os.path.exists("master.mp4"):
+        sys.exit("!!! 还没有 master.mp4，先跑 a + b")
+    dark_ink = POLARITY == "dark_on_light"
+    ink = 40 if dark_ink else 242
+    has_scrim = make_scrim()
+
+    def pct(v, p):      # 用 1% 分位不用绝对极值：一两个亮点就能把 min 拉到很低
+        v = sorted(v)
+        return v[max(0, min(len(v) - 1, int(len(v) * p)))]
+
+    print("\n=== 字幕底实测（无字 master；每条 起 / 中 / 止）===")
+    print("   每格 = 均值 / 1%分位 (极值)")
+    worst = []
+    for st, en, txt, n, _, _ in timeline()[0]:
+        x0, x1, y0, y1 = sub_box(txt)
+        out = []
+        for t in (st + 0.2, (st + en) / 2, max(st + 0.3, en - 0.2)):
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", "%.2f" % t,
+                            "-i", "master.mp4", "-frames:v", "1", "_m.png"],
+                           capture_output=True)
+            # 把 pass_c 才叠的 scrim 补回来，否则量到的是没压过的底
+            args = ["ffmpeg", "-v", "error", "-i", "_m.png"]
+            if has_scrim:
+                args += ["-i", "scrim.png", "-filter_complex",
+                         "[0:v][1:v]overlay=0:0:shortest=1,format=gray"]
+            else:
+                args += ["-vf", "format=gray"]
+            b = subprocess.run(args + ["-f", "rawvideo", "-"], capture_output=True).stdout
+            if len(b) < W * H:
+                continue
+            v = [b[y * W + x] for y in range(y0, y1) for x in range(x0, x1)]
+            out.append((sum(v) / len(v), pct(v, 0.01) if dark_ink else pct(v, 0.99),
+                        min(v) if dark_ink else max(v)))
+        if not out:
+            continue
+        worst.append(min(o[1] for o in out) if dark_ink else max(o[1] for o in out))
+        print("  镜%-3d %-22s " % (n, "".join(sub_lines(txt))[:11])
+              + "  ".join("%3.0f/%3d(%3d)" % o for o in out))
+    if os.path.exists("_m.png"):
+        os.remove("_m.png")
+    if not worst:
+        return
+    m = min(worst) if dark_ink else max(worst)
+    print("\n  字幕色约 %d，最差处的底(1%%分位) %d，相差 %d 级 —— %s"
+          % (ink, m, abs(m - ink), "够用（>=50）" if abs(m - ink) >= 50 else "不够，加 scrim"))
+    print("  这只是数字，还要跑 still 用眼睛看：数值够但压在主体上是量不出来的。")
+
+
+def cover():
+    with open("cover.ass", "w", encoding="utf-8-sig") as f:
+        f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
+                "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n" % (W, H)
+                + styles_block() + "\n[Events]\nFormat: Layer,Start,End,Style,Name,"
+                "MarginL,MarginR,MarginV,Effect,Text\n"
+                + "Dialogue: 0,0:00:00.00,0:00:10.00,T,,0,0,0,,"
+                  "{\\pos(540,700)\\fs150}%s\n" % TITLE
+                + "Dialogue: 0,0:00:00.00,0:00:10.00,TS,,0,0,0,,"
+                  "{\\pos(540,860)\\fs60}%s\n" % SUBTITLE)
+    src = "img%02d.png" % COVER_FROM
+    if not os.path.exists(src):
+        sys.exit("!!! 缺 " + src + "，先跑 prep")
+    out = os.path.join("..", COVER_NAME)
+    run(["ffmpeg", "-y", "-v", "error", "-i", src,
+         "-vf", "scale=%d:%d:flags=lanczos,%ssubtitles=cover.ass:fontsdir=%s"
+                % (W, H, VIGNETTE + "," if VIGNETTE else "", FONTS.replace("\\", "/")),
+         "-frames:v", "1", out], "封面 -> " + out)
+    print("封面出好后打开看一眼：标题很容易压在人脸或主体上。")
+
+
+if __name__ == "__main__":
+    what = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if what in ("sync", "prep", "probe", "trace", "still", "measure", "cover",
+                "pick", "motion"):
+        {"sync": sync, "prep": prep, "probe": probe, "trace": trace, "still": still,
+         "measure": measure, "cover": cover, "pick": pick_music_in,
+         "motion": motion}[what]()
+        sys.exit(0)
+    ok = check_timeline()
+    if what == "check":
+        sys.exit(0 if ok else 1)
+    if not ok:
+        sys.exit("!!! 自检没过，先修上面的问题")
+    if what in ("a", "all"):
+        if what == "all":
+            prep()
+        pass_a()
+    if what in ("b", "all"):
+        pass_b()
+    if what in ("c", "all"):
+        pass_c()
