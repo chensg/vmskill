@@ -1859,6 +1859,23 @@ def measure():
     print("  这一支是写实人物，数值够但压在**人脸或发丝**上是量不出来的。")
 
 
+def fit_title_fs(text, spacing=16, margin=70, cap=180):
+    """封面标题的字号 —— 按标题长度算出来，不写死。
+
+    写死会随词牌长度翻车：《登高》两个字、《青玉案·元夕》六个字、
+    《念奴娇·赤壁怀古》八个字，同一个 fs 差出一倍宽。
+    《青玉案》实测 fs=168 时墨迹 x 2~1038，**左边只剩 2px**。
+
+    宽度模型是量出来的，不是查字体表：楷体的实际墨迹约为标称字号的 1.04 倍
+    （fs=168、5.5 个字宽、5 个字距 16 -> 实测 1036px）。
+    西文和间隔号按半个字宽算。
+    """
+    units = sum(0.5 if ord(c) < 0x2E80 else 1.0 for c in text)
+    gaps = max(0, len(text) - 1) * spacing
+    room = W - 2 * margin - gaps
+    return max(48, min(cap, int(room / max(0.5, units * 1.04))))
+
+
 def cover():
     # 封面是单独生成的一张(img16)，不在 CLIPS 里，所以 prep 不会碰它 ——
     # 这里直接从素材目录读原图，自己缩放和调色。
@@ -1871,7 +1888,7 @@ def cover():
                 + styles_block() + "\n[Events]\nFormat: Layer,Start,End,Style,Name,"
                 "MarginL,MarginR,MarginV,Effect,Text\n"
                 + "Dialogue: 0,0:00:00.00,0:00:10.00,T,,0,0,0,,"
-                  "{\\pos(540,400)\\fs168}%s\n" % TITLE
+                  "{\\pos(540,400)\\fs%d}%s\n" % (fit_title_fs(TITLE), TITLE)
                 + "Dialogue: 0,0:00:00.00,0:00:10.00,TS,,0,0,0,,"
                   "{\\pos(540,580)\\fs62}%s\n" % AUTHOR)
     out = os.path.join("..", COVER_NAME)
