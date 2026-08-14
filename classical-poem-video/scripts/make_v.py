@@ -37,6 +37,7 @@
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -1197,6 +1198,35 @@ def vo_dur(f):
     return _VO_CACHE[key]
 
 
+def vo_onset(f):
+    """这条诵读的**出声点** —— 头部静音有多长。
+
+    落点要按出声点排，不是按文件起点：TTS 逐条的头部静音不一样
+    （《青玉案》十一条实测 0~0.38s），按文件起点排，
+    "字幕先出多久语音才进来"会一句一个样 —— 而这个不齐比整体偏晚更难听。
+    """
+    p = vo_path(f)
+    if not os.path.exists(p):
+        return 0.0
+    st = os.stat(p)
+    key = "onset|%s|%d|%d" % (f, int(st.st_mtime), st.st_size)
+    if key not in _VO_CACHE:
+        r = subprocess.run(["ffmpeg", "-v", "info", "-i", p, "-af",
+                            "silencedetect=n=-45dB:d=0.08", "-f", "null", "-"],
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace").stderr
+        on, a, b = 0.0, re.findall(r"silence_start: ([\d.]+)", r), \
+            re.findall(r"silence_end: ([\d.]+)", r)
+        if b and (not a or float(a[0]) < 0.05):
+            on = float(b[0])
+        _VO_CACHE[key] = on
+        try:
+            json.dump(_VO_CACHE, open(VO_CACHE, "w", encoding="utf-8"))
+        except (OSError, IOError):
+            pass
+    return _VO_CACHE[key]
+
+
 def vo_plan():
     """把 VO 表落到时间轴上。返回 [(文本, 文件, 语音起, 时长, 字幕起, 字幕止), ...]。
 
@@ -1208,7 +1238,9 @@ def vo_plan():
         if not hit:
             sys.exit("!!! 诵读 %s 对不上任何一条正文字幕：%s" % (f, txt))
         s, e = hit[0]
-        out.append((txt, f, s + VO_LEAD, vo_dur(f), s, e))
+        # 按出声点排：文件带多少头部静音，起点就往前提多少
+        out.append((txt, f, max(s, s + VO_LEAD - vo_onset(f)),
+                    vo_dur(f), s, e))
     return out
 
 
@@ -1246,7 +1278,7 @@ def vosync():
     plan, miss = vo_plan(), 0
     print("")
     print("=== 诵读落点（字幕起 + VO_LEAD %.2fs）===" % VO_LEAD)
-    print("   语速 = 字数 / 实测时长；古诗词诵读通行在 2.2~3.6 字/秒")
+    print("   语速已扣掉头部静音；打出来的语音区间是**出声**区间")
     tot = 0.0
     for txt, f, vs, d, ls, le in plan:
         if d is None:
@@ -1255,9 +1287,11 @@ def vosync():
         tot += d
         slack = le - (vs + d)
         flag = "" if slack >= VO_TAIL_MIN else "  << 读不完，字幕先收了"
-        print("  %-12s %-12s %5.2fs  %d字 %.1f字/秒  语音 %5.1f~%5.1f  "
-              "字幕 %5.1f~%5.1f  余 %5.2fs%s"
-              % (txt[:12], f, d, n, n / d, vs, vs + d, ls, le, slack, flag))
+        on = vo_onset(f)
+        print("  %-12s %-12s %5.2fs  %d字 %.1f字/秒  出声 +%.2f  "
+              "语音 %5.1f~%5.1f  字幕 %5.1f~%5.1f  余 %5.2fs%s"
+              % (txt[:12], f, d, n, n / max(0.01, d - on), on,
+                 vs + on, vs + d, ls, le, slack, flag))
     print("")
     print("  诵读净时长 %.1fs，占片长 %.1fs 的 %.0f%%（词的诵读本来就该是稀的）"
           % (tot, total_len(), 100 * tot / max(1e-6, total_len())))
