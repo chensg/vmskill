@@ -1,0 +1,8 @@
+# 仓库里一律存 LF，签出也一律 LF。
+# 不写这条时 Windows 上 core.autocrlf=true 会把工作区转成 CRLF，
+# 于是每次改一个字都变成整篇重写（5000+ 行的假差异）。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.mp3 binary
+*.mp4 binary
