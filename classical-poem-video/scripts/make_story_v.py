@@ -984,8 +984,11 @@ def check_resolution():
     而文件上写的是 2896x5152 —— 只查文件尺寸的检查对它一声不吭。
     """
     bad, rows = [], []
-    zmax = max(max(s["z"]) for s in SHOTS) if SHOTS else 1.0
     for i, c in enumerate(CLIPS, 1):
+        # "最紧取景"要用**这一镜自己的** z，不是全片的 z 最大值。用全局值时，
+        # 各镜 z 差不多还看不出来；一旦跨度大（比如 1.02~2.15），低 z 的镜头会被
+        # 算成远低于实际的源像素比，让人去换一张本来完全没问题的图。
+        zmax = max(SHOTS[i - 1]["z"]) if i - 1 < len(SHOTS) else 1.0
         p = os.path.join(SRC, c["src"])
         if not os.path.exists(p):
             continue
