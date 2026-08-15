@@ -441,10 +441,16 @@ def check_claims():
         print("  %-4s %-4s %-34s %s" % (cid, lvl, what, note))
     hyp = [c for c in CLAIMS if c[1] == "假说"]
     if hyp:
-        tail = "".join(n["txt"] for n in NARR[-3:])
-        hit = any(w in tail for w in ("推断", "假说", "存疑", "并没有", "没有这么", "不是"))
+        # 窗口是**尾板那一段**，不是"最后三句"。后者是按 13 镜的排法定的；
+        # 镜数一多（21 镜时尾板会跨最后两镜），自拆句就掉出窗口，报假警。
+        # 语义上要查的单位是尾板，不是一个固定的句数。
+        last = NARR[-1]["shot"]
+        tail = "".join(n["txt"] for n in NARR if n["shot"] >= last - 1)
+        # "证明不了/说明不了" 和 "是主流推断" 一样是标准的自拆句式，原表里漏了。
+        hit = any(w in tail for w in ("推断", "假说", "存疑", "并没有", "没有这么", "不是",
+                                      "证明不了", "说明不了"))
         if not hit:
-            bad.append("CLAIMS 里有 %d 条『假说』(%s)，但最后三句旁白里没有自我拆解。"
+            bad.append("CLAIMS 里有 %d 条『假说』(%s)，但尾板那一段旁白里没有自我拆解。"
                        "假说必须**在片内**说出来 —— 看简介的人不到十分之一"
                        % (len(hyp), "/".join(c[0] for c in hyp)))
         else:
