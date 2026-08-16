@@ -9,7 +9,7 @@
 
 三条开工前定死的轴（每条都有对应自检）：
   MOTION      运镜还是静帧，可逐镜覆盖 dict(..., motion="static")
-  MUSIC_MODE  生成 / 公版 / 没有（横版没有音效轨，'none' = 成片无音轨）
+  MUSIC_MODE  生成 / 公版 / 库里挑 / 没有（横版没有音效轨，'none' = 成片无音轨）
   IMG_SOURCE  按任务书生成 / 自己找（找来的必须登记来源，check 会拦）
 
 三个测量命令量的是**不同区域**，不能互相替代：
@@ -75,13 +75,15 @@ MOTION_STATIC_MAX = 0.6     # 静帧镜的上限：真静止应该接近 0
 # ================= 配乐：生成 / 公版 / 没有 =================
 # 见 references/music.md。**横版模板没有音效轨也没有旁白**，所以
 # MUSIC_MODE='none' 在这里意味着成片完全无声（会出一条无音轨的 mp4）。
-MUSIC_MODE = "generated"    # "generated" | "public_domain" | "none"
+MUSIC_MODE = "generated"    # "generated" | "public_domain" | "library" | "none"
 MUSIC = os.path.join(SRC, "00_music_main.mp3")
 MUSIC_GAIN = -9.0
 MUSIC_IN = 0.0              # 用 ebur128 量出配乐进入正常体量的时刻，从那里切入
 MUSIC_FADE_IN = 0.8
 # 公版录音必填：**录音权和作品权是两回事**，check 会拦。
 MUSIC_CREDIT = dict(work="", performer="", source="", license="", url="")
+# MUSIC_MODE="library" 时填库里的文件名，check 会拦。做完回去 add --used。
+MUSIC_FROM_LIBRARY = ""
 
 # ================= 素材来源：任务书生成 / 自己找 =================
 # "found" 时每张必须登记来源与授权，check 会拦。见 references/sourcing.md。
@@ -513,9 +515,13 @@ def check_credits():
                 miss = [k for k in need if not str(e.get(k, "")).strip()]
                 if miss:
                     bad.append("素材 %s 的来源登记缺 %s" % (c["src"], "/".join(miss)))
-    if MUSIC_MODE not in ("generated", "public_domain", "none"):
-        bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'none'"
+    if MUSIC_MODE not in ("generated", "public_domain", "library", "none"):
+        bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'library' / 'none'"
                    % MUSIC_MODE)
+    elif MUSIC_MODE == "library" and not str(MUSIC_FROM_LIBRARY).strip():
+        bad.append("MUSIC_MODE='library' 却没填 MUSIC_FROM_LIBRARY —— "
+                   "不记下用了库里哪一条，做完就没法回去 `add --used`，"
+                   "下一支查库时会不知道它已经用过了")
     elif MUSIC_MODE == "public_domain":
         miss = [k for k in ("work", "performer", "source", "license", "url")
                 if not str(MUSIC_CREDIT.get(k, "")).strip()]
@@ -634,13 +640,13 @@ def check_timeline():
                            % (MUSIC_IN, need, mdur))
             else:
                 print("配乐(%s): 全曲 %.1fs，从 %.1fs 切入，余 %.1fs"
-                      % ("生成" if MUSIC_MODE == "generated" else "公版",
+                      % ({"generated": "生成", "library": "库里挑的"}.get(MUSIC_MODE, "公版"),
                          mdur, MUSIC_IN, mdur - need))
             # 切入余地 = 全曲 - 片长。生成的曲子几乎一定带一段爬坡，余地不够就躲不开。
             # 实测：177.9s 的曲子对 148.2s 的片子只剩 29.6s 余地，怎么挪都有要紧的
             # 落点撞进谷里；换成 245.1s(余 96.9s)之后同一套判据立刻挑得出好点。
             # 公版录音通常远长于片长，这条警不适用。
-            if MUSIC_MODE == "generated" and mdur < total * 1.6:
+            if MUSIC_MODE in ("generated", "library") and mdur < total * 1.6:
                 warn.append("音乐只比片长多 %.0fs（不到片长的 0.6 倍），切入点几乎没得挑。"
                             "下次生成时直接要 >= 片长 x 2.5 的时长" % (mdur - total))
             if MUSIC_MODE == "public_domain":
@@ -657,7 +663,8 @@ def check_timeline():
     print("运动: %s（静帧 %d 镜 / 运镜 %d 镜）  配乐: %s  素材: %s"
           % ({"kenburns": "运镜", "static": "静帧"}.get(MOTION, MOTION),
              ns, len(SHOTS) - ns,
-             {"generated": "生成", "public_domain": "公版", "none": "无"}.get(MUSIC_MODE),
+             {"generated": "生成", "public_domain": "公版",
+              "library": "库里挑的", "none": "无"}.get(MUSIC_MODE),
              {"generated": "按任务书生成", "found": "自己找的"}.get(IMG_SOURCE)))
     selftest_moves()
     selftest_credits()

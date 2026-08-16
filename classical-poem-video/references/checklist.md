@@ -128,7 +128,17 @@
 
 ## 音乐与音效
 
-> 下面前七条只对 `MUSIC_MODE='generated'` 成立。
+- [ ] **先查过库**（`music_index.py find --dur <片长> --mode story|poem`）。
+      书评、故事、冷知识这类对音乐要求不高的，库里现成的多半够用，
+      而且库里一多半是从没用过的落选候选
+- [ ] 用了库里的：`MUSIC_FROM_LIBRARY` 填了（check 会拦），
+      **而且做完回去 `add --used` 记了一笔**（不记的话下一支不知道它用过了）
+- [ ] 用了库里的：确认**不是同一个系列里重复用同一条**（观众记得住）
+- [ ] 音效也先查过自己的库（`sfx_index.py`，首批 14 条自然环境声），
+      再查 ChatCut 内置的 35 条（全是 UI/器械类，没有自然声），最后才生成
+- [ ] 新生成的音效**记进了库**（`sfx_index.py add`，带上提示词）
+
+> 下面七条只对 `MUSIC_MODE='generated'` 成立。
 > 公版（`public_domain`）和不要配乐（`none`）见 `references/music.md`，
 > 关键差别：**录音权 ≠ 作品权**、拿到之后要跑 `mquality`、
 > 只剩音效时**不做响度归一**。

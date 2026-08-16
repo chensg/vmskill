@@ -23,7 +23,33 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SFX_DIR = os.path.normpath(os.path.join(HERE, "..", "assets", "sfx"))
+
+
+# 库在**仓库外面**，和配乐库同一个根（见 music_index.py 里的理由：配乐实测 188MB，
+# 进 git 会把 clone 和两处安装同步都拖垮；音效只有 2.7MB 本来可以进仓库，
+# 但索引和文件分家会造出"索引说有、文件没有"这种最难查的状态，所以放一起）。
+#
+# **不要按脚本位置算库的位置** —— 这个工具会被复制到各支片子的 build/ 下，
+# 按脚本位置算会在每支片子旁边各造一个空库，而库必须只有一个。
+def _find_lib():
+    env = os.environ.get("VMSKILL_LIB")
+    if env:
+        return env, "环境变量 VMSKILL_LIB"
+    for base, how in ((os.getcwd(), "当前目录往上"), (HERE, "脚本目录往上")):
+        d = base
+        for _ in range(6):
+            c = os.path.join(d, "_素材库")
+            if os.path.isdir(c):
+                return c, how
+            up = os.path.dirname(d)
+            if up == d:
+                break
+            d = up
+    return os.path.normpath(os.path.join(os.getcwd(), "..", "..", "_素材库")), "新建"
+
+
+LIB, LIB_HOW = _find_lib()
+SFX_DIR = os.path.join(LIB, "sfx")
 INDEX = os.path.join(SFX_DIR, "INDEX.md")
 META = os.path.join(SFX_DIR, "_meta.json")
 BANDS = [("<120", "lowpass=f=120"),
@@ -133,6 +159,8 @@ def write_index(meta):
 
 def cmd_rebuild():
     meta = load_meta()
+    if not os.path.isdir(SFX_DIR):
+        sys.exit("!!! 库还不存在: %s（先 add 一条，或设 VMSKILL_LIB）" % SFX_DIR)
     seen = set()
     for fn in sorted(os.listdir(SFX_DIR)):
         if not fn.lower().endswith(".mp3"):
@@ -153,6 +181,7 @@ def cmd_rebuild():
 
 def cmd_add(a):
     fn = os.path.basename(a.mp3)
+    os.makedirs(SFX_DIR, exist_ok=True)
     dst = os.path.join(SFX_DIR, fn)
     if os.path.abspath(a.mp3) != os.path.abspath(dst):
         with open(a.mp3, "rb") as s, open(dst, "wb") as d:
@@ -205,6 +234,7 @@ if __name__ == "__main__":
     pa.add_argument("--tags")
     pa.add_argument("--used")
     a = p.parse_args()
+    print("库: %s  (%s)" % (SFX_DIR, LIB_HOW))
     if a.cmd == "rebuild":
         cmd_rebuild()
     elif a.cmd == "add":

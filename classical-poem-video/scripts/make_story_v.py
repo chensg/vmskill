@@ -172,6 +172,10 @@ MOTION_STATIC_MAX = 0.6     # 静帧镜的上限（MOTION_MIN 在下面，是运
 MUSIC_MODE = "generated"
 MUSIC = os.path.join(SRC, "00_music_main.mp3")      # MUSIC_MODE="none" 时忽略
 MUSIC_CREDIT = dict(work="", performer="", source="", license="", url="")
+# MUSIC_MODE="library" 时填库里的文件名。**记它是为了两件事**：
+# 交付时说清这条曲子是复用的；以及做完之后回去 `music_index.py add --used`，
+# 否则下一支查库时不知道它已经用过了 —— **同一个系列里重复用同一条，观众记得住**。
+MUSIC_FROM_LIBRARY = ""
 
 # 有旁白，音乐要低 3~4dB，而且必须**侧链躲闪** —— 只调低音量是不够的：
 # 压到听不见音乐就没意义，压不够旁白就发浑。
@@ -826,9 +830,13 @@ def check_credits():
                 miss = [k for k in need if not str(e.get(k, "")).strip()]
                 if miss:
                     bad.append("素材 %s 的来源登记缺 %s" % (c["src"], "/".join(miss)))
-    if MUSIC_MODE not in ("generated", "public_domain", "none"):
-        bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'none'"
+    if MUSIC_MODE not in ("generated", "public_domain", "library", "none"):
+        bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'library' / 'none'"
                    % MUSIC_MODE)
+    elif MUSIC_MODE == "library" and not str(MUSIC_FROM_LIBRARY).strip():
+        bad.append("MUSIC_MODE='library' 却没填 MUSIC_FROM_LIBRARY —— "
+                   "不记下用了库里哪一条，做完就没法回去 `add --used`，"
+                   "下一支查库时会不知道它已经用过了")
     elif MUSIC_MODE == "public_domain":
         miss = [k for k in ("work", "performer", "source", "license", "url")
                 if not str(MUSIC_CREDIT.get(k, "")).strip()]
@@ -903,12 +911,12 @@ def check_timeline():
                            % (MUSIC_IN, MUSIC_IN + total, mdur))
             else:
                 print("\n配乐(%s): 全曲 %.1fs，从 %.1fs 切入，余地 %.1fs"
-                      % ("生成" if MUSIC_MODE == "generated" else "公版",
+                      % ({"generated": "生成", "library": "库里挑的"}.get(MUSIC_MODE, "公版"),
                          mdur, MUSIC_IN, mdur - total))
             # 诗片的判据是 1.6 倍（音乐是唯一音源，某处塌下去就毁了）。
             # 讲述片全程有旁白盖着，音乐只在句间的缝里露出来，要挑的落点少得多，
             # 所以放宽到 1.4 倍。照抄诗片那条会一直报一个不需要处理的警。
-            if MUSIC_MODE == "generated" and mdur < total * 1.4:
+            if MUSIC_MODE in ("generated", "library") and mdur < total * 1.4:
                 warn.append("音乐只比片长多 %.0fs（不到片长的 0.4 倍），切入点几乎没得挑"
                             % (mdur - total))
             if MUSIC_MODE == "public_domain":
@@ -923,7 +931,8 @@ def check_timeline():
     print("运动: %s（静帧 %d 镜 / 运镜 %d 镜）  配乐: %s  素材: %s"
           % ({"kenburns": "运镜", "static": "静帧"}.get(MOTION, MOTION),
              ns, len(SHOTS) - ns,
-             {"generated": "生成", "public_domain": "公版", "none": "无"}.get(MUSIC_MODE),
+             {"generated": "生成", "public_domain": "公版",
+              "library": "库里挑的", "none": "无"}.get(MUSIC_MODE),
              {"generated": "按任务书生成", "found": "自己找的"}.get(IMG_SOURCE)))
     print("每镜时长: " + "  ".join("%.1f" % d for d in durs))
     print("转场落点: " + "  ".join("%.1f" % c for c in cuts))
@@ -1570,6 +1579,9 @@ def credits():
         lines.append("无背景音乐（MUSIC_MODE='none'）。")
     elif MUSIC_MODE == "generated":
         lines.append("生成（ChatCut submit_music），无第三方权利。")
+    elif MUSIC_MODE == "library":
+        lines.append("从素材库复用：`%s`（原为自生成），无第三方权利。"
+                     % (MUSIC_FROM_LIBRARY or "**没填 MUSIC_FROM_LIBRARY**"))
     else:
         for k, label in (("work", "作品"), ("performer", "演奏/录音"),
                          ("source", "来源"), ("license", "授权"), ("url", "链接")):
