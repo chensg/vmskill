@@ -18,6 +18,7 @@
 =======================================================================
 
   python make_v.py check   # 时间轴自检(可读性/转场落点/运镜行程/安全区/音乐/授权)。永远先跑它
+  python make_v.py budget  # **出图之前跑**：按每镜的运动反推要多大的图，分档抄进任务书
   python make_v.py prep    # 裁 9:16 + 统一调色 -> img01..img15，并自动 probe
   python make_v.py probe   # 只打亮度网格，不重新生成图
   python make_v.py trace   # 量镜头真正经过的区域（缺图会跳过），出图阶段就能判能不能用
@@ -435,6 +436,24 @@ SRC_NATIVE = None
 #                  - 裁切参数（zoom/cx/cy）变成主要工作量，而 zoom 会吃掉有效分辨率
 #                  - 字幕极性多半要一镜一议，FLIP_SHOTS 会真的用上
 IMG_SOURCE = "generated"
+# ---- 出图尺寸按运动反推，不要写死一个"越大越好"的数 ----
+#
+# **实测的拐点（真原生图库照片，一密一疏，两条曲线几乎重合）：**
+#   pp（源像素/输出像素）  0.70   0.85   1.00   1.20   1.30   1.45
+#   成片顶层细节            67%    83%    92%    98%    99%   100%
+# 拐点在 1.2~1.3，**和画面类型无关** —— 密和疏差不到两个百分点。
+# 所以尺寸只由**运动**决定；画面类型改的是"最后几个百分点值不值得买"。
+#
+# 静帧那一档不要余量：pp=1.0 时裁出来的窗正好等于输出尺寸，是**恒等重采样**，
+# 根本不过滤波器。运镜要 1.2 是因为 zoompan 每帧都在非整数倍率上重采样。
+#
+# **上限是 PREP，不是钱包。** prep 第一步就 scale 到 PREP，源图短边超过 PREP
+# 短边的部分在流水线第一步就被丢掉 —— 2896 交给流水线的实际是 2160，
+# 白付 26% 的线性分辨率。budget 命令会把超出的部分直接标出来。
+PP_STATIC = 1.00        # 静帧镜：恒等重采样，不需要余量
+PP_KENBURNS = 1.20      # 运镜镜：实测 98%，性价比最高的一档
+PP_DETAIL = 1.30        # 细节就是内容的那几镜：实测 99%
+DETAIL_SHOTS = set()    # 镜号(1 起)。工笔的织物、人脸特写、市井细节、封面那一类
 # IMG_SOURCE="found" 时逐张填，键是 CLIPS 里的文件名。五项都不能空。
 # 例：CREDITS = {"img01.png": dict(
 #         title="谿山行旅图（局部）", holder="国立故宫博物院",
@@ -527,6 +546,114 @@ def is_static(n):
 
 def all_static():
     return all(is_static(n) for n in range(1, len(SHOTS) + 1))
+
+
+OUT_SHORT = min(W, H)           # 成片短边（竖版 1080 宽 / 横版 1080 高，都是 1080）
+PREP_SHORT = min(PREP)          # 流水线的实际天花板：prep 第一步就 scale 到这里
+
+
+# 实测曲线：pp -> 成片保住的顶层细节。两张真原生图库照片（一密一疏）的平均，
+# 同一个镜头(z 1.16->1.46)走完整流水线，量落幅帧的最高倍频程 RMS。
+# 两条曲线几乎重合（差不到 2 个百分点）——**拐点和画面类型无关**。
+_PP_CURVE = [(0.70, 68), (0.85, 83), (1.00, 92), (1.20, 98), (1.30, 99), (1.45, 100)]
+
+
+def detail_pct(pp):
+    """按实测曲线插值。超出量程就夹住，不外推。"""
+    if pp <= _PP_CURVE[0][0]:
+        return _PP_CURVE[0][1]
+    for (a, va), (b, vb) in zip(_PP_CURVE, _PP_CURVE[1:]):
+        if pp <= b:
+            return va + (vb - va) * (pp - a) / (b - a)
+    return 100.0
+
+
+def pp_target(n):
+    """镜 n(1 起) 要的源像素/输出像素。见 PP_* 处的实测曲线。"""
+    if is_static(n):
+        return PP_STATIC
+    return PP_DETAIL if n in DETAIL_SHOTS else PP_KENBURNS
+
+
+def required_native(n):
+    """镜 n 要的**源图短边**（裁成成片比例之后的）。
+
+    = pp目标 x 这一镜最紧的 z x 成片短边。静帧用起幅 z（它没有别的 z）。
+
+    返回 (需要多少, 有没有被 PREP 卡住)。**不在这里 clamp 到 PREP** ——
+    卡住是一个要被看见的事实：它说明这一镜的 z 太大，
+    再买更大的图也没用，得改运镜或者抬 PREP。
+    """
+    s = SHOTS[n - 1]
+    z = s["z"][0] if is_static(n) else max(s["z"])
+    need = pp_target(n) * z * OUT_SHORT
+    return need, need > PREP_SHORT + 1
+
+
+def budget():
+    """出图之前跑：反推每一镜要多大的图，直接抄进出图任务书。
+
+    **这条流水线以前的做法是给所有镜头一个统一的 2896x5152**，那是两头错的：
+    对缓推镜多买了一倍多的像素，对大推镜又不够（而 flat 判据还会放行）。
+    尺寸是算得出来的，就不该拍脑袋。
+    """
+    print("")
+    print("=== 出图尺寸（按每镜的运动反推）===")
+    print("   判据 pp = 源像素/输出像素。实测：pp 1.0→92%，1.2→98%，1.3→99% 的顶层细节")
+    print("   静帧 %.2f（恒等重采样，不需要余量） / 运镜 %.2f / 细节镜 %.2f"
+          % (PP_STATIC, PP_KENBURNS, PP_DETAIL))
+    print("   **流水线天花板 PREP 短边 = %d**，要得再大也会在 prep 第一步被丢掉"
+          % PREP_SHORT)
+    print("")
+    rows, capped = [], []
+    for n, s in enumerate(SHOTS, 1):
+        need, over = required_native(n)
+        z = s["z"][0] if is_static(n) else max(s["z"])
+        ask = min(need, PREP_SHORT)
+        # 出图任务书里要写的是**生成尺寸**。CLIPS 的 zoom 是事后再裁一刀，
+        # 要把它折回去，否则按需要量出图、裁完就不够了。
+        zoom = CLIPS[n - 1]["zoom"] if n <= len(CLIPS) else 1.0
+        gen = ask * zoom
+        rows.append((n, "静帧" if is_static(n) else "运镜", z, pp_target(n),
+                     need, ask, gen, zoom))
+        if over:
+            capped.append(n)
+    for n, how, z, pp, need, ask, gen, zoom in rows:
+        note = ""
+        if need > PREP_SHORT + 1:
+            note = "  << 被 PREP(%d) 卡住：买再大也没用，要么降 z 要么抬 PREP" % PREP_SHORT
+        elif n in DETAIL_SHOTS:
+            note = "  (细节镜)"
+        print("  镜%-3d %s  z最紧 %.2f  pp %.2f  需要短边 %4.0f  出图 %4.0f x %4.0f%s"
+              % (n, how, z, pp, need, gen, gen * 16 / 9.0, note))
+    # 分档汇总：出图任务书按档写，比逐镜写好用
+    tiers = {}
+    for n, how, z, pp, need, ask, gen, zoom in rows:
+        # **向上取整，不能四舍五入** —— 1737 舍成 1700 就比需求还小，
+        # 而这张表是直接抄进出图任务书的，舍错了整批图都不够用。
+        k = int(-(-gen // 100) * 100)
+        tiers.setdefault(k, []).append(n)
+    print("")
+    print("=== 分档（出图任务书按这个写）===")
+    for k in sorted(tiers, reverse=True):
+        ns = tiers[k]
+        print("  %4d x %4d   %2d 镜：%s" % (k, k * 16 / 9.0, len(ns),
+                                            ", ".join(str(i) for i in ns)))
+    old = 2896
+    tot_new = sum(min(r[6], PREP_SHORT * r[7]) ** 2 * 16 / 9.0 for r in rows)
+    tot_old = len(rows) * old ** 2 * 16 / 9.0
+    print("")
+    print("  合计像素相对「统一 2896x5152」： %.0f%%（省 %.0f%%）"
+          % (100.0 * tot_new / tot_old, 100 * (1 - tot_new / tot_old)))
+    if capped:
+        print("")
+        print("  !! 镜 %s 的 z 已经超出 PREP 的能力（需要 > %d）。"
+              % (", ".join(str(i) for i in capped), PREP_SHORT))
+        print("     这不是素材的问题，是**流水线的天花板**：prep 把源图压到 %d，"
+              "再大的源图也补不回来。降 z、改静帧、或者把 PREP 抬上去。" % PREP_SHORT)
+    print("")
+    print("  注意：上面是**裁成成片比例之后**的短边要求，已按 CLIPS 的 zoom 折回。")
+    print("  如果生成器出不了 9:16，还要再除以裁切损失（出 2:3 裁 9:16 只剩 84%）。")
 
 
 def music_on():
@@ -2023,15 +2150,18 @@ def check_resolution():
         st = is_static(i) if i <= len(SHOTS) else False
         zt = (SHOTS[i - 1]["z"][0] if st else max(SHOTS[i - 1]["z"])) \
             if i <= len(SHOTS) else 1.0
-        pp = eff / zt / float(W)
-        rows.append((i, c["src"], w, h, f, eff, pp, st))
-        if st:
-            if pp < 1.0 - 1e-3:
-                bad.append("%s 是静帧镜，但最紧取景只有 %.2f 源像素/输出像素（<1.0 = 在放大）"
-                           % (c["src"], pp))
-        elif eff < W * 1.5 - 1:
-            bad.append("%s 裁后有效短边 %.0f，不足下限 %d（成片对应边的 1.5 倍）"
-                       % (c["src"], eff, int(W * 1.5)))
+        pp = eff / zt / float(OUT_SHORT)
+        tgt = pp_target(i) if i <= len(SHOTS) else PP_KENBURNS
+        rows.append((i, c["src"], w, h, f, eff, pp, st, tgt))
+        # 判据分两级，因为这两件事性质不同：
+        #   pp < 1.0  = **在放大**，成片必软，这是缺陷 -> 拦下
+        #   1.0~目标  = 顶层细节从 98% 掉到 92%，是取舍不是缺陷 -> 提示
+        # 旧版的 flat "eff >= 1.5 x W" 两头都不对：对缓推镜多要一倍多的像素，
+        # 对大推镜反而放行（4K 配 z=2.7 时 pp 只有 1.0 也能过）。
+        if pp < 1.0 - 1e-3:
+            bad.append("%s 最紧取景只有 %.2f 源像素/输出像素（<1.0 = 在放大，成片会软）；"
+                       "这一镜要短边 %.0f" % (c["src"], pp, required_native(i)[0]
+                                              if i <= len(SHOTS) else 0))
     if rows:
         print("")
         print("=== 素材分辨率（有效值）===")
@@ -2044,15 +2174,17 @@ def check_resolution():
         else:
             print("   SRC_NATIVE 未设 —— 按文件尺寸算。"
                   "**如果图是放大上来的，这里的数字全是假的**")
-        for i, s, w, h, f, eff, pp, st in rows:
-            if st:
-                flag = "  << 在放大" if pp < 1.0 - 1e-3 else (
-                    "  (静帧够用，但没余量)" if pp < 1.25 else "")
+        print("   判据：pp < 1.0 = 在放大（拦）；1.0 ~ 目标 = 顶层细节 92%~98%（提示）")
+        for i, s, w, h, f, eff, pp, st, tgt in rows:
+            if pp < 1.0 - 1e-3:
+                flag = "  << 在放大"
+            elif pp < tgt - 1e-3:
+                flag = "  (够用，但低于目标 %.2f，顶层细节约 %.0f%%)" % (tgt, detail_pct(pp))
             else:
-                flag = "" if eff >= W * 1.5 - 1 else "  << 不足 %d" % int(W * 1.5)
+                flag = ""
             print("  %-2d %-20s 文件 %dx%d  x%.2f  裁后有效短边 %5.0f  %s"
-                  "最紧取景 %.2f 源像素/输出像素%s"
-                  % (i, s[:20], w, h, f, eff, "静帧 " if st else "运镜 ", pp, flag))
+                  "最紧取景 %.2f（目标 %.2f）%s"
+                  % (i, s[:20], w, h, f, eff, "静帧 " if st else "运镜 ", pp, tgt, flag))
     return bad
 
 
@@ -2515,11 +2647,12 @@ def cover():
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
     if what in ("prep", "probe", "trace", "fx", "still", "measure", "cover",
-                "pick", "pixels", "motion", "vosync", "mquality", "credits"):
+                "pick", "pixels", "motion", "vosync", "mquality", "credits",
+                "budget"):
         {"prep": prep, "probe": probe, "trace": trace, "fx": make_fx, "still": still,
          "measure": measure, "cover": cover, "pick": pick_music_in,
          "pixels": pixels, "motion": motion, "vosync": vosync,
-         "mquality": mquality, "credits": credits}[what]()
+         "mquality": mquality, "credits": credits, "budget": budget}[what]()
         sys.exit(0)
     ok = check_timeline()
     if what == "check":

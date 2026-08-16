@@ -12,10 +12,41 @@
 
 不管走哪条路，每张图都要满足：
 
-1. **分辨率**：裁成目标比例后，短边至少是成片对应边的 1.5 倍，2 倍以上才舒服。
-   竖版 1080×1920 的下限是裁后 1440×2560；横版是裁后 1620 高。
-   **生成时显式写 `2896 x 5152`**（正好 9:16 的 4K）。很多工具默认出 1K，
-   9:16 的 1K 只有约 1024×1820，低于下限，那一镜的运镜就做不动了。这条坑过两次。
+1. **分辨率：跑 `budget` 算，不要写死一个数。**
+   以前这里写的是"一律 `2896 x 5152`"，那是**两头都错**的：
+   对缓推镜多买一倍多的像素，对大推镜又不够（而当时的 flat 判据还会放行）。
+
+   尺寸是算得出来的：`需要的源图短边 = pp目标 × 这一镜最紧的 z × 1080`。
+
+   | | pp 目标 | 依据 |
+   |---|---|---|
+   | 静帧镜 | **1.00** | pp=1.0 时裁出来正好等于输出尺寸，是恒等重采样，不过滤波器 |
+   | 运镜镜 | **1.20** | 实测保住 98% 的顶层细节，性价比最高的一档 |
+   | 细节就是内容的镜 | **1.30** | 实测 99%。人脸特写、工笔织物、市井细节、封面 |
+
+   **实测曲线**（两张真原生图库照片，一密一疏，同一镜头走完整流水线，
+   量落幅帧的最高倍频程）：
+
+   | pp | 0.70 | 0.85 | 1.00 | 1.20 | 1.30 | 1.45 |
+   |---|---|---|---|---|---|---|
+   | 保住的顶层细节 | 67% | 83% | 92% | 98% | 99% | 100% |
+
+   两条曲线几乎重合——**拐点和画面类型无关**。画面类型改的不是尺寸，
+   是"最后那几个百分点值不值得买"。
+
+   **上限是 PREP，不是钱包。** `prep` 第一步就 `scale` 到 PREP（竖横版短边都是 2160），
+   源图短边超过 2160 的部分**在流水线第一步就被丢掉**。要 2896 等于交给流水线 2160，
+   白付 26% 的线性分辨率、45% 的像素。跑一次 `budget` 就都算好了：
+
+   ```bash
+   python make_v.py budget
+   ```
+
+   它按镜打出需要的尺寸，并分档汇总——**出图任务书直接抄那张分档表**。
+   实测在两支已交付的片子上，按镜要比统一 2896 省 60%~63% 的像素。
+
+   还要注意两件事：生成器出不了 9:16 时要再除裁切损失（出 2:3 裁 9:16 只剩 84%）；
+   `CLIPS` 的 `zoom` 是事后再裁一刀，`budget` 已经帮你折回去了。
 2. **字幕区要干净**：竖版是右侧约四分之一，横版是底部约五分之一。
    **"干净"是留白还是留暗，取决于画种**——见下面那一节，弄反了整批要重出。
 3. **要整条从画顶浅（暗）到画底，不只是某一段。** 镜头是动的，摇镜会把字幕拖过
@@ -33,6 +64,10 @@
 
 前缀里要把上面那几条硬要求都写进去。这是有意的：写在前缀里，每一张都会遵守。
 
+**下面四段前缀里的 `{W} x {H}` 是占位符，按 `budget` 分档表逐镜填**，
+不要再填一个统一的 4K 数字——原因见上面第 1 条。同一档的几镜共用同一个数，
+所以实际上只有三四个不同的值要填。
+
 **后续每一张都要把第一张样图当参考图传进去**——文字描述锁不住笔性和长相，
 参考图能。有反复出现的角色时（写实版的男女主）这一条是硬性的。
 
@@ -49,7 +84,7 @@ scene: no moon, no stars, no deep blue. Restricted palette: ink black and grey w
 ochre-brown for dry autumn foliage, muted indigo-grey for water and distant hills, and
 large areas of bare unpainted paper for sky and mist. Loose expressive brushwork,
 wet-into-wet washes, generous negative space, visible paper grain. Vertical 9:16,
-full-bleed, 2896 x 5152. Keep the right quarter of the picture pale and quiet — mist or
+full-bleed, {W} x {H}. Keep the right quarter of the picture pale and quiet — mist or
 bare paper, no heavy ink there. Both the top and the bottom of the frame must carry
 content; no empty band at either edge. No calligraphy, no seal, no signature, no text,
 no border or frame, no scroll edges.
@@ -78,7 +113,7 @@ and the right side breathes. Every large area — sky, cloud, wall, water, silk 
 — must carry visible internal variation from the layered dyeing: gradations, cloud
 volume, brick joints, texture. Nothing may be a flat uniform field of one colour.
 
-Vertical 9:16, full-bleed, 2896 x 5152. The right quarter of the picture, from the very
+Vertical 9:16, full-bleed, {W} x {H}. The right quarter of the picture, from the very
 top edge to the very bottom edge, must stay pale and quiet — bare silk ground, thin
 luminous cloud, mist or very pale distance — with no strong colour, no dark mass, no
 dense detail and no subject anywhere in that vertical strip. Both the top and the bottom
@@ -121,7 +156,7 @@ with no subject, no dark foliage, no strong reflection and no dark shape in it. 
 upper half of that band in particular must be the palest, emptiest part of the whole
 picture. Any horizon, bank or bridge line that crosses this band must cross it as a
 pale, low-contrast edge only.
-Vertical 9:16 composition, 2896 x 5152.
+Vertical 9:16 composition, {W} x {H}.
 ```
 
 ## 四、电影写实（《雨霖铃》用过）——**要求整个反过来**
@@ -146,7 +181,7 @@ not Ming, not Qing, not Japanese, not Korean. The people are young and beautiful
 an unforced, believable way; they are fictional and must not resemble any real or
 famous person.
 
-Vertical 9:16 composition, 2896 x 5152, full-bleed. The image is dark overall.
+Vertical 9:16 composition, {W} x {H}, full-bleed. The image is dark overall.
 A rectangle covering from 55% to 95% of the width and from 10% to 55% of the height
 — the upper right of the frame — must be kept DARK, quiet and free of detail: deep
 dusk sky, a backlit eave, shadowed water, mist, out-of-focus dark foliage or an

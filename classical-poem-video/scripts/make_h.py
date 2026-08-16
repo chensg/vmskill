@@ -2,7 +2,8 @@
 """
 古诗词短片 · 横版构建脚本模板 (1920x1080)
 
-命令：check / prep / probe / trace / a / motion / b / c / still / measure / cover / all
+命令：check / budget / prep / probe / trace / a / motion / b / c / still / measure / cover / all
+**budget 要在出图之前跑**：按每镜的运动反推图要多大，别一律填 4K。
 先跑 check，再跑 prep（自带 probe）和 trace，最后 a→b→c，
 交付前 still（用眼睛看）、measure（量字幕底）、motion（量运动）都要跑。
 
@@ -87,6 +88,16 @@ MUSIC_CREDIT = dict(work="", performer="", source="", license="", url="")
 IMG_SOURCE = "generated"    # "generated" | "found"
 CREDITS = {}                # {"img01.png": dict(title=, holder=, source=, license=, url=)}
 
+# ---- 出图尺寸按运动反推 ----
+# 实测拐点（真原生图库照片，一密一疏，两条曲线几乎重合）：
+#   pp   0.70  0.85  1.00  1.20  1.30  1.45
+#   细节  67%   83%   92%   98%   99%  100%
+# 拐点 1.2~1.3，**和画面类型无关**。静帧不要余量（pp=1.0 是恒等重采样）。
+# 上限是 PREP 不是钱包：源图短边超过 PREP 短边的部分在 prep 第一步就被丢掉。
+# **横版的短边是高**，所以出图尺寸是 (短边x16/9) x 短边。跑 budget 看。
+PP_STATIC, PP_KENBURNS, PP_DETAIL = 1.00, 1.20, 1.30
+DETAIL_SHOTS = set()        # 镜号(1 起)：细节就是内容的那几镜
+
 TARGET_I, TARGET_TP = -15.0, -1.5
 READ_PER_CHAR, READ_BASE = 0.45, 1.8
 
@@ -147,6 +158,67 @@ def is_static(n):
 
 def music_on():
     return MUSIC_MODE != "none"
+
+
+OUT_SHORT = min(W, H)
+PREP_SHORT = min(PREP)
+
+
+def pp_target(n):
+    if is_static(n):
+        return PP_STATIC
+    return PP_DETAIL if n in DETAIL_SHOTS else PP_KENBURNS
+
+
+def required_native(n):
+    """镜 n 要的源图短边（横版就是高）。返回 (需要多少, 有没有被 PREP 卡住)。"""
+    s = SHOTS[n - 1]
+    z = s["z"][0] if is_static(n) else max(s["z"])
+    need = pp_target(n) * z * OUT_SHORT
+    return need, need > PREP_SHORT + 1
+
+
+def budget():
+    """出图之前跑：反推每一镜要多大的图，直接抄进出图任务书。
+
+    横版的短边是**高**，所以出图尺寸写成 (宽 x 高) 时宽是长边。
+    """
+    print("")
+    print("=== 出图尺寸（按每镜的运动反推）===")
+    print("   判据 pp = 源像素/输出像素。实测 pp 1.0→92%，1.2→98%，1.3→99% 的顶层细节")
+    print("   静帧 %.2f（恒等重采样）/ 运镜 %.2f / 细节镜 %.2f"
+          % (PP_STATIC, PP_KENBURNS, PP_DETAIL))
+    print("   **流水线天花板 PREP 短边 = %d**，要得再大也会在 prep 第一步被丢掉"
+          % PREP_SHORT)
+    print("")
+    ratio = max(W, H) / float(min(W, H))
+    rows, capped, tiers = [], [], {}
+    for n, s in enumerate(SHOTS, 1):
+        need, over = required_native(n)
+        z = s["z"][0] if is_static(n) else max(s["z"])
+        zoom = CLIPS[n - 1].get("zoom", 1.0) if n <= len(CLIPS) else 1.0
+        gen = min(need, PREP_SHORT) * zoom
+        rows.append(gen)
+        if over:
+            capped.append(n)
+        # 向上取整，不能四舍五入 —— 舍小了整批图都不够用
+        tiers.setdefault(int(-(-gen // 100) * 100), []).append(n)
+        note = ("  << 被 PREP(%d) 卡住：降 z 或抬 PREP" % PREP_SHORT if over
+                else ("  (细节镜)" if n in DETAIL_SHOTS else ""))
+        print("  镜%-3d %s  z最紧 %.2f  pp %.2f  需要短边(高) %4.0f  出图 %4.0f x %4.0f%s"
+              % (n, "静帧" if is_static(n) else "运镜", z, pp_target(n), need,
+                 gen * ratio, gen, note))
+    print("")
+    print("=== 分档（出图任务书按这个写）===")
+    for k in sorted(tiers, reverse=True):
+        print("  %4d x %4d   %2d 镜：%s" % (k * ratio, k, len(tiers[k]),
+                                            ", ".join(str(i) for i in tiers[k])))
+    if capped:
+        print("")
+        print("  !! 镜 %s 的 z 超出 PREP 的能力：prep 把源图压到 %d，"
+              "再大的源图也补不回来" % (", ".join(str(i) for i in capped), PREP_SHORT))
+    print("")
+    print("  上面是**裁成 16:9 之后**的高要求，已按 CLIPS 的 zoom 折回。")
 
 
 def xf(i):
@@ -909,9 +981,11 @@ def cover():
 
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if what in ("prep", "probe", "trace", "still", "measure", "cover", "motion"):
+    if what in ("prep", "probe", "trace", "still", "measure", "cover", "motion",
+                "budget"):
         {"prep": prep, "probe": probe, "trace": trace, "still": still,
-         "measure": measure, "cover": cover, "motion": motion}[what]()
+         "measure": measure, "cover": cover, "motion": motion,
+         "budget": budget}[what]()
         sys.exit(0)
     ok = check_timeline()
     if what == "check":
