@@ -2,9 +2,14 @@
 """
 古诗词短片 · 横版构建脚本模板 (1920x1080)
 
-命令与竖版一致：check / prep / probe / trace / a / b / c / still / measure / cover / all
+命令：check / prep / probe / trace / a / motion / b / c / still / measure / cover / all
 先跑 check，再跑 prep（自带 probe）和 trace，最后 a→b→c，
-交付前 still（用眼睛看）和 measure（用数字量）都要跑。
+交付前 still（用眼睛看）、measure（量字幕底）、motion（量运动）都要跑。
+
+三条开工前定死的轴（每条都有对应自检）：
+  MOTION      运镜还是静帧，可逐镜覆盖 dict(..., motion="static")
+  MUSIC_MODE  生成 / 公版 / 没有（横版没有音效轨，'none' = 成片无音轨）
+  IMG_SOURCE  按任务书生成 / 自己找（找来的必须登记来源，check 会拦）
 
 三个测量命令量的是**不同区域**，不能互相替代：
   probe  整张图 / 整条字幕带  —— 定位问题，报警常是误报
@@ -55,10 +60,32 @@ FADE_COLOR = "black"
 
 SRC = os.path.join("..", "素材")
 FONTS = os.path.join("..", "fonts")
+
+# ================= 运动：运镜还是静帧 =================
+# 全片默认，任何一镜可写 motion="static" / "kenburns" 覆盖。
+# **静帧要显式声明，不能靠"z 起止写成一样"隐式表示** —— 那样的话"写了位移却
+# 没给足缩放"这个最贵的 bug 就变成一个合法配置，check 再也拦不住它。
+# check_moves 两边都拦（标 static 却有行程 / 标 kenburns 却原地不动），
+# 渲完 motion 命令在成片上反过来验。
+MOTION = "kenburns"
+MOTION_MIN = 4.0            # 运镜镜的下限：渲出来的首尾帧平均绝对差
+MOTION_STATIC_MAX = 0.6     # 静帧镜的上限：真静止应该接近 0
+
+# ================= 配乐：生成 / 公版 / 没有 =================
+# 见 references/music.md。**横版模板没有音效轨也没有旁白**，所以
+# MUSIC_MODE='none' 在这里意味着成片完全无声（会出一条无音轨的 mp4）。
+MUSIC_MODE = "generated"    # "generated" | "public_domain" | "none"
 MUSIC = os.path.join(SRC, "00_music_main.mp3")
 MUSIC_GAIN = -9.0
 MUSIC_IN = 0.0              # 用 ebur128 量出配乐进入正常体量的时刻，从那里切入
 MUSIC_FADE_IN = 0.8
+# 公版录音必填：**录音权和作品权是两回事**，check 会拦。
+MUSIC_CREDIT = dict(work="", performer="", source="", license="", url="")
+
+# ================= 素材来源：任务书生成 / 自己找 =================
+# "found" 时每张必须登记来源与授权，check 会拦。见 references/sourcing.md。
+IMG_SOURCE = "generated"    # "generated" | "found"
+CREDITS = {}                # {"img01.png": dict(title=, holder=, source=, license=, url=)}
 
 TARGET_I, TARGET_TP = -15.0, -1.5
 READ_PER_CHAR, READ_BASE = 0.45, 1.8
@@ -107,6 +134,19 @@ def run(args, desc):
     print("\n>>> " + desc)
     if subprocess.run(args).returncode != 0:
         sys.exit("!!! 失败: " + desc)
+
+
+def motion_of(n):
+    """镜 n(1 起) 是运镜还是静帧。逐镜的 motion= 覆盖全局 MOTION。"""
+    return SHOTS[n - 1].get("motion", MOTION)
+
+
+def is_static(n):
+    return motion_of(n) == "static"
+
+
+def music_on():
+    return MUSIC_MODE != "none"
 
 
 def xf(i):
@@ -332,11 +372,160 @@ def check_moves():
                                % (i, w, ax, v, z, lo, hi))
         want = abs(s["f1"][1] - s["f0"][1]) + abs(s["f1"][0] - s["f0"][0])
         zmax = max(z0, z1); can = max(0.0, 1 - 1 / zmax)
+
+        # 运动方式和参数必须互相印证，不去猜哪个是真的
+        m = motion_of(i)
+        moving = want > 1e-6 or abs(z1 - z0) > 1e-6
+        if m not in ("kenburns", "static"):
+            bad.append("镜 %d 的 motion=%r 不认识，只能是 'kenburns' 或 'static'" % (i, m))
+        elif m == "static" and moving:
+            bad.append("镜 %d 标了 static 却写了行程 (z %.2f→%.2f, f %s→%s) —— "
+                       "静帧镜的 z 和 f 起止必须完全一致"
+                       % (i, z0, z1, s["f0"], s["f1"]))
+        elif m == "kenburns" and not moving:
+            bad.append("镜 %d 标了 kenburns 却起止完全一样，渲出来就是一张静帧 —— "
+                       "要么给它行程，要么老实标 motion='static'" % i)
+
         if want > can + 1e-6:
             bad.append("镜 %d 想走 %.0f%% 行程，但 z 最大只到 %.2f，实际只能走 %.0f%% "
                        "(需要 z>=%.2f)" % (i, want * 100, zmax, can * 100,
                                            1 / max(1e-6, 1 - want)))
     return bad
+
+
+def selftest_moves():
+    """回归：每一类错误各造一个，检查必须报警。只验"现在通过"等于没验。"""
+    if not SHOTS:
+        return True
+    keep = [dict(s) for s in SHOTS]
+    base = len(check_moves())
+
+    def case(name, i, patch):
+        SHOTS[i - 1] = dict(keep[i - 1], **patch)
+        n = len(check_moves())
+        SHOTS[i - 1] = dict(keep[i - 1])
+        print("回归自测: %-24s 多报 %d 条 —— %s"
+              % (name, n - base, "对" if n > base else "**检查失效了**"))
+        return n > base
+
+    moving = next((i for i, s in enumerate(SHOTS, 1)
+                   if abs(s["f1"][0] - s["f0"][0]) + abs(s["f1"][1] - s["f0"][1]) > 1e-6
+                   or abs(s["z"][1] - s["z"][0]) > 1e-6), None)
+    ok = []
+    if moving:
+        ok.append(case("有行程的镜标成 static", moving, dict(motion="static")))
+    z, f = keep[0]["z"][0], keep[0]["f0"]
+    ok.append(case("原地不动的镜标成 kenburns", 1,
+                   dict(motion="kenburns", z=(z, z), f0=f, f1=f)))
+    ok.append(case("motion 写错字", 1, dict(motion="ken_burns")))
+    print("          当前配置 %d 条 —— %s" % (base, "对" if base == 0 else "有问题要处理"))
+    return all(ok) and len(check_moves()) == base
+
+
+def check_credits():
+    """素材来源与授权的登记。**只对"自己找来的"素材是硬约束。**
+
+    CC-BY 要求署名；"公有领域"对**作品**成立不等于对**某一次录音或翻拍**成立。
+    这类错误成片、审核、发布都不会拦，要到被投诉才知道，所以放进 check。
+    """
+    bad = []
+    need = ("title", "holder", "source", "license", "url")
+    if IMG_SOURCE not in ("generated", "found"):
+        bad.append("IMG_SOURCE=%r 不认识，只能是 'generated' 或 'found'" % IMG_SOURCE)
+    elif IMG_SOURCE == "found":
+        for c in CLIPS:
+            e = CREDITS.get(c["src"])
+            if not e:
+                bad.append("素材 %s 没登记来源（IMG_SOURCE='found' 时每张都要）" % c["src"])
+            else:
+                miss = [k for k in need if not str(e.get(k, "")).strip()]
+                if miss:
+                    bad.append("素材 %s 的来源登记缺 %s" % (c["src"], "/".join(miss)))
+    if MUSIC_MODE not in ("generated", "public_domain", "none"):
+        bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'none'"
+                   % MUSIC_MODE)
+    elif MUSIC_MODE == "public_domain":
+        miss = [k for k in ("work", "performer", "source", "license", "url")
+                if not str(MUSIC_CREDIT.get(k, "")).strip()]
+        if miss:
+            bad.append("公版配乐的 MUSIC_CREDIT 缺 %s —— **录音权和作品权是两回事**"
+                       % "/".join(miss))
+    return bad
+
+
+def selftest_credits():
+    """回归：把登记抽掉，检查必须报警。"""
+    global IMG_SOURCE, MUSIC_MODE, CREDITS, MUSIC_CREDIT
+    ki, km, kc, kmc = IMG_SOURCE, MUSIC_MODE, CREDITS, MUSIC_CREDIT
+    base = len(check_credits())
+    IMG_SOURCE, CREDITS = "found", {}
+    a = len(check_credits()) > base
+    IMG_SOURCE, CREDITS = ki, kc
+    MUSIC_MODE, MUSIC_CREDIT = "public_domain", dict(work="", performer="",
+                                                     source="", license="", url="")
+    b = len(check_credits()) > base
+    MUSIC_MODE, MUSIC_CREDIT = km, kmc
+    print("回归自测: 素材标 found 但没登记来源 —— %s" % ("对" if a else "**检查失效了**"))
+    print("          配乐标 public_domain 但没填授权 —— %s" % ("对" if b else "**检查失效了**"))
+    return a and b
+
+
+def motion():
+    """量每一镜**渲出来**的首尾帧差：运镜镜要看得出动，静帧镜要真的不动。
+
+    trace 的落幅平坦度是出图阶段的筛子，对暗调图天生爱误报；真正要紧的是
+    这一镜从头走到尾画面变了多少 —— 那只能在 shots/ 上量。
+    静帧镜反过来判：标了 static 却在动，和运镜镜不动一样是错。
+    读不出的镜头**不算通过** —— 跳过之后照样打印"全部对得上"就又造了一个
+    不会报警的检查。
+    """
+    if not os.path.isdir("shots"):
+        sys.exit("!!! 还没有 shots/，先跑 a")
+    GW, GH = 171, 96
+
+    def frame(f, t):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.3f" % t, "-i", f,
+                              "-frames:v", "1", "-vf",
+                              "scale=%d:%d:flags=area,format=gray" % (GW, GH),
+                              "-f", "rawvideo", "-"], capture_output=True).stdout
+        return raw if len(raw) == GW * GH else None
+
+    print("\n=== 运动实测（渲出来的首尾帧差）===")
+    print("    运镜镜判据 均差 >= %.1f 级；静帧镜判据 均差 <= %.1f 级"
+          % (MOTION_MIN, MOTION_STATIC_MAX))
+    bad, drift, skipped, n_static = [], [], [], 0
+    for i, s in enumerate(SHOTS, 1):
+        f = "shots/shot%02d.mp4" % i
+        if not os.path.exists(f):
+            print("  镜%-3d (未渲染)" % i); skipped.append(i); continue
+        a, b = frame(f, 0.05), frame(f, max(0.1, s["dur"] - 0.1))
+        if a is None or b is None:
+            print("  镜%-3d (读不出帧，可能还在渲)" % i); skipped.append(i); continue
+        d = sorted(abs(a[k] - b[k]) for k in range(GW * GH))
+        mean = sum(d) / len(d)
+        flag, how = "", "静帧" if is_static(i) else "运镜"
+        if is_static(i):
+            n_static += 1
+            if mean > MOTION_STATIC_MAX:
+                flag = "  << 标了 static 却在动"
+                drift.append(i)
+        elif mean < MOTION_MIN:
+            flag = "  << 肉眼看不出在动，加大 z 跨度或换一张有结构的图"
+            bad.append(i)
+        print("  镜%-3d %-18s %s 均差 %5.1f  中位 %3d  p90 %3d  最大 %3d%s"
+              % (i, CLIPS[i - 1]["src"][:18], how, mean, d[len(d) // 2],
+                 d[int(len(d) * 0.9)], d[-1], flag))
+    if bad:
+        print("\n  %d 镜运镜看不出来: %s" % (len(bad), ", ".join(str(i) for i in bad)))
+    if drift:
+        print("\n  %d 镜标了静帧却在动: %s" % (len(drift), ", ".join(str(i) for i in drift)))
+    if skipped:
+        print("\n  !! %d 镜没量到: %s —— **不算通过**，渲完再跑一次"
+              % (len(skipped), ", ".join(str(i) for i in skipped)))
+    if not bad and not drift and not skipped:
+        print("\n  %d 镜全部对得上（运镜 %d 镜看得出动，静帧 %d 镜真的没动）。"
+              % (len(SHOTS), len(SHOTS) - n_static, n_static))
+    return not bad and not drift and not skipped
 
 
 def check_timeline():
@@ -357,7 +546,10 @@ def check_timeline():
     for c in CLIPS:
         if not os.path.exists(os.path.join(SRC, c["src"])):
             bad.append("缺素材: " + c["src"])
-    if not os.path.exists(MUSIC):
+    if not music_on():
+        print("配乐: 无（MUSIC_MODE='none'）—— 横版模板没有音效轨也没有旁白，"
+              "所以成片会是一条**无音轨**的 mp4")
+    elif not os.path.exists(MUSIC):
         warn.append("音乐还没就位")
     else:
         p = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
@@ -369,20 +561,34 @@ def check_timeline():
                 bad.append("音乐不够长: 从 %.1fs 切入需要到 %.1fs，全曲只有 %.1fs"
                            % (MUSIC_IN, need, mdur))
             else:
-                print("音乐: 全曲 %.1fs，从 %.1fs 切入，余 %.1fs"
-                      % (mdur, MUSIC_IN, mdur - need))
+                print("配乐(%s): 全曲 %.1fs，从 %.1fs 切入，余 %.1fs"
+                      % ("生成" if MUSIC_MODE == "generated" else "公版",
+                         mdur, MUSIC_IN, mdur - need))
             # 切入余地 = 全曲 - 片长。生成的曲子几乎一定带一段爬坡，余地不够就躲不开。
             # 实测：177.9s 的曲子对 148.2s 的片子只剩 29.6s 余地，怎么挪都有要紧的
             # 落点撞进谷里；换成 245.1s(余 96.9s)之后同一套判据立刻挑得出好点。
-            if mdur < total * 1.6:
+            # 公版录音通常远长于片长，这条警不适用。
+            if MUSIC_MODE == "generated" and mdur < total * 1.6:
                 warn.append("音乐只比片长多 %.0fs（不到片长的 0.6 倍），切入点几乎没得挑。"
                             "下次生成时直接要 >= 片长 x 2.5 的时长" % (mdur - total))
+            if MUSIC_MODE == "public_domain":
+                warn.append("公版录音：切入点定完要听首尾（乐句边界量不出来），"
+                            "底噪和带宽见 references/music.md")
         except ValueError:
             warn.append("读不出音乐时长")
     bad += check_xfades()
     bad += check_moves()
+    bad += check_credits()
+    ns = sum(1 for n in range(1, len(SHOTS) + 1) if is_static(n))
     print("片长 %.1fs (%d:%04.1f)  镜头 %d  字幕 %d 条  %dx%d"
           % (total, total // 60, total % 60, len(SHOTS), len(LINES), W, H))
+    print("运动: %s（静帧 %d 镜 / 运镜 %d 镜）  配乐: %s  素材: %s"
+          % ({"kenburns": "运镜", "static": "静帧"}.get(MOTION, MOTION),
+             ns, len(SHOTS) - ns,
+             {"generated": "生成", "public_domain": "公版", "none": "无"}.get(MUSIC_MODE),
+             {"generated": "按任务书生成", "found": "自己找的"}.get(IMG_SOURCE)))
+    selftest_moves()
+    selftest_credits()
     print("转场落点: " + "  ".join("%.1f" % c for c in cuts))
     print("正文停留: " + "  ".join("%.1f" % (e - s) for s, e, _, t in LINES if t == "M"))
     for w in warn:
@@ -396,24 +602,43 @@ def check_timeline():
     return not bad
 
 
+def static_vf(s):
+    """静帧镜的滤镜链：按 z/f0 裁一个固定取景窗，缩到成片尺寸，不动。
+
+    取景算法和 zoompan 一致（窗宽高各 1/z、窗心在 f、clip 在图内），
+    否则 trace 反查的位置会和成片对不上。实测两条路径横向完全对齐、
+    纵向差约半个像素（各自在 PREP / UP 尺度上取整），远细于 trace 的网格。
+    """
+    z, (fx_, fy_) = s["z"][0], s["f0"]
+    crop = ("crop=w='iw/%.6f':h='ih/%.6f':"
+            "x='clip(%.6f*iw-out_w/2,0,iw-out_w)':"
+            "y='clip(%.6f*ih-out_h/2,0,ih-out_h)'" % (z, z, fx_, fy_))
+    return (crop + ",scale=%d:%d:flags=lanczos," % (W, H)
+            + "vignette=PI/5,setsar=1,format=yuv420p")
+
+
 def pass_a():
     os.makedirs("shots", exist_ok=True)
     for i, s in enumerate(SHOTS, 1):
-        d = max(1, int(round(s["dur"] * FPS)) - 1)
-        z0, z1 = s["z"]; (x0, y0), (x1, y1) = s["f0"], s["f1"]
-        ze = "%.6f+(%.6f)*on/%d" % (z0, z1 - z0, d)
-        xe = ("max(0,min(iw-iw/zoom,(%.6f+(%.6f)*on/%d)*iw-(iw/zoom)/2))"
-              % (x0, x1 - x0, d))
-        ye = ("max(0,min(ih-ih/zoom,(%.6f+(%.6f)*on/%d)*ih-(ih/zoom)/2))"
-              % (y0, y1 - y0, d))
-        vf = ("scale=%d:%d:flags=lanczos," % UP
-              + "zoompan=z='%s':x='%s':y='%s':d=1:s=%dx%d:fps=%d,"
-                % (ze, xe, ye, W, H, FPS) + "vignette=PI/5,setsar=1,format=yuv420p")
+        if is_static(i):
+            vf, how = static_vf(s), "静帧"
+        else:
+            d = max(1, int(round(s["dur"] * FPS)) - 1)
+            z0, z1 = s["z"]; (x0, y0), (x1, y1) = s["f0"], s["f1"]
+            ze = "%.6f+(%.6f)*on/%d" % (z0, z1 - z0, d)
+            xe = ("max(0,min(iw-iw/zoom,(%.6f+(%.6f)*on/%d)*iw-(iw/zoom)/2))"
+                  % (x0, x1 - x0, d))
+            ye = ("max(0,min(ih-ih/zoom,(%.6f+(%.6f)*on/%d)*ih-(ih/zoom)/2))"
+                  % (y0, y1 - y0, d))
+            vf = ("scale=%d:%d:flags=lanczos," % UP
+                  + "zoompan=z='%s':x='%s':y='%s':d=1:s=%dx%d:fps=%d,"
+                    % (ze, xe, ye, W, H, FPS) + "vignette=PI/5,setsar=1,format=yuv420p")
+            how = "运镜"
         run(["ffmpeg", "-y", "-v", "error", "-stats", "-loop", "1",
              "-framerate", str(FPS), "-t", "%.3f" % s["dur"],
              "-i", "img%02d.png" % i, "-vf", vf, "-c:v", "libx264", "-crf", "12",
              "-preset", "medium", "-pix_fmt", "yuv420p", "shots/shot%02d.mp4" % i],
-            "镜头 %d/%d  %.1fs" % (i, len(SHOTS), s["dur"]))
+            "镜头 %d/%d  %.1fs  %s" % (i, len(SHOTS), s["dur"], how))
 
 
 def pass_b():
@@ -532,6 +757,13 @@ def _chain(tag="[0:v]", scrim=False):
 
 def build_audio():
     total = total_len()
+    if not music_on():
+        # 没有音乐，而横版模板没有别的音源 —— **不产出静音轨**：
+        # 静音轨会让 loudnorm 量到 −70、再把它乘上天文数字的增益去够 −15。
+        print("   MUSIC_MODE='none' 且横版没有音效轨 —— 不生成 mix.wav，成片无音轨")
+        if os.path.exists("mix.wav"):
+            os.remove("mix.wav")
+        return False
     run(["ffmpeg", "-y", "-v", "error", "-stats", "-i", MUSIC, "-filter_complex",
          "[0:a]aresample=48000,aformat=fltp:cl=stereo,"
          "atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS,volume=%.1fdB,"
@@ -540,6 +772,7 @@ def build_audio():
          % (MUSIC_IN, MUSIC_IN + total, MUSIC_GAIN, total, MUSIC_FADE_IN, total - 6),
          "-map", "[a]", "-c:a", "pcm_s24le", "-t", "%.3f" % total, "mix.wav"],
         "混音(从 %.0fs 切入)" % MUSIC_IN)
+    return True
 
 
 def measure_loudness(path):
@@ -554,24 +787,30 @@ def measure_loudness(path):
 
 
 def pass_c():
-    make_ass(); has = make_scrim(); total = total_len(); build_audio()
-    m = measure_loudness("mix.wav")
-    norm = ("loudnorm=I=%.1f:TP=%.1f:LRA=%s:measured_I=%s:measured_TP=%s:"
-            "measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true,aresample=48000"
-            % (TARGET_I, TARGET_TP, m["input_lra"], m["input_i"], m["input_tp"],
-               m["input_lra"], m["input_thresh"], m["target_offset"]))
-    ins = ["-i", "master.mp4"] + (["-loop", "1", "-i", "scrim.png"] if has else []) \
-        + ["-i", "mix.wav"]
-    fc = ["[0:v]noise=alls=3:allf=t+u[g]", _chain("[g]", has),
-          "[%d:a]" % (2 if has else 1) + norm + "[a]"]
+    make_ass(); has = make_scrim(); total = total_len()
+    got_audio = build_audio()
+    ins = ["-i", "master.mp4"] + (["-loop", "1", "-i", "scrim.png"] if has else [])
+    fc = ["[0:v]noise=alls=3:allf=t+u[g]", _chain("[g]", has)]
+    amap, acodec, how = [], [], "**无音轨**"
+    if got_audio:
+        m = measure_loudness("mix.wav")
+        norm = ("loudnorm=I=%.1f:TP=%.1f:LRA=%s:measured_I=%s:measured_TP=%s:"
+                "measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true,aresample=48000"
+                % (TARGET_I, TARGET_TP, m["input_lra"], m["input_i"], m["input_tp"],
+                   m["input_lra"], m["input_thresh"], m["target_offset"]))
+        ins += ["-i", "mix.wav"]
+        fc.append("[%d:a]" % (2 if has else 1) + norm + "[a]")
+        amap, acodec = ["-map", "[a]"], ["-c:a", "aac", "-b:a", "320k"]
+        how = "归一到 %.1f LUFS" % TARGET_I
     out = os.path.join("..", OUT_NAME)
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
-        + ["-filter_complex", ";".join(fc), "-map", "[v]", "-map", "[a]",
-           "-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p",
-           "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart",
-           "-t", "%.3f" % total, out],
-        "归一到 %.1f LUFS + 烧字幕 -> %s" % (TARGET_I, out))
+        + ["-filter_complex", ";".join(fc), "-map", "[v]"] + amap
+        + ["-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p"]
+        + acodec + ["-movflags", "+faststart", "-t", "%.3f" % total, out],
+        "%s + 烧字幕 -> %s" % (how, out))
     print("\n完成: " + out)
+    if not got_audio:
+        print("这一支**没有音轨**。如果不是有意的，检查 MUSIC_MODE。")
 
 
 def still():
@@ -670,9 +909,9 @@ def cover():
 
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if what in ("prep", "probe", "trace", "still", "measure", "cover"):
+    if what in ("prep", "probe", "trace", "still", "measure", "cover", "motion"):
         {"prep": prep, "probe": probe, "trace": trace, "still": still,
-         "measure": measure, "cover": cover}[what]()
+         "measure": measure, "cover": cover, "motion": motion}[what]()
         sys.exit(0)
     ok = check_timeline()
     if what == "check":
