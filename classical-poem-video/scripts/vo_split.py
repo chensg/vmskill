@@ -131,6 +131,28 @@ def silences(path, thr, mind):
     return out
 
 
+def merge_blips(sils, blip=0.06):
+    """把被"零长度有声"打断的相邻静音并回去。
+
+    **这是真录音才有的坑，合成的测试文件不会有。** 实测一条真人朗读里，
+    ffmpeg 在 3.587664 报 silence_end、又在 3.587778 报 silence_start ——
+    中间 0.1 毫秒"有声"，是一声细微的咔哒或唇音。于是一段 2.32 秒的停顿
+    被报成 0.63 + 1.22 + 0.47 三截。
+
+    后果很重：整个切分靠的是"取最长的 N−1 处停顿"，而一段真正的长停顿
+    被打碎之后，它的每一截都可能短于句内的换气 —— 排序整个失真。
+
+    所以先把间隔小于 blip 的相邻静音并起来，再谈长短。
+    """
+    out = []
+    for a, b in sils:
+        if out and a - out[-1][1] < blip:
+            out[-1] = (out[-1][0], b)
+        else:
+            out.append((a, b))
+    return out
+
+
 def interior(sils, total, edge=0.05):
     """去掉贴着头尾的那两段 —— 它们是录音的前后留白，不是句间停顿。"""
     return [(a, b) for a, b in sils if a > edge and b < total - edge]
@@ -141,7 +163,7 @@ def pick(path, n_lines):
     total = duration(path)
     need = n_lines - 1
     for thr, mind in TRIES:
-        sils = silences(path, thr, mind)
+        sils = merge_blips(silences(path, thr, mind))
         cand = interior(sils, total)
         if len(cand) >= need:
             # **按时长取最长的 need 个**：句内换气一定比句间停顿短，
@@ -184,7 +206,7 @@ def n_chars(s):
     return sum(1 for c in s if c not in PUNCT)
 
 
-def report(path, texts, segs, level, ncand):
+def report(path, texts, segs, level, ncand, skip=()):
     print("")
     print("=== 切点 ===")
     if level:
@@ -200,22 +222,28 @@ def report(path, texts, segs, level, ncand):
         if pace:
             paces.append(pace)
     med = sorted(paces)[len(paces) // 2] if paces else None
-    resid, mad, fit = fit_residuals(rows)
+    resid, mad, fit = fit_residuals(rows, skip)
     batch_bad = False
     print("")
     if fit:
         print("  拟合：时长 ≈ %.2f×字数 + %.2f   中位绝对残差 %.2fs"
               % (fit[0], fit[1], mad))
     print("  段  起      止      时长   字数  字/秒   残差")
-    bad = []
+    bad, lone = [], []
     for k, (i, a, b, d, t, c, pace) in enumerate(rows):
         flag = ""
-        if resid is not None and mad > 1e-6:
+        if resid is not None and resid[k] is None:
+            show = "（不进拟合）"
+        elif resid is not None and mad > 1e-6:
             r = resid[k]
             show = "%+.2f(%.1fx)" % (r, abs(r) / mad)
             if abs(r) > RESID_K * mad and abs(r) > RESID_MIN:
-                flag = "  << 离群，多半切错了"
-                bad.append(i)
+                if paired(resid, k):
+                    flag = "  << 离群，且邻段反向 —— **多半真的切错了**"
+                    bad.append(i)
+                else:
+                    flag = "  << 偏差大但**孤立**（邻段没有反向），多半是朗读处理"
+                    lone.append(i)
         else:
             rel = (pace / med) if (pace and med) else None
             show = "%.2f" % rel if rel else "—"
@@ -251,21 +279,55 @@ def report(path, texts, segs, level, ncand):
         print("  !! %d 段离群：%s" % (len(bad), ", ".join(str(i) for i in bad)))
         print("     多半是两句被并成一段、或者从句子中间切断了。")
         print("     用 --cuts 手工指定切点重来，或者换个检测档位。")
-    elif not batch_bad:
+    elif not batch_bad and not lone:
         print("")
         print("  没有离群段，整体拟合也成立。")
+    if lone and not bad:
+        print("")
+        print("  %d 段偏差大但孤立：%s" % (len(lone), ", ".join(str(i) for i in lone)))
+        print("     **切错一刀会把时间从一段搬到邻段，所以一定成对出现、一正一负。**")
+        print("     这几段的邻居没有反向偏差，所以更像是朗读本身的处理")
+        print("     （末句渐慢、某句加重最常见）。不拦，但值得听一遍那一段。")
     return segs, (bad or ([0] if batch_bad else []))
 
 
-def fit_residuals(rows):
+def paired(resid, k, frac=0.5):
+    """段 k 的偏差**是不是结构性切错**：看相邻段有没有反号的、量级相当的偏差。
+
+    这一条来自一个物理事实：**总时长是固定的**。切错一刀是把时间从一段搬到
+    相邻那一段，所以结构性错误一定成对出现、一正一负。而朗读本身的处理
+    （末句渐慢、某句加重）是**孤立的**单向偏差，邻居不动。
+
+    实测的两种情形正好是这两个形状：
+      - 把「蓦然回首」并进末句 -> 那一段 +1.28s，而它本该独立的邻居消失了
+      - 「恰似一江春水向东流」读慢了 -> 那一段 +1.52s，邻居残差只有 +0.01s
+
+    分不开的时候宁可说"分不开"，也不要靠调阈值把某一种压下去 ——
+    两者的量级本来就一样（都是 1~2 秒），**光看大小是不可能分开的**。
+    """
+    r = resid[k]
+    for j in (k - 1, k + 1):
+        if 0 <= j < len(resid) and resid[j] is not None:
+            if r * resid[j] < 0 and abs(resid[j]) >= frac * abs(r):
+                return True
+    return False
+
+
+def fit_residuals(rows, skip=()):
     """按 `时长 ≈ a×字数 + b` 拟合，返回 (残差, 中位绝对残差, (a,b))。
 
     用带截距的线性拟合而不是"字/秒"：截距吸收每句的固定开销（起音、换气、
     句末余韵），短句才不会天然显得慢。理由见 RESID_K 处的注释。
+
+    `skip` 是**不参与拟合**的段号（1 起）。**朗读带标题和作者时必须用它**：
+    标题/作者是另一种说话方式，实测 1.8~2.9 字/秒，而诗正文是 1.2~1.6 ——
+    混进同一个拟合会把斜率从 0.64 拽到 0.76，直接顶出合理区间，
+    于是一个完全正确的切分被判成"整体对不上"。（《虞美人》那条真人朗读踩的）
+    被 skip 的段照切照显示，只是不进拟合、也不判离群。
     """
     # **残差要逐行对齐**：过滤之后按下标取会错位，而错位的残差比没有残差更糟
     use = [(k, c, d) for k, (_, _, _, d, _, c, _) in enumerate(rows)
-           if c > 0 and d > 0.01]
+           if c > 0 and d > 0.01 and (k + 1) not in skip]
     if len(use) < MIN_FIT or len({c for _, c, _ in use}) < 2:
         return None, 0.0, None
     n = len(use)
@@ -296,7 +358,8 @@ def cmd_analyze(a):
         print("   可能是：朗读连得太紧（句间没有明显停顿）、底噪太高、")
         print("   或者 --n 给多了。用 `--cuts` 手工指定切点。")
         sys.exit(1)
-    report(a.mp3, texts, bounds_from(gaps, total, edges, a.head_pad, a.tail_pad), level, ncand)
+    report(a.mp3, texts, bounds_from(gaps, total, edges, a.head_pad, a.tail_pad),
+           level, ncand, _skip(a))
     print("")
     print("  确认无误就跑 split。")
 
@@ -320,7 +383,7 @@ def cmd_split(a):
         if gaps is None:
             sys.exit("!!! 凑不够切点，先跑 analyze 看看")
         segs = bounds_from(gaps, total, edges, a.head_pad, a.tail_pad)
-    segs, bad = report(a.mp3, texts, segs, level, ncand)
+    segs, bad = report(a.mp3, texts, segs, level, ncand, _skip(a))
     if bad and not a.force:
         sys.exit("\n!!! 有离群段，没有写文件。改 --cuts，或者确认没问题后加 --force")
     os.makedirs(a.out, exist_ok=True)
@@ -342,6 +405,10 @@ def cmd_split(a):
     print("  2. `python make_v.py vosync` —— 打落点表，看每句的出声点、余量、语速")
     print("  3. `python make_v.py check` —— 验不跨转场、且在字幕消失前读完")
     print("  4. 只重跑 `c`（诵读只进混音和字幕那一趟，a/b 不受影响）")
+
+
+def _skip(a):
+    return {int(x) for x in (a.fit_skip or "").split(",") if x.strip()}
 
 
 def get_texts(a):
@@ -373,6 +440,9 @@ if __name__ == "__main__":
                        help="每段末尾留多少秒余韵（默认 0.20）")
         s.add_argument("--head-pad", type=float, default=0.12,
                        help="每段开头留多少秒（默认 0.12，必须小于 VO_LEAD）")
+        s.add_argument("--fit-skip", default="",
+                       help="不参与拟合的段号，逗号分隔。**朗读带标题/作者时要用**："
+                            "它们的语速和正文不是一回事，混进拟合会把斜率带偏")
         s.add_argument("--force", action="store_true", help="有离群段也照切")
     a = p.parse_args()
     if a.cmd == "split":

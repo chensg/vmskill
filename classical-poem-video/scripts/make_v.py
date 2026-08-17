@@ -1055,16 +1055,22 @@ def check_fx():
     参数上完全看不出来，只有抽静帧才发现。这里至少把窗口关系拦住。
     """
     bad, total = [], total_len()
-    for name, t0, dur in (("残雨", RAIN_T0, RAIN_DUR), ("落叶", LEAF_T0, LEAF_DUR)):
+    # **关掉的层（DUR<=0）整条跳过。** 不跳的话 RAIN_OUT >= RAIN_DUR 在
+    # 0 >= 0 上成立，一个没有粒子的片子会被一条不适用的检查拦住。
+    layers = [(n, t0, d) for n, t0, d in
+              (("残雨", RAIN_T0, RAIN_DUR), ("落叶", LEAF_T0, LEAF_DUR)) if d > 0]
+    if not layers:
+        print("   粒子层：这一支没有")
+    for name, t0, dur in layers:
         if t0 < 0 or t0 + dur > total + 1e-6:
             bad.append("%s层 %.1f~%.1fs 超出片长 %.1fs" % (name, t0, t0 + dur, total))
         print("   %s层 %.1f~%.1fs = 镜 %d 起，到镜 %d 收"
               % (name, t0, t0 + dur, shot_of(t0 + 0.05), shot_of(t0 + dur - 0.05)))
-    if RAIN_OUT >= RAIN_DUR:
+    if RAIN_DUR > 0 and RAIN_OUT >= RAIN_DUR:
         bad.append("残雨淡出起点 %.1f 超过了它自己的长度 %.1f" % (RAIN_OUT, RAIN_DUR))
     # 残雨必须在「骤雨初歇」四个字落下来之前就已经在淡出，也必须在那一句结束前收干净 ——
     # 雨还在下着而字说"初歇"，是这一支唯一一处画面能替字幕做事的地方，做反了就白做
-    xie = [(s, e) for s, e, t, y in LINES if y == "M" and "骤雨初歇" in t]
+    xie = [(s, e) for s, e, t, y in LINES if y == "M" and "骤雨初歇" in t] if RAIN_DUR > 0 else []
     for s, e in xie:
         if RAIN_T0 + RAIN_OUT > s:
             bad.append("残雨到 %.1fs 才开始淡出，晚于『骤雨初歇』出字(%.1fs)"
@@ -1073,7 +1079,7 @@ def check_fx():
             bad.append("残雨到 %.1fs 才收干净，晚于『骤雨初歇』收字(%.1fs)"
                        % (RAIN_T0 + RAIN_DUR, e))
     # 落叶必须真的盖住「更那堪，冷落清秋节」那一句
-    qiu = [(s, e) for s, e, t, y in LINES if y == "M" and "冷落清秋节" in t]
+    qiu = [(s, e) for s, e, t, y in LINES if y == "M" and "冷落清秋节" in t] if LEAF_DUR > 0 else []
     for s, e in qiu:
         if LEAF_T0 > s or LEAF_T0 + LEAF_DUR < e:
             bad.append("落叶层 %.1f~%.1fs 没盖住『冷落清秋节』那一句(%.1f~%.1fs)"
@@ -1878,9 +1884,14 @@ def vo_plan():
     """
     out = []
     for txt, f in VO:
-        hit = [(s, e) for s, e, t, y in LINES if y == "M" and t == txt]
+        # **不限于正文（style "M"）**：真人朗读常常连标题和作者一起念，
+        # 而那两条是 T / TS 样式。第一版只在 M 里找，于是标题的那一段没处放，
+        # 只能扔掉 —— 白白丢掉朗读者已经念好的东西。
+        # 挂到 T/TS 上之后，check_vo 的两条硬约束（不跨转场、字幕消失前读完）
+        # 照样适用，不用额外处理。
+        hit = [(s, e) for s, e, t, y in LINES if t == txt]
         if not hit:
-            sys.exit("!!! 诵读 %s 对不上任何一条正文字幕：%s" % (f, txt))
+            sys.exit("!!! 诵读 %s 对不上任何一条字幕：%s" % (f, txt))
         s, e = hit[0]
         # 按出声点排：文件带多少头部静音，起点就往前提多少
         out.append((txt, f, max(s, s + VO_LEAD - vo_onset(f)),
