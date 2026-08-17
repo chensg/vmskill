@@ -101,6 +101,13 @@ FADE_COLOR = "black"        # 暗调实拍用黑场（前六支纸本用的是�
 # 镜头暗角。前六支是纸本画面，加了会像被烟熏过；暗调实拍里它是镜头本来就有的东西。
 # **改了这里 trace 会自动跟着变** —— 见 _vig_map()。空字符串 = 不加。
 VIGNETTE = "vignette=PI/5"
+# ---- 颗粒：**跟着画种走，不是跟着习惯走** ----
+# 暗调实拍留一点颗粒是对的（防大片暮色出色带、压掉 AI 那种过分干净的质感）；
+# 纸本画种（水墨/工笔/水彩/宋人淡设色）**一律不加** —— 纸自己有纤维纹理，
+# 叠一层噪声上去就是脏。技能文档里「纸本 → 写实要翻五处」那张表的最后一行
+# 说的就是这件事，但模板一直把 grain 写死成 True，做纸本时全靠人记得去改
+# —— 那正是"文档写了但代码不拦"的典型缺口，所以提成一个开关。
+GRAIN = True
 
 SRC = os.path.join("..", "素材")
 # 楷体 simkai.ttf。按常见位置依次找，找不到就用第一个（烧字幕时会报字体缺失）。
@@ -1062,6 +1069,51 @@ def selftest_sung():
     print("自测(唱腔): 正常排法不报，压唱句和跨镜都报得出来。")
 
 
+def check_paper():
+    """纸本画种 → 写实要翻的那五处，代码这边只拦得住三处，就把这三处拦住。
+
+    技能文档里那张「纸本 vs 暗调写实」的表列了五处要翻：字幕极性、scrim、
+    淡入淡出色、vignette/颗粒、出图任务书的留白还是留暗。
+    **前两处和最后一处代码管不了**（极性本来就是配置项，任务书在文档里），
+    但淡场色、vignette、颗粒这三处是纯参数，照抄上一支就会错，
+    而且错了在参数表上一点看不出来 —— 正是该由 check 兜住的那一类。
+
+    只报提示不拦：这三样都是**看得见**的错（片头闪一下黑、纸面发灰），
+    不像留白留暗那样要到交付才发现。拦死了反而挡住有意为之的例外。
+    """
+    warn = []
+    if POLARITY == "dark_on_light":       # 浅底墨字 = 纸本
+        if GRAIN:
+            warn.append("纸本画种还开着颗粒(GRAIN=True) —— 纸自己有纤维纹理，"
+                        "叠噪声上去就是脏。改成 GRAIN=False")
+        if VIGNETTE:
+            warn.append("纸本画种还开着 vignette(%s) —— 四角压暗在纸上是"
+                        "「这张纸脏了」，不是「有氛围」" % VIGNETTE)
+        if FADE_COLOR != "white":
+            warn.append("纸本画种的淡入淡出用的是 %s 场 —— 浅底片子首尾闪黑，"
+                        "改成 white" % FADE_COLOR)
+    else:                                  # 暗调写实
+        if not GRAIN:
+            warn.append("暗调写实关掉了颗粒 —— 大片暮色容易出色带，"
+                        "而且 AI 生成的实拍质感过分干净。确认是有意的")
+        if FADE_COLOR == "white":
+            warn.append("暗调片子用白场淡入淡出 —— 首尾会闪白，改成 black")
+    return warn
+
+
+def selftest_paper():
+    """回归：把三处参数翻到画种的反面，检查必须逐条报出来。"""
+    global POLARITY, GRAIN, VIGNETTE, FADE_COLOR
+    kp, kg, kv, kf = POLARITY, GRAIN, VIGNETTE, FADE_COLOR
+    base = len(check_paper())
+    POLARITY, GRAIN, VIGNETTE, FADE_COLOR = "dark_on_light", True, "vignette=PI/5", "black"
+    n = len(check_paper())
+    POLARITY, GRAIN, VIGNETTE, FADE_COLOR = kp, kg, kv, kf
+    print("回归自测: 纸本画种照抄了写实的颗粒/vignette/黑场 —— 报 %d 条 —— %s"
+          % (n, "对" if n >= 3 else "**检查失效了**"))
+    return n >= 3
+
+
 def check_safe():
     """屏上文字有没有撞进平台的操作栏 / 顶部导航。
 
@@ -1447,6 +1499,7 @@ def check_timeline():
             warn.append("缺诵读: " + f)
     mb, mw = check_music()
     bad += mb; warn += mw
+    warn += check_paper()
     bad += check_xfades()
     bad += check_moves()
     bad += check_resolution()
@@ -1473,6 +1526,7 @@ def check_timeline():
     selftest_safe()
     selftest_moves()
     selftest_credits()
+    selftest_paper()
     if SUNG:
         selftest_sung()
     for w in warn:
@@ -2676,7 +2730,7 @@ def make_scrim():
     return True
 
 
-def video_chain(scrim, with_fx, grain=True):
+def video_chain(scrim, with_fx, grain=None):
     """master -> [轻微颗粒] -> [粒子层] -> [scrim] -> 烧字幕。
     返回 (滤镜片段列表, 额外输入参数列表, 下一个可用输入序号)。
 
@@ -2684,9 +2738,9 @@ def video_chain(scrim, with_fx, grain=True):
     一起压掉一档，而那正是它们最该被看见的地方。"""
     fd = FONTS.replace("\\", "/")
     parts, ins, cur, idx = [], [], "[0:v]", 1
-    if grain:
-        # 暗调实拍留一点颗粒是对的（纸本画面才不能加）：既防大片暮色出色带，
-        # 也把 AI 生成那种过分干净的质感压掉一点
+    if GRAIN if grain is None else grain:
+        # 暗调实拍留一点颗粒是对的（纸本画面才不能加，见 GRAIN 处的注释）：
+        # 既防大片暮色出色带，也把 AI 生成那种过分干净的质感压掉一点
         parts.append("[0:v]noise=alls=3:allf=t[g]"); cur = "[g]"
     if with_fx:
         ins += ["-i", "fx_rain.mp4", "-i", "fx_leaf.mp4"]
