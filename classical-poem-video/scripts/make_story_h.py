@@ -105,7 +105,11 @@ CLAIMS = [
 #   shot  这一句落在第几镜(1 起)
 #   pre/post  这一句前后的静默，不写就用 PRE_DEF/POST_DEF。只在要留戏的地方写：
 #             冷开场 1.2~1.6；转折句前 0.8；金句前 0.8 后 1.2
-#   est   估算秒数，**只在 mp3 还没生成时**用来先排片（中文讲述约 4.6 字/秒）
+#   est   排片用的秒数。**这一支里它已经不是估算了** —— 32 条 TTS 都生成完了，
+#         下面这些数字是 ChatCut 报的实测时长（豆包 渊博小叔 / storytelling / emotionScale 3
+#         / 默认语速）。mp3 落到本地之后跑 sync，它会用 ffprobe 重新量一遍并覆盖。
+#         **两边应该一致**（同一个文件）—— 如果 sync 量出来和这里差得多，
+#         那不是语速问题，是下载拿错了文件或者下坏了。这是个免费的完整性检查。
 #
 # 镜与镜之间的气口**不用手写** —— timeline() 会把每镜首句的 pre 抬到 GAP_PRE、
 # 末句的 post 抬到 GAP_POST。转场落在这段静默的正中，于是永远压不到字幕。
@@ -114,44 +118,44 @@ VO_DIR = "vo"
 PRE_DEF, POST_DEF = 0.18, 0.28
 GAP_PRE, GAP_POST = 0.45, 0.70
 NARR = [
-    dict(vo="VO_01a", shot=1,  pre=1.50, est=3.04, txt="你手机上那个蓝点，｜知道自己在哪。"),
-    dict(vo="VO_01b", shot=1,  est=3.26, txt="三百年前，｜地球上最强的海军做不到。"),
-    dict(vo="VO_01c", shot=1,  est=2.61, txt="解决它的人，｜是一个乡下木匠。"),
-    dict(vo="VO_02",  shot=2,  post=0.90, est=2.61, txt="他用黄铜和木头，｜做了四十年。"),
-    dict(vo="VO_03a", shot=3,  pre=0.80, est=3.91, txt="1707年10月，一支英国舰队正在返航。"),
-    dict(vo="VO_03b", shot=3,  est=4.78,
+    dict(vo="VO_01a", shot=1,  pre=1.50, est=2.83, txt="你手机上那个蓝点，｜知道自己在哪。"),
+    dict(vo="VO_01b", shot=1,  est=3.46, txt="三百年前，｜地球上最强的海军做不到。"),
+    dict(vo="VO_01c", shot=1,  est=3.05, txt="解决它的人，｜是一个乡下木匠。"),
+    dict(vo="VO_02",  shot=2,  post=0.90, est=3.05, txt="他用黄铜和木头，｜做了四十年。"),
+    dict(vo="VO_03a", shot=3,  pre=0.80, est=4.03, txt="1707年10月，一支英国舰队正在返航。"),
+    dict(vo="VO_03b", shot=3,  est=4.27,
          txt="连日的浓雾和坏天气，｜他们已经不知道自己在哪里了。"),
-    dict(vo="VO_04a", shot=4,  est=5.00,
+    dict(vo="VO_04a", shot=4,  est=5.64,
          txt="领航员们聚在一起推算，｜给出的答案是：前方是开阔海面。"),
-    dict(vo="VO_04b", shot=4,  post=0.90, est=0.87, txt="他们错了。"),
-    dict(vo="VO_05a", shot=5,  est=3.48, txt="那天夜里，舰队撞上了锡利群岛的礁石。"),
-    dict(vo="VO_05b", shot=5,  est=1.09, txt="四艘船沉了。"),
-    dict(vo="VO_05c", shot=5,  post=1.00, est=3.04, txt="上千人死在自己国家的海岸线上。"),
-    dict(vo="VO_06",  shot=6,  est=4.13, txt="不是风暴，不是敌人。｜他们只是不知道自己在哪。"),
-    dict(vo="VO_07a", shot=7,  pre=0.80, est=2.39, txt="在海上，南北方向是好办的。"),
-    dict(vo="VO_07b", shot=7,  est=3.48, txt="正午量一下太阳的高度，｜纬度就出来了。"),
-    dict(vo="VO_07c", shot=7,  est=2.39, txt="一把尺子，抬头看天，就够了。"),
-    dict(vo="VO_08a", shot=8,  est=2.39, txt="东西方向没有这样的东西。"),
-    dict(vo="VO_08b", shot=8,  post=0.80, est=3.48, txt="天上没有一条线告诉你，｜你离家有多远。"),
-    dict(vo="VO_09a", shot=9,  pre=0.80, est=1.30, txt="但有一个办法。"),
-    dict(vo="VO_09b", shot=9,  est=2.61, txt="地球在转，一小时转过十五度。"),
-    dict(vo="VO_09c", shot=9,  est=5.43,
+    dict(vo="VO_04b", shot=4,  post=0.90, est=1.63, txt="他们错了。"),
+    dict(vo="VO_05a", shot=5,  est=3.84, txt="那天夜里，舰队撞上了锡利群岛的礁石。"),
+    dict(vo="VO_05b", shot=5,  est=1.63, txt="四艘船沉了。"),
+    dict(vo="VO_05c", shot=5,  post=1.00, est=3.07, txt="上千人死在自己国家的海岸线上。"),
+    dict(vo="VO_06",  shot=6,  est=4.66, txt="不是风暴，不是敌人。｜他们只是不知道自己在哪。"),
+    dict(vo="VO_07a", shot=7,  pre=0.80, est=2.83, txt="在海上，南北方向是好办的。"),
+    dict(vo="VO_07b", shot=7,  est=3.46, txt="正午量一下太阳的高度，｜纬度就出来了。"),
+    dict(vo="VO_07c", shot=7,  est=3.22, txt="一把尺子，抬头看天，就够了。"),
+    dict(vo="VO_08a", shot=8,  est=2.26, txt="东西方向没有这样的东西。"),
+    dict(vo="VO_08b", shot=8,  post=0.80, est=4.03, txt="天上没有一条线告诉你，｜你离家有多远。"),
+    dict(vo="VO_09a", shot=9,  pre=0.80, est=1.46, txt="但有一个办法。"),
+    dict(vo="VO_09b", shot=9,  est=2.83, txt="地球在转，一小时转过十五度。"),
+    dict(vo="VO_09c", shot=9,  est=5.62,
          txt="所以如果你知道，此刻你这里是正午，｜而伦敦已经是下午三点——"),
-    dict(vo="VO_09d", shot=9,  post=1.00, est=2.39, txt="你就在伦敦以西四十五度。"),
-    dict(vo="VO_10a", shot=10, est=5.00,
+    dict(vo="VO_09d", shot=9,  post=1.00, est=2.45, txt="你就在伦敦以西四十五度。"),
+    dict(vo="VO_10a", shot=10, est=4.82,
          txt="于是经度不再是一个地理问题，｜它变成了一个计时问题。"),
-    dict(vo="VO_10b", shot=10, post=0.80, est=3.04, txt="你需要一只在海上还走得准的钟。"),
-    dict(vo="VO_11a", shot=11, est=1.74, txt="那时候没有这种钟。"),
-    dict(vo="VO_11b", shot=11, post=0.80, est=4.57,
+    dict(vo="VO_10b", shot=10, post=0.80, est=3.24, txt="你需要一只在海上还走得准的钟。"),
+    dict(vo="VO_11a", shot=11, est=1.63, txt="那时候没有这种钟。"),
+    dict(vo="VO_11b", shot=11, post=0.80, est=6.67,
          txt="摆钟在陆地上很准。｜上了船，浪一颠，冷热一变，就废了。"),
-    dict(vo="VO_12a", shot=12, pre=0.80, est=1.96, txt="牛顿在议会里作过证。"),
-    dict(vo="VO_12b", shot=12, post=1.00, est=5.87,
+    dict(vo="VO_12a", shot=12, pre=0.80, est=2.04, txt="牛顿在议会里作过证。"),
+    dict(vo="VO_12b", shot=12, post=1.00, est=5.86,
          txt="他把摆钟在海上失准的原因一条条列出来，｜然后说，这条路走不通。"),
-    dict(vo="VO_13a", shot=13, pre=0.80, est=3.48, txt="1714年，英国议会做了一件事：悬赏。"),
-    dict(vo="VO_13b", shot=13, est=3.26, txt="谁能在海上把经度定准，｜最高两万镑。"),
-    dict(vo="VO_13c", shot=13, est=3.04, txt="那是一笔｜足够让人赌上一生的钱。"),
+    dict(vo="VO_13a", shot=13, pre=0.80, est=4.03, txt="1714年，英国议会做了一件事：悬赏。"),
+    dict(vo="VO_13b", shot=13, est=3.62, txt="谁能在海上把经度定准，｜最高两万镑。"),
+    dict(vo="VO_13c", shot=13, est=2.83, txt="那是一笔｜足够让人赌上一生的钱。"),
     dict(vo="VO_14a", shot=14, pre=0.80, est=2.83, txt="所有人都抬头去看天上的月亮。"),
-    dict(vo="VO_14b", shot=14, post=1.60, est=2.61, txt="只有一个人，｜低头去看一只钟。"),
+    dict(vo="VO_14b", shot=14, post=1.60, est=2.83, txt="只有一个人，｜低头去看一只钟。"),
 ]
 
 # ---- 尾板 ----（可选。t 是相对最后一镜起点的偏移）
