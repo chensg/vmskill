@@ -147,6 +147,9 @@ MUSIC_GAIN = -10.0
 # 公版录音必填。不是形式主义：CC-BY 要求署名，而"我以为它是公版"是这条路上
 # 唯一一个交付之后才会爆的错误。credits 命令会把它写进素材来源表。
 MUSIC_CREDIT = dict(work="", performer="", source="", license="", url="")
+# `pick` 的打分窗口里**唯一要逐支声明的**：情绪核心是哪几镜（1 起）。
+# 其余窗口（长转场、成片中点、末句、诗文页、片尾淡出）都由时间轴推出来。
+MUSIC_KEY_SHOTS = []
 # MUSIC_MODE="library" 时填库里的文件名。**记它是为了两件事**：
 # 交付时说清这条曲子是复用的；以及做完之后回去 `music_index.py add --used`，
 # 否则下一支查库时不知道它已经用过了 —— **同一个系列里重复用同一条，观众记得住**。
@@ -1531,14 +1534,31 @@ def pick_music_in():
           % (mdur, len(curve), min(m for _, m in curve), max(m for _, m in curve)))
 
     starts = shot_starts()
-    # 成片上真正要紧的窗口。**开场不放进来**：镜 1 的前 6.6s 只有标题在走、
+    n = len(SHOTS)
+    # 成片上真正要紧的窗口。**开场不放进来**：片头那几秒只有标题在走、
     # 一个字幕都没有，曲子最弱的一段落在那儿反而合适。把开场让出来，
-    # 剩下这八个才是真正不能塌的地方。
-    keys = [("执手", starts[4], 9.0), ("凝噎", starts[5], 8.0),
-            ("楚天阔", starts[7], 9.0), ("中点", total / 2 - 3, 6.0),
-            ("下阕起", starts[8], 8.0), ("晓风残月", starts[11], 9.0),
-            ("末句长留", starts[13], 10.0), ("诗文页", starts[14], 8.0),
-            ("淡出", total - 5, 5.0)]
+    # 剩下的才是真正不能塌的地方。
+    #
+    # **这些窗口是推导出来的，不是写死的镜号。** 第一版把《雨霖铃》的
+    # starts[4] / starts[11] / starts[14] 直接写在这里，换一支只有 8 镜的片子
+    # 就 IndexError —— 而它在"以下一般不用改"区里，等于埋了个换支必炸的雷。
+    # 现在只有"情绪核心是哪几镜"要声明（MUSIC_KEY_SHOTS），其余全推。
+    keys = []
+    for i in MUSIC_KEY_SHOTS:
+        if 1 <= i <= n:
+            keys.append(("镜%d 核心" % i, starts[i - 1], min(9.0, SHOTS[i - 1]["dur"])))
+    # 长转场 = 段落翻页，是全片少数几处**只有音乐**的地方，最不能塌
+    for i in range(n - 1):
+        if xf(i) >= 1.8:
+            keys.append(("镜%d→%d 翻片" % (i + 1, i + 2),
+                         max(0.0, starts[i + 1] - xf(i)), xf(i) + 4.0))
+    keys.append(("中点", max(0.0, total / 2 - 3), 6.0))
+    ms = [(a, b) for a, b, t, y in LINES if y == "M"]
+    if ms:
+        keys.append(("末句", ms[-1][0], min(10.0, ms[-1][1] - ms[-1][0] + 2.0)))
+    if POEMS:
+        keys.append(("诗文页", starts[n - len(POEMS)], 8.0))
+    keys.append(("淡出", max(0.0, total - FADE_OUT - 1.0), FADE_OUT + 1.0))
 
     def win_avg(off, a, d):
         v = [m for t, m in curve if off + a <= t <= off + a + d]
