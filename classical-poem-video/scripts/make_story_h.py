@@ -257,18 +257,30 @@ TARGET_I, TARGET_TP = -15.0, -1.5
 #     "在镜 3 开头进来"这个**意图**没有变。写镜号，让脚本去算秒数。
 #     （竖版模板写绝对秒是因为它的 SFX 表是空的，这个坑还没人踩到。）
 SFX_ANCHOR = VO_TARGET
+# 三、**先查库再生成。** 段一 11 条里有 3 条直接用自己素材库里的（雨 / 秋风 / 晓风），
+#     库里的文件名原样保留 —— 那是复用的凭证，改名就看不出来了。
+#     其余 8 条（远海浪/船体缆绳/触礁/海岸与鸟/钟走时/船舱摆钟/议会室内）库里没有，
+#     生成的。ChatCut 内置库有 light-clock-tick 等三条机械音，**没用** ——
+#     钟走时是贯穿五段的声音动机，要十八世纪黄铜机芯在木壳里的走时，通用 UI 滴答指定不出来。
 SFX = [
     dict(f="s01_远海浪.mp3",   shot=3,  off=-0.5, tgt=SFX_ANCHOR - 20, fi=2.0, fo=3.0, dur=34.0),
-    dict(f="s02_雨与风.mp3",   shot=3,  off=0.0,  tgt=SFX_ANCHOR - 18, fi=1.5, fo=2.5, dur=18.0),
+    dict(f="声声慢·宋人淡设色版_04_雨.mp3",
+                               shot=3,  off=0.0,  tgt=SFX_ANCHOR - 18, fi=1.5, fo=2.5, dur=18.0),
+    dict(f="声声慢·宋人淡设色版_01_秋风.mp3",
+                               shot=3,  off=0.0,  tgt=SFX_ANCHOR - 19, fi=1.5, fo=2.5, dur=18.0),
     dict(f="s03_船体缆绳.mp3", shot=3,  off=2.0,  tgt=SFX_ANCHOR - 16, fi=1.2, fo=2.0, dur=15.0),
     dict(f="s04_触礁碎裂.mp3", shot=5,  off=0.8,  tgt=SFX_ANCHOR - 8,  fi=0.1, fo=2.5, dur=6.0),
     dict(f="s05_海岸与鸟.mp3", shot=6,  off=-0.3, tgt=SFX_ANCHOR - 16, fi=1.0, fo=1.5, dur=6.5),
     dict(f="s06_钟走时.mp3",   shot=2,  off=0.0,  tgt=SFX_ANCHOR - 12, fi=0.3, fo=1.0, dur=4.5),
     dict(f="s06_钟走时.mp3",   shot=10, off=0.5,  tgt=SFX_ANCHOR - 14, fi=1.0, fo=2.0, dur=17.0),
     dict(f="s07_船舱摆钟.mp3", shot=11, off=0.0,  tgt=SFX_ANCHOR - 14, fi=1.0, fo=1.5, dur=8.5),
-    dict(f="s08_议会室内.mp3", shot=12, off=-0.3, tgt=SFX_ANCHOR - 18, fi=1.5, fo=2.5, dur=22.5),
-    dict(f="s09_夜风.mp3",     shot=14, off=-0.5, tgt=SFX_ANCHOR - 20, fi=1.5, fo=3.0, dur=9.0),
+    # 生成上限 22s，所以这一条压到 21.8 让它**不循环** —— 房间残响的接缝很难藏
+    dict(f="s08_议会室内.mp3", shot=12, off=-0.3, tgt=SFX_ANCHOR - 18, fi=1.5, fo=2.5, dur=21.8),
+    dict(f="雨霖铃·电影写实版_05_晓风.mp3",
+                               shot=14, off=-0.5, tgt=SFX_ANCHOR - 20, fi=1.5, fo=3.0, dur=9.0),
 ]
+# **s01 是唯一一条会循环的**：要盖镜 3~6 共 34s，而 ElevenLabs 生成上限 22s。
+# 连续的涌浪循环一次几乎听不出接缝，接受了；换成别的声音就不能这么办。
 SFX_GAIN_WARN = 12.0
 # 全片的声音动机：航海钟的走时声（s06）。没有音乐，它替代音乐当那条听得出来的线 ——
 # 段一镜 2 第一次出现，镜 10~11 回来。此后每一段的关键处各回来一次，段五收尾再响。
@@ -1077,9 +1089,14 @@ def check_timeline():
                     "配音生成之后跑 sync 会自动重算" % (len(missing), missing[0]))
     bad += check_credits()
     if not music_on():
-        n = sum(1 for f, *_ in SFX if os.path.exists(os.path.join(SRC, f)))
-        print("\n配乐: 无（MUSIC_MODE='none'）—— 音频是 %d 条旁白 + %d 条音效"
-              % (len(NARR), n))
+        # SFX 是 dict 列表，不是 tuple —— 写成 `for f, *_ in SFX` 会去解包字典的**键**，
+        # 于是永远数出 0 条而不报错。没有音乐时音效是承重的，这个数不能骗人。
+        miss = [s["f"] for s in SFX if not os.path.exists(os.path.join(SRC, s["f"]))]
+        n = len(SFX) - len(miss)
+        print("\n配乐: 无（MUSIC_MODE='none'）—— 音频是 %d 条旁白 + %d/%d 条音效"
+              % (len(NARR), n, len(SFX)))
+        for f in miss:
+            warn.append("缺音效: " + f)
         print("      旁白本来就是连续的音床，所以归一化照常（norm_mode=%s）"
               % norm_mode())
     elif not os.path.exists(MUSIC):
