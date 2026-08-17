@@ -37,8 +37,13 @@
 
 三条**开工前就要定死**的轴（都在下面的配置区，每一条都有对应的自检）：
   MOTION      运镜还是静帧。可以逐镜覆盖 —— dict(..., motion="static")
-  MUSIC_MODE  配乐是生成的、公版的、还是**没有**
+  MUSIC_MODE  配乐是生成的、公版的、还是**没有**；`song` 是 MV（见下）
   IMG_SOURCE  图是照任务书生成的，还是从公版/图库找来的（找来的必须登记来源）
+
+**MV（拿一条带演唱的成品歌来做片子）**：MUSIC_MODE="song" + 填 SUNG 表。
+它不是第四种模式，是诗词模式**换了个时间轴的主人** —— 不再由"读得完"定，
+而是由唱腔定：片长 = 歌长，字幕起止 = 唱句起止，换镜只能落在句间空档。
+SUNG 表不要手写，跑 `lyric_sync.py` 出，那边有整套吸附和验证。
 
 留着的这一支是**暗调写实**，和纸本画种（水墨/工笔/水彩）**极性整个相反**：
 白字 + 黑描边、黑场淡入淡出、pass_a 加 vignette、pass_c 留颗粒。
@@ -141,6 +146,11 @@ MOTION_STATIC_MAX = 0.6     # 静帧镜的上限：真静止应该接近 0，留
 #                    最后回去 `add --used` 记一笔。授权上等同 generated（自己生成的）。
 #   "none"           不要背景音乐。片子只剩音效（和诵读，如果有）。
 #                    这不是"少做一步"，它会改归一化策略，见 norm_mode()。
+#   "song"           **MV**：一条带演唱的成品歌，歌是主角不是垫底。
+#                    它改的东西比另外三种都多：MUSIC_IN 恒为 0（歌有自己的头，
+#                    不存在"挑切入点"）、不做 5 秒硬淡出（歌有自己的收尾）、
+#                    MUSIC_GAIN 不该压（压了就成了"背景音乐"）、
+#                    **片长必须等于歌长**。见 song_mode() 和 check_sung()。
 MUSIC_MODE = "generated"
 MUSIC = os.path.join(SRC, "00_music_main.mp3")      # MUSIC_MODE="none" 时整条链路忽略它
 MUSIC_GAIN = -10.0
@@ -298,6 +308,15 @@ SHOTS = [
 SUB_SEP = "|"
 SUB_COL_DELAY = 0.28
 
+# ================= MV：唱句表 =================
+# 只有 MUSIC_MODE="song" 时才填。(起, 止, 文本)，**整块从 lyric_sync.py 的输出粘过来**，
+# 不要手敲：手敲的时间戳和真实起音差 100ms 级，而 MV 里这 100ms 是看得出来的。
+#
+# 填了之后 LINES 里的正文就从这里来（见下面 LINES 的拼法），
+# 于是"字幕时间"和"唱腔时间"在这份文件里**只有一个来源**，不可能改歪一处。
+SUNG = []
+SUNG_XF_PAD = 0.10      # 转场两头各留这么多，不许贴着唱句的头尾
+
 LINES = [
     (1.4,   5.6,  TITLE,  "T"),
     (2.8,   5.6,  AUTHOR, "TS"),
@@ -316,6 +335,12 @@ LINES = [
     (102.7, 110.9, "此去经年|应是良辰美景虚设", "M"),
     (112.6, 121.0, "便纵有千种风情|更与何人说？", "M"),
 ]
+
+# MV 模式：正文由 SUNG 表生成，覆盖上面那张手排的表。
+# **不是"追加"是"覆盖"** —— 留着上一支的句子和唱句混在一起，
+# check 会同时按两套时间轴判，报出一堆看不懂的冲突。
+if SUNG:
+    LINES = [l for l in LINES if l[3] != "M"] + [(a, b, t, "M") for a, b, t in SUNG]
 
 # ================= 片尾诗文页 =================
 # 这一支回到**竖排**（上一支《再别康桥》是横排）。理由很实在：现代诗有跨行，
@@ -674,6 +699,24 @@ def music_on():
     return MUSIC_MODE != "none"
 
 
+def song_mode():
+    """MV：音频是一条带演唱的成品歌。**歌不是垫在下面的，是片子的骨架。**"""
+    return MUSIC_MODE == "song"
+
+
+def music_dur():
+    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", MUSIC], capture_output=True, text=True)
+    try:
+        return float(p.stdout.strip())
+    except ValueError:
+        return None
+
+
+def sung_spans():
+    return [(a, b) for a, b, _ in SUNG]
+
+
 def norm_mode():
     """成片的响度归一策略 —— **没有音乐时不能照抄 −15 LUFS**。
 
@@ -947,6 +990,78 @@ def check_xfades():
     return bad
 
 
+def check_sung(shots=None, sung=None):
+    """MV 专用自检。**唱腔是时间轴的主人，画和字都得让着它。**
+
+    三条，都是量得出来的：
+
+    一、**片长必须等于歌长。** 短了歌被切断，长了片尾挂一段静音。
+        诗词模式里片长是自由的（配乐可以任意切入、任意淡出），MV 里不是 ——
+        这是 song 模式和另外三种最根本的区别。
+
+    二、**转场整段不许压在唱句上。** 注意是"整段"不是"中点"：
+        上面 check_timeline 里那条通用的检查只看转场中心 ±0.3s，
+        而一个 1.2 秒的溶解实际横跨 c±0.6 —— 拿中心判会漏掉两头。
+        MV 里画换到一半而人还在唱同一句，字和画一起断，最难看。
+        实测这条最咬人：《断肠人在天涯》五句之间的空档只有 0.15~0.96s，
+        默认的 1.2s 溶解**一处都放不下**，必须按最窄的空档压到 0.6 或改硬切。
+
+    三、**一句唱腔不许跨镜。** 二成立时它自动成立，单独列出来是因为
+        报错信息不一样：跨镜要改的是分镜，不是转场时长。
+
+    `shots` / `sung` 只有 selftest 才传，正常调用读全局；传了就不比歌长
+    （selftest 造的是一条 28 秒的假时间轴，拿真歌去比必然误报）。
+    """
+    S, U = (shots if shots is not None else SHOTS), (sung if sung is not None else SUNG)
+    if not U:
+        return []
+    U = [(u[0], u[1]) for u in U]           # SUNG 是三元组，selftest 传的是二元组
+    bad = []
+    _xf = lambda i: S[i].get("xf", XFADE)
+    total = sum(s["dur"] for s in S) - sum(_xf(i) for i in range(len(S) - 1))
+    st, t = [], 0.0
+    for i, s in enumerate(S):
+        st.append(t); t += s["dur"] - _xf(i)
+    if shots is None and song_mode() and os.path.exists(MUSIC):
+        md = music_dur()
+        if md is not None and abs(md - total) > 0.05:
+            bad.append("片长 %.2fs 和歌长 %.2fs 差 %+.2fs —— MV 里这两个必须相等"
+                       % (total, md, total - md))
+    for i in range(len(S) - 1):
+        c = st[i] + S[i]["dur"] - _xf(i) / 2
+        a, b = c - _xf(i) / 2 - SUNG_XF_PAD, c + _xf(i) / 2 + SUNG_XF_PAD
+        for k, (u0, u1) in enumerate(U, 1):
+            if a < u1 and b > u0:
+                bad.append("镜 %d→%d 的转场覆盖 %.2f~%.2fs，压在第 %d 句唱腔"
+                           "(%.2f~%.2fs)上 —— 把 xf 压到 %.2fs 以内，或者挪分镜"
+                           % (i + 1, i + 2, a, b, k, u0, u1,
+                              max(0.0, _xf(i) - 2 * max(b - u0, u1 - a))))
+    for k, (u0, u1) in enumerate(U, 1):
+        n0 = max(i for i, s in enumerate(st) if u0 >= s - 1e-6)
+        n1 = max(i for i, s in enumerate(st) if u1 >= s - 1e-6)
+        if n0 != n1:
+            bad.append("第 %d 句唱腔(%.2f~%.2fs)横跨镜 %d 和镜 %d —— "
+                       "一句唱完之前不能换镜，改分镜的 dur" % (k, u0, u1, n0 + 1, n1 + 1))
+    return bad
+
+
+def selftest_sung():
+    """造两个错，两条都必须报出来。**只验"现在通过"等于没验。**"""
+    # 镜起点 0 / 8.8 / 18.2，转场覆盖 8.8~10.0 和 18.2~18.8（再各留 0.1 的余量）
+    shots = [dict(dur=10.0), dict(dur=10.0, xf=0.6), dict(dur=10.0)]
+    ok = [(1.0, 8.5), (11.0, 17.9)]                 # 两处换镜都落在空档里
+    if check_sung(shots, ok):
+        print("!! selftest_sung: 正常的排法被误报了")
+        return
+    if not any("压在" in b for b in check_sung(shots, [(1.0, 8.75), (11.0, 17.9)])):
+        print("!! selftest_sung: 转场压在唱句上没有报出来")
+        return
+    if not any("横跨" in b for b in check_sung(shots, [(1.0, 8.5), (8.6, 12.0)])):
+        print("!! selftest_sung: 唱句跨镜没有报出来")
+        return
+    print("自测(唱腔): 正常排法不报，压唱句和跨镜都报得出来。")
+
+
 def check_safe():
     """屏上文字有没有撞进平台的操作栏 / 顶部导航。
 
@@ -1146,9 +1261,14 @@ def check_credits():
                 miss = [k for k in need if not str(e.get(k, "")).strip()]
                 if miss:
                     bad.append("素材 %s 的来源登记缺 %s" % (c["src"], "/".join(miss)))
-    if MUSIC_MODE not in ("generated", "public_domain", "library", "none"):
-        bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'library' / 'none'"
+    if MUSIC_MODE not in ("generated", "public_domain", "library", "none", "song"):
+        bad.append("MUSIC_MODE=%r 不认识，只能是 "
+                   "'generated' / 'public_domain' / 'library' / 'none' / 'song'"
                    % MUSIC_MODE)
+    elif MUSIC_MODE == "song" and not MUSIC_CREDIT.get("source", "").strip():
+        # MV 的歌是**别人的作品**（生成的也是一次可署名的产出）。
+        # 不像配乐可以含糊过去 —— 演唱是片子的主体，来源说不清就不该发
+        bad.append("MV 的 MUSIC_CREDIT 至少要填 source（歌从哪儿来、谁唱的、能不能用）")
     elif MUSIC_MODE == "library" and not str(MUSIC_FROM_LIBRARY).strip():
         bad.append("MUSIC_MODE='library' 却没填 MUSIC_FROM_LIBRARY —— "
                    "不记下用了库里哪一条，做完就没法回去 `add --used`，"
@@ -1197,6 +1317,23 @@ def check_music():
     if not os.path.exists(MUSIC):
         warn.append("音乐还没就位")
         return bad, warn
+    if song_mode():
+        # MV：歌就是骨架，没有"切入点"可挑，也不该被压到背景里去
+        md = music_dur()
+        print("MV: 歌 %.2fs，片长 %.2fs，%d 句唱词%s"
+              % (md or -1, total, len(SUNG), "" if SUNG else "  << SUNG 表还是空的"))
+        if not SUNG:
+            bad.append("MUSIC_MODE='song' 但 SUNG 表是空的 —— "
+                       "先跑 `lyric_sync.py snap` 出唱句表，别手敲")
+        if MUSIC_IN:
+            bad.append("MV 里 MUSIC_IN 必须是 0（现在是 %.1f）：歌有自己的头，"
+                       "从中间切进去就不是这首歌了" % MUSIC_IN)
+        if MUSIC_GAIN < -3.0:
+            bad.append("MV 里 MUSIC_GAIN=%.1f dB 把歌压成了背景音 —— "
+                       "唱是主角，用 0，响度交给成片归一(TARGET_I)" % MUSIC_GAIN)
+        if VO:
+            warn.append("MV 里还挂着 %d 条诵读 —— 念白压在演唱上，确认是有意的" % len(VO))
+        return bad, warn
     if MUSIC_IN is None:
         # 判据用 `is None` 而不是 `<= 0`：上一支 maximin 真的选出了 0.0，
         # 拿 0 当"还没选"的哨兵会把一个合法结果误报成占位值。
@@ -1233,20 +1370,35 @@ def check_music():
 def check_timeline():
     total, cuts, starts = total_len(), cut_points(), shot_starts()
     bad, warn = [], []
+    sung = set(sung_spans())
     for st, en, txt, sty in LINES:
-        if sty == "M":
+        if sty == "M" and (st, en) not in sung:
             # 分隔符不上屏，也就不用读 —— 不剔掉的话每句白得 0.45s 的虚假余量
             need = len(txt.replace(SUB_SEP, "")) * READ_PER_CHAR + READ_BASE
             if en - st < need - 1e-6:
                 bad.append("字幕『%s』只有 %.1fs，不足可读下限 %.1fs" % (txt, en - st, need))
+        # **唱句不套可读下限。** 它的挂屏时间由唱腔定，不由"读得完"定：
+        # 一句唱得快的四字（「夕阳西下」实测 5.6s）本来就够读，
+        # 而套下限只会逼人去改一个改不了的东西 —— 歌已经录好了。
+        # 唱句该验的是另一件事，在 check_sung() 里。
+        if (st, en) in sung:
+            # 通用的"转场中点 ±0.3s 不许碰字幕"在 MV 里**必然误报**：
+            # 句间空档实测只有 0.40s，±0.3 的余量根本放不进去。
+            # 换成 check_sung() 里按转场**整段**和唱句求交 —— 那条更严不更松
+            # （通用规则只看中点，漏掉 1.2s 溶解伸出去的那两截）。
+            continue
         for c in cuts:
             if st - 0.3 < c < en + 0.3:
                 bad.append("转场 %.1fs 压到了字幕『%s』" % (c, txt))
         if en > total:
             bad.append("字幕『%s』结束于 %.1fs，超出片长 %.1fs" % (txt, en, total))
+    # 诗文页默认挂在**最后几镜**上（诗词模式一直是这么排的）。
+    # MV 是唯一的例外：片长被歌锁死，片尾没有 15 秒给诗文页 ——
+    # 唯一放得下的地方是**前奏**（这一支前奏 16.0s，是全片唯一一段没人唱的长镜）。
+    # 所以允许逐页写 shot=（1 起）显式指定挂在哪一镜，不写就还按老规矩。
     first_poem_shot = len(SHOTS) - len(POEMS)
     for k, p in enumerate(POEMS):
-        s0 = starts[first_poem_shot + k]
+        s0 = starts[p.get("shot", first_poem_shot + k + 1) - 1]
         if p["t0"] < s0:
             bad.append("诗文页(%.1fs) 早于它那一镜的起点 %.1fs" % (p["t0"], s0))
         if p["t1"] > total:
@@ -1302,6 +1454,7 @@ def check_timeline():
     bad += check_fx()
     bad += check_safe()
     bad += check_credits()
+    bad += check_sung()
     ns = sum(1 for n in range(1, len(SHOTS) + 1) if is_static(n))
     print("\n片长 %.1fs (%d:%04.1f)  镜头 %d  字幕 %d 条  诗文页 %d 列  %dx%d"
           % (total, total // 60, total % 60, len(SHOTS), len(LINES),
@@ -1309,8 +1462,8 @@ def check_timeline():
     print("运动: %s（静帧 %d 镜 / 运镜 %d 镜）  配乐: %s  素材: %s"
           % ({"kenburns": "运镜", "static": "静帧"}.get(MOTION, MOTION),
              ns, len(SHOTS) - ns,
-             {"generated": "生成", "public_domain": "公版",
-              "library": "库里挑的", "none": "无"}.get(MUSIC_MODE),
+             {"generated": "生成", "public_domain": "公版", "library": "库里挑的",
+              "none": "无", "song": "MV(带演唱的成品歌)"}.get(MUSIC_MODE),
              {"generated": "按任务书生成", "found": "自己找的"}.get(IMG_SOURCE)))
     print("镜头起点: " + "  ".join("%.1f" % s for s in starts))
     print("转场落点: " + "  ".join("%.1f" % c for c in cuts))
@@ -1320,6 +1473,8 @@ def check_timeline():
     selftest_safe()
     selftest_moves()
     selftest_credits()
+    if SUNG:
+        selftest_sung()
     for w in warn:
         print("提示: " + w)
     if bad:
@@ -1527,6 +1682,9 @@ def pick_music_in():
     乐句边界本身量不出来（和音色好坏是同一类事），最终要听。"""
     if not music_on():
         sys.exit("!!! MUSIC_MODE='none' —— 这一支不要背景音乐，没有切入点可挑")
+    if song_mode():
+        sys.exit("!!! MUSIC_MODE='song' —— MV 从歌的第 0 秒开始，没有切入点可挑。"
+                 "要看唱句和换镜余地跑 `lyric_sync.py check`")
     if not os.path.exists(MUSIC):
         sys.exit("!!! 音乐还没就位: " + MUSIC)
     total = total_len()
@@ -2042,10 +2200,15 @@ def build_audio():
     ins, parts, mixed, k = [], [], [], 0
     if music_on():
         ins += ["-i", MUSIC]
+        # **MV 不做那 5 秒硬淡出。** 成品歌自带收尾（这一支最后 2.3s 就是它的尾奏），
+        # 再叠一道 5 秒淡出等于把人家的结尾抹掉一半，听起来像被掐了。
+        # 淡入同理：歌的前奏就是它的淡入。
+        fi = 0.02 if song_mode() else MUSIC_FADE_IN
+        fo = "" if song_mode() else ",afade=t=out:st=%.3f:d=5" % (total - 5)
         parts.append("[0:a]aresample=48000,aformat=fltp:cl=stereo,"
                      "atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS,volume=%.1fdB,"
-                     "apad,atrim=0:%.3f,afade=t=in:st=0:d=%.2f,afade=t=out:st=%.3f:d=5[m]"
-                     % (mi, mi + total, MUSIC_GAIN, total, MUSIC_FADE_IN, total - 5))
+                     "apad,atrim=0:%.3f,afade=t=in:st=0:d=%.2f%s[m]"
+                     % (mi, mi + total, MUSIC_GAIN, total, fi, fo))
         mixed.append("[m]")
         k = 1
     k = vo_bus(ins, parts, mixed, k, total)
