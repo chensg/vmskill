@@ -86,6 +86,8 @@ LAG_MAX = 0.45          # 量出来的系统滞后超过这个数，多半是打
 SPREAD_MAX = 0.15       # 各句偏移的中位绝对离差；超了说明打点不稳，吸附不可信
 
 # ---- 由起点推终点 ----
+SUNG_HOLD = 0.60        # 给了唱止时，字幕在人声停下之后再挂这么久（末字的余韵）
+SWAP_GAP = 0.04         # 两句几乎连着时，字幕**直接换**留的一帧多一点
 SUB_GAP = 0.40          # 下一句出来之前，上一句至少提前这么久收掉
 SUB_HOLD_MAX = 8.0      # 一句字幕最多挂这么久；超了多半是中间有间奏没算进来
 SUB_TAIL = 1.20         # 末句：最后一个起音之后再留这么久
@@ -306,6 +308,56 @@ def spans(starts, texts, total, peaks, end_last=None):
     return out
 
 
+def spans_from_pairs(pairs, total):
+    """人直接给了每句的**起和止**（听着报的、或从波形编辑器上读的）时怎么排字幕。
+
+    唱止不是字幕止：末字停了还有余韵，字幕跟着人声硬切下去显得急。
+    所以字幕挂到 唱止 + SUNG_HOLD，再让下一句至少提前 SUB_GAP 出来。
+
+    **两句几乎连着的时候（这支歌第 1、2 句只隔 0.082s）两条要求同时满足不了。**
+    这时不去压缩谁，而是让字幕**直接换**（留一帧多一点），并且报出来：
+    这一处放不下任何转场，两句必须合一镜。
+    """
+    out, tight = [], []
+    for i, (s, e) in enumerate(pairs):
+        if i + 1 < len(pairs):
+            nxt = pairs[i + 1][0]
+            gap = nxt - e
+            if gap >= SUB_GAP + 0.1:
+                t1 = min(e + SUNG_HOLD, nxt - SUB_GAP)
+            else:
+                t1 = nxt - SWAP_GAP
+                tight.append((i + 1, gap))
+        else:
+            t1 = min(e + SUNG_HOLD, total)
+        out.append((s, max(s + 0.4, t1)))
+    if tight:
+        print("")
+        print("  !! %d 处两句几乎连着，字幕直接换（放不下任何转场）：" % len(tight))
+        for k, g in tight:
+            print("     第 %d→%d 句之间只有 %.3fs —— **这两句合一镜**" % (k, k + 1, g))
+    return out
+
+
+def onset_evidence(starts, peaks):
+    """人报的起点离最近的强起音有多远。**只报证据，不动数**。
+
+    人从波形编辑器上读出来的数（这支歌用户给的是三位小数）比手打点准得多，
+    吸附反而可能把一个对的数挪到旁边的拨弦上。所以这里默认不吸附，
+    只把距离打出来：都在 0.2s 以内说明和检测器互相印证；
+    某一句离得远，那一句值得再听一遍（也可能只是那个字起得轻）。
+    """
+    st = strong(peaks)
+    print("  句  报的起点  最近强起音  距离")
+    for i, s in enumerate(starts, 1):
+        p = min(st, key=lambda q: abs(q[0] - s)) if st else None
+        if p is None:
+            print("  %-3d %8.3f      ——" % (i, s)); continue
+        d = p[0] - s
+        print("  %-3d %8.3f  %9.2f  %+6.3f%s"
+              % (i, s, p[0], d, "   << 离得远，这一句再听一遍" if abs(d) > 0.30 else ""))
+
+
 def per_char(text, t0, t1, peaks):
     """行内逐字落点。**只有起音数和字数对得上才敢用**。
 
@@ -430,6 +482,39 @@ def cmd_snap(a):
         sys.exit("\n!!! 有问题，没有写 sync.json。改点重来，或确认后加 --force")
     emit(a.song, texts, sp, dict(lag=round(lag, 3), spread=round(spread, 3),
                                  taps=taps, source="snap"))
+
+
+def cmd_spans(a):
+    """人报了每句的起和止 —— **这是最可靠的一路**，比手打点还准。"""
+    texts = [t for t in a.lines.split("|") if t.strip()]
+    pairs = []
+    for seg in a.at.replace("，", ",").split(","):
+        seg = seg.strip()
+        if not seg:
+            continue
+        m = re.match(r"^([\d.]+)\s*[-~]\s*([\d.]+)$", seg)
+        if not m:
+            sys.exit("!!! --at 要写成 起-止 的对，逗号分隔，比如 "
+                     "\"16.478-20.038,20.120-23.360\"；这一段读不懂: " + seg)
+        pairs.append((float(m.group(1)), float(m.group(2))))
+    if len(texts) != len(pairs):
+        sys.exit("!!! %d 句词但给了 %d 对时刻" % (len(texts), len(pairs)))
+    total = duration(a.song)
+    pk = onsets(a.song)
+    print("全曲 %.2fs   %d 句" % (total, len(pairs)))
+    print("")
+    print("=== 和起音检测互相印证（不改数，只看证据）===")
+    onset_evidence([s for s, _ in pairs], pk)
+    sp = spans_from_pairs(pairs, total)
+    print("")
+    print("  前奏 %.2fs   唱段 %.2f~%.2f (%.2fs)   尾奏 %.2fs"
+          % (pairs[0][0], pairs[0][0], pairs[-1][1],
+             pairs[-1][1] - pairs[0][0], total - pairs[-1][1]))
+    if total - pairs[-1][1] > 6.0:
+        print("  尾奏有 %.1fs —— **片尾诗文页放得下**，MV 里这是唯一放得下的地方"
+              % (total - pairs[-1][1]))
+    report(texts, sp, pk, a.karaoke)
+    emit(a.song, texts, sp, dict(source="spans", vocal=[list(p) for p in pairs]))
 
 
 def cmd_lrc(a):
@@ -588,13 +673,16 @@ if __name__ == "__main__":
     q = sub.add_parser("probe"); q.add_argument("song")
     q.add_argument("--spec", action="store_true", help="顺便出谱图切片")
     q.add_argument("--spec-len", type=float, default=10.0)
-    for name in ("snap", "lrc"):
+    for name in ("snap", "lrc", "spans"):
         q = sub.add_parser(name)
         q.add_argument("song")
         q.add_argument("--lines", help="用 | 分隔的歌词，顺序同演唱")
         q.add_argument("--end", type=float, help="末句收在哪儿（不给按最后一个起音推）")
         q.add_argument("--karaoke", action="store_true", help="顺便算行内逐字落点")
-        if name == "snap":
+        if name == "spans":
+            q.add_argument("--at", required=True,
+                           help="每句的**起-止**，逗号分隔，如 \"16.478-20.038,20.120-23.360\"")
+        elif name == "snap":
             q.add_argument("--at", required=True, help="每句开口的大致时刻，逗号分隔")
             q.add_argument("--snap-w", type=float, help="吸附窗，默认 %.2f" % SNAP_W)
             q.add_argument("--force", action="store_true")
@@ -611,6 +699,8 @@ if __name__ == "__main__":
         cmd_probe(a)
     elif a.cmd == "snap":
         cmd_snap(a)
+    elif a.cmd == "spans":
+        cmd_spans(a)
     elif a.cmd == "lrc":
         cmd_lrc(a)
     elif a.cmd == "proof":
