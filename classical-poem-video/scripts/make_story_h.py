@@ -433,7 +433,13 @@ PROBE_BOXES = [
     ("心", 0.39, 0.61, 0.39, 0.61),
     ("右", 0.72, 0.94, 0.30, 0.70),
 ]
-PROBE_TOL = 5.0             # trace 与 measure 允许的差（级）
+# trace 与 measure 允许的差。**8 而不是 5，理由要记住**：
+# 实测残差有明确形状 —— 心框 −1~−2、左右框 −3~−6，离画心越远越暗，全片同向。
+# 那是 vig_factor() 对边缘暗角建模精度不足的签名，不是运镜错误。
+# 运镜真错的时候长的是另一个样子：**单镜跳变、幅度 ±20~72**（转场混合帧那次就是），
+# 分得很开。所以下面还会单独打每一框的平均偏差，让"全片同向"和"某镜跳变"不混在一起。
+PROBE_TOL = 8.0
+PROBE_EDGE = 0.05           # 离干净区两端再让开一点，躲开转场的第一/最后一帧
 
 VO_CACHE = "vo_times.json"
 _VO = None
@@ -1304,6 +1310,34 @@ def scrim_factor(x0, x1, y0, y1):
     return (sum(v) / len(v)) / 200.0          # 0xC8 = 200
 
 
+def probe_times(n, durs):
+    """镜 n 里可以取样的三个**镜内局部时刻**（起/中/止）。trace 和 measure 必须
+    共用这一个函数 —— 各写一份就一定会漂。
+
+    **必须躲开转场。** 每一镜渲出来那段片子的头尾各骑着半个转场（xfade 骑在内容
+    边界正中），在 master.mp4 上那几帧是**两镜的混合帧**，而 trace 建模的是单镜的
+    zoompan。第一版 measure 直接在 0.05s 和 dur−0.05s 上取样，于是 68 处超差，
+    而**中间那一列严丝合缝** —— 静帧镜（画面本来不动）也照样报 ±72，
+    那就只能是转场混合，不可能是运镜。
+
+    干净区 = [进来的转场, dur − 出去的转场]，两端再各让开 PROBE_EDGE。
+    """
+    i = n - 1
+    lo = xf(i - 1) if i > 0 else 0.0
+    hi = durs[i] - (xf(i) if i < len(SHOTS) - 1 else 0.0)
+    # **片头/片尾的黑场淡入淡出也要躲开**，理由和转场完全一样：它们加在 pass_b 上，
+    # 而 trace 不建模。第一版只躲了转场，于是镜 1 的起幅量到 0/2/0（还在淡入的黑里），
+    # 报 −45 级看着像运镜错了。淡场只压在第一镜的头和最后一镜的尾上。
+    if i == 0:
+        lo = max(lo, FADE_IN)
+    if i == len(SHOTS) - 1 and FADE_OUT > 0:
+        hi = min(hi, durs[i] - FADE_OUT)
+    lo, hi = lo + PROBE_EDGE, hi - PROBE_EDGE
+    if hi <= lo:                      # 极短的镜头：退回镜心
+        lo = hi = durs[i] / 2.0
+    return (lo, (lo + hi) / 2.0, hi)
+
+
 def trace():
     """量镜头**真正经过的区域** —— 出图阶段就能判一张图能不能用，缺图会跳过。
 
@@ -1365,8 +1399,8 @@ def trace():
             y0, y1 = int(ry0 * H), int(ry1 * H)
             vig = vig_factor(x0, x1, y0, y1) * scrim_factor(x0, x1, y0, y1)
             vals = []
-            for p in (0.0, 0.5, 1.0):
-                b = box(n, p * durs[n - 1], x0, x1, y0, y1)
+            for tl in probe_times(n, durs):
+                b = box(n, tl, x0, x1, y0, y1)
                 vals.append(stat(raw, b, vig))
             pred[(n, name)] = vals
             cells.append("%s %3.0f/%3.0f/%3.0f" % (name, vals[0], vals[1], vals[2]))
@@ -2048,8 +2082,13 @@ def build_audio():
                      % (k, dur, g, fi, max(0.0, dur - fo), fo, int(t * 1000), int(t * 1000), k))
         mixed.append("[s%d]" % k)
         k += 1
+    # limit=0.85（−1.4 dBFS）不是 0.95。**段用文件是要交给 join 再编码一次的中间件**，
+    # 而 alimiter 只管样本峰值，管不住采样间(true peak)。实测 0.95 时段用出到
+    # **+0.04 dBTP** —— 顶在 0 上，AAC 解码会漏一层失真。
+    # 留 1.4 dB 余量，而且这是**所有段共用的常数**，所以不会变成逐段增益差（那才是接缝台阶）。
+    # 预览那一路照旧归一到 −15，看不出区别。
     parts.append("%samix=inputs=%d:normalize=0:dropout_transition=0,"
-                 "atrim=0:%.3f,alimiter=limit=0.95[a]" % ("".join(mixed), len(mixed), total))
+                 "atrim=0:%.3f,alimiter=limit=0.85[a]" % ("".join(mixed), len(mixed), total))
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(parts), "-map", "[a]",
            "-c:a", "pcm_s24le", "-t", "%.3f" % total, "mix.wav"],
@@ -2255,8 +2294,11 @@ def still():
     durs, cst = timeline()[1], clip_starts()
     k = 0
     for n in range(1, len(SHOTS) + 1):
-        for tag, p in (("起", 0.06), ("中", 0.50), ("尾", 0.94)):
-            t = cst[n - 1] + p * durs[n - 1]
+        # 用 probe_times 而不是 6%/50%/94% —— 后者会把起/尾帧取在转场里，
+        # 于是一半静帧是**两镜的混合**（镜 2 的尾帧上能看见下一镜的船）。
+        # 混合帧看不出这一镜自己走了多远，而"起→尾连起来看行程"正是这一趟的主要用途。
+        for tag, tl in zip(("起", "中", "尾"), probe_times(n, durs)):
+            t = cst[n - 1] + tl
             run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % t, "-i", "preview.mp4",
                  "-frames:v", "1", "stills/%02d%s_%.0fs.png" % (n, tag, t)],
                 "静帧 镜%-3d %s  %.1fs  %s" % (n, tag, t, CLIPS[n - 1]["src"][:14]))
@@ -2307,14 +2349,14 @@ def measure():
     print("\n=== 运镜对账（trace 预测 vs 成片实测，三框 × 起/中/止）===")
     print("    判据：逐条差 <= %.0f 级。差得多而且**越亮差得越多**，" % PROBE_TOL)
     print("    先查 pass_a/pass_c 有没有 trace 没建模的滤镜，再怀疑运镜。")
-    worst, nbad = 0.0, 0
+    worst, nbad, bias = 0.0, 0, {}
     for n in range(1, len(SHOTS) + 1):
         if (n, PROBE_BOXES[0][0]) not in pred:
             print("  镜%-3d (trace 当时缺图，跳过)" % n); continue
         cells = []
-        # 取样时刻要用**渲出来那段片子**的起点 + 镜内局部时刻，和 trace 的 box() 一致
-        for pi, p in enumerate((0.0, 0.5, 1.0)):
-            t = cst[n - 1] + min(max(p * durs[n - 1], 0.05), durs[n - 1] - 0.05)
+        # 取样时刻和 trace 共用 probe_times() —— 各写一份必漂，而且会漂在转场上
+        for pi, tl in enumerate(probe_times(n, durs)):
+            t = cst[n - 1] + tl
             subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % t,
                             "-i", "master.mp4", "-frames:v", "1", "_m.png"],
                            capture_output=True)
@@ -2335,6 +2377,7 @@ def measure():
                 exp = pred[(n, name)][pi]
                 d = abs(got - exp)
                 worst = max(worst, d)
+                bias.setdefault(name, []).append(got - exp)
                 if d > PROBE_TOL:
                     nbad += 1
                 cells.append("%s%s %3.0f/%3.0f(%+.0f)%s"
@@ -2343,6 +2386,11 @@ def measure():
         print("  镜%-3d %s" % (n, "  ".join(cells)))
     if os.path.exists("_m.png"):
         os.remove("_m.png")
+    if bias:
+        print("")
+        print("  每框平均偏差（成片 − 预测）：" + "   ".join(
+            "%s %+.1f" % (k, sum(v) / len(v)) for k, v in bias.items()))
+        print("  全框同向的小偏差 = 建模精度（多半是暗角），**某一镜跳变才是运镜出错**。")
     print("\n  最大偏差 %.1f 级，超出 %.0f 级的有 %d 处 —— %s"
           % (worst, PROBE_TOL, nbad,
              "运镜走在预期位置上" if nbad == 0 else "**对不上，先查滤镜建模再查运镜**"))
