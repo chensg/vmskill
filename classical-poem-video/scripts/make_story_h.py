@@ -114,6 +114,12 @@ CLAIMS = [
 # 镜与镜之间的气口**不用手写** —— timeline() 会把每镜首句的 pre 抬到 GAP_PRE、
 # 末句的 post 抬到 GAP_POST。转场落在这段静默的正中，于是永远压不到字幕。
 # 手工在 13 个边界上凑这两个数，一定会漏掉一两处，而漏掉的那处要到成片才看得出来。
+# 还没生成 mp3 时用来先排片的语速。**这个数是量出来的，不是通行值。**
+# 《没有夏天的那一年》(无 emotion) 实测 4.6；《经度》段一
+# (豆包 渊博小叔 / storytelling / emotionScale 3 / 默认语速) 实测 **4.24**。
+# 换音色或换表演方向就要重新量 —— 它取决于 emotion 和 performancePrompt，不是常数。
+EST_RATE = 4.24
+
 VO_DIR = "vo"
 PRE_DEF, POST_DEF = 0.18, 0.28
 GAP_PRE, GAP_POST = 0.45, 0.70
@@ -637,6 +643,19 @@ def norm_mode():
     return "loudnorm" if (music_on() or NARR) else "absolute"
 
 
+def est_of(n):
+    """这一条还没生成时的估算时长。
+
+    **NARR 里的 est 是可选的，能不写就不写。** 手写 est 要人去数字数，而数字数
+    要扣标点 —— 段二 37 条里手写错了 20 条，差值全是 ±1 个字（1/EST_RATE≈0.24s），
+    积起来把段长算少了 2.1s。这是个不该存在的错误类别：**这个数是算得出来的。**
+    写了就用写的（比如某条明知会读得特别慢），没写就按 EST_RATE 从文本推。
+    """
+    if n.get("est") is not None:
+        return n["est"]
+    return n_chars(n["txt"]) / EST_RATE
+
+
 def vo_path(n):
     f = n["vo"] if n["vo"].lower().endswith((".mp3", ".wav", ".m4a")) else n["vo"] + ".mp3"
     return os.path.join(VO_DIR, f)
@@ -661,7 +680,7 @@ def vo_durs():
     for n in NARR:
         p = vo_path(n)
         if not os.path.exists(p):
-            missing.append(n["vo"]); out[n["vo"]] = (n["est"], False); continue
+            missing.append(n["vo"]); out[n["vo"]] = (est_of(n), False); continue
         st = os.stat(p)
         key = "%s|%d|%d" % (n["vo"], int(st.st_mtime), st.st_size)
         if key not in cache:
@@ -671,7 +690,7 @@ def vo_durs():
             try:
                 cache[key] = float(r.stdout.strip())
             except ValueError:
-                cache[key] = n["est"]
+                cache[key] = est_of(n)
             dirty = True
         out[n["vo"]] = (cache[key], True)
     if dirty:
