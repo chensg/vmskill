@@ -1775,8 +1775,18 @@ def pass_b():
         off += durs[i - 1] - xf(i - 1)
         parts.append("%s[%d:v]xfade=transition=fade:duration=%.3f:offset=%.3f[x%d]"
                      % (cur, i, xf(i - 1), off, i)); cur = "[x%d]" % i
-    parts.append("%sfade=t=in:st=0:d=%.2f:c=%s,fade=t=out:st=%.3f:d=%.2f:c=%s[v]"
-                 % (cur, FADE_IN, FADE_COLOR, total - FADE_OUT, FADE_OUT, FADE_COLOR))
+    # **d=0 的 fade 不是"不淡入"。** ffmpeg 的 fade 在 duration 为 0 时会退回
+    # nb_frames 的默认值 **25 帧** —— 30fps 下就是 0.83s 的黑场。
+    # 中间段 FADE_IN/FADE_OUT 都是 0，照写就等于给每一段的头尾各塞一段黑场，
+    # 而这正是接缝规矩要防的东西。check_seg 也拦不住：它验的是**配置**里 FADE 为 0，
+    # 不是输出里真的没有黑场。这一处是 measure 的运镜对账抓出来的
+    # （镜 1 起幅量到 2/3/2 几乎全黑，而预测 31/51/31）。
+    fades = []
+    if FADE_IN > 0:
+        fades.append("fade=t=in:st=0:d=%.2f:c=%s" % (FADE_IN, FADE_COLOR))
+    if FADE_OUT > 0:
+        fades.append("fade=t=out:st=%.3f:d=%.2f:c=%s" % (total - FADE_OUT, FADE_OUT, FADE_COLOR))
+    parts.append("%s%s[v]" % (cur, ("" if not fades else ",".join(fades) + ",") + "null"))
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(parts), "-map", "[v]", "-c:v", "libx264",
            "-crf", "14", "-preset", "medium", "-pix_fmt", "yuv420p",
