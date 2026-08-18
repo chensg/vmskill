@@ -391,6 +391,21 @@ SUB_FS = 62
 # 离操作栏上沿(864)还剩 78px；顶端 290 离顶部导航下沿(173)剩 117px。上下都够。
 SUB_TOP = 290
 
+# ---- 片名竖排 ----
+# **横排片名要占满画宽，而画宽上很难找到一条干净的底。**
+# 《天净沙·秋思》的开场是一棵枯藤老树，枝子横穿整幅：量下来 y 从 200 到 1400
+# 每隔 100 取一次，836px 宽的标题带 10 分位始终在 32~58 之间（墨色字要差 50 级），
+# **没有一个 y 放得下**。而右侧那条给正文留的素纸，同一时刻 10 分位 180~232。
+#
+# 所以竖排不是"风格选择"，是**浅底纸本片子的默认解**：片名和正文用同一条竖带，
+# 既保证认得出，又正好是中国画题款本来的样子（题在右，落款在其左下，字更小）。
+# 横排片名只在"画面上部确有大片空"时才用（《雨霖铃》那种暗调实拍多半有）。
+TITLE_VERTICAL = False
+TITLE_FS_V = 80                      # 竖排片名字号
+TITLE_X_V, TITLE_TOP_V = SUB_X, SUB_TOP
+TITLE_SIG_FS_V, TITLE_SIG_X_V = 46, 864      # 作者：左边一列，字更小，起点更低
+TITLE_SIG_DROP = 3                   # 作者从片名的第几个字往下起（题款的样子）
+
 # ================= 平台安全区（竖版）=================
 # 2026-08-13 用《声声慢》在真机上比过的坐标。
 SAFE_RAIL = (929, 864, 1080, 1632)       # 右侧操作栏 x0,y0,x1,y1
@@ -1136,6 +1151,16 @@ def check_safe():
 
     for st, en, txt, sty in LINES:
         if sty != "M":
+            # **竖排片名也要验。** 横排片名居中、离操作栏远，所以原来这里
+            # 直接跳过所有非正文行；竖排之后片名和正文在同一条竖带上，
+            # 跳过等于把新加的那两行放进了检查的盲区
+            if TITLE_VERTICAL and sty in ("T", "TS"):
+                fs = TITLE_FS_V if sty == "T" else TITLE_SIG_FS_V
+                x = TITLE_X_V if sty == "T" else TITLE_SIG_X_V
+                y0 = TITLE_TOP_V + (0 if sty == "T" else TITLE_SIG_DROP * TITLE_FS_V)
+                hit("竖排%s『%s』" % ("片名" if sty == "T" else "落款", txt),
+                    int(x - fs / 2 - 6), int(x + fs / 2 + 6), y0 - 6,
+                    y0 + len(txt) * fs + 6)
             continue
         hit("字幕『%s』" % txt, *sub_box(txt))
     # 诗文页是**竖排**的，右起第一列离操作栏最近 —— 这才是要量的那一列。
@@ -2638,6 +2663,9 @@ def styles_block():
            "Alignment,MarginL,MarginR,MarginV,Encoding\n" \
            + "\n".join([_style("T", 126, TITLE_POLARITY, 16, 5),
                         _style("TS", 54, TITLE_POLARITY, 10, 5),
+                        # 竖排片名/落款：和正文一样顶端对齐(align=8)，字距按字号给
+                        _style("TV", TITLE_FS_V, TITLE_POLARITY, 10),
+                        _style("TSV", TITLE_SIG_FS_V, TITLE_POLARITY, 6),
                         _style("M", SUB_FS, POLARITY),
                         _style("MF", SUB_FS, other),          # FLIP_SHOTS 里那几镜的正文
                         _style("PM", POEM_FS, POLARITY, 8),   # 诗文页正文(竖排，顶端对齐)
@@ -2682,11 +2710,20 @@ def make_ass():
     ev = []
     for st, en, txt, sty in LINES:
         if sty == "T":
-            ev.append("Dialogue: 0,%s,%s,T,,0,0,0,,{\\pos(540,560)}{\\fad(1400,1100)}%s"
-                      % (ts(st), ts(en), txt))
+            if TITLE_VERTICAL:
+                ev.append("Dialogue: 0,%s,%s,TV,,0,0,0,,{\\pos(%d,%d)}{\\fad(1400,1100)}%s"
+                          % (ts(st), ts(en), TITLE_X_V, TITLE_TOP_V, vtext(txt)))
+            else:
+                ev.append("Dialogue: 0,%s,%s,T,,0,0,0,,{\\pos(540,560)}{\\fad(1400,1100)}%s"
+                          % (ts(st), ts(en), txt))
         elif sty == "TS":
-            ev.append("Dialogue: 0,%s,%s,TS,,0,0,0,,{\\pos(540,706)}{\\fad(1400,1100)}%s"
-                      % (ts(st), ts(en), txt))
+            if TITLE_VERTICAL:
+                ev.append("Dialogue: 0,%s,%s,TSV,,0,0,0,,{\\pos(%d,%d)}{\\fad(1400,1100)}%s"
+                          % (ts(st), ts(en), TITLE_SIG_X_V,
+                             TITLE_TOP_V + TITLE_SIG_DROP * TITLE_FS_V, vtext(txt)))
+            else:
+                ev.append("Dialogue: 0,%s,%s,TS,,0,0,0,,{\\pos(540,706)}{\\fad(1400,1100)}%s"
+                          % (ts(st), ts(en), txt))
         else:
             name = "MF" if shot_of((st + en) / 2) in FLIP_SHOTS else "M"
             # 左列（下一句）延后出现，两列一起留到句末。
@@ -2814,12 +2851,18 @@ def still():
     marks = [((s + e) / 2, t.replace(SUB_SEP, "／")) for s, e, t, y in LINES if y == "M"]
     marks.insert(0, (3.6, "标题"))
     # 两列是错开出现的，所以要在**左列还没出来**的时刻也抽一帧，
-    # 否则只看得到"两列都在"的状态，看不出延后到底合不合适
-    s0, e0 = [(s, e) for s, e, t, y in LINES if y == "M" and SUB_SEP in t][0]
-    marks.append((s0 + (e0 - s0) * SUB_COL_DELAY * 0.5, "只有右列(延后中)"))
-    # 粒子层单独看一眼：静帧上很容易看不出来
-    marks += [(RAIN_T0 + 4.0, "残雨·最盛"), (RAIN_T0 + RAIN_OUT + 4.0, "残雨·将收"),
-              (LEAF_T0 + LEAF_DUR * 0.5, "落叶·最盛")]
+    # 否则只看得到"两列都在"的状态，看不出延后到底合不合适。
+    # **但不是每一支都有两列句。** 《天净沙·秋思》五句全是六字、一句一列，
+    # 原来这里硬取 [0]，直接 IndexError 崩在最后一步 —— 渲完了才崩，最气人的位置。
+    two = [(s, e) for s, e, t, y in LINES if y == "M" and SUB_SEP in t]
+    if two:
+        s0, e0 = two[0]
+        marks.append((s0 + (e0 - s0) * SUB_COL_DELAY * 0.5, "只有右列(延后中)"))
+    # 粒子层单独看一眼：静帧上很容易看不出来。关掉的层不抽（抽了也是空帧）
+    if RAIN_DUR > 0:
+        marks += [(RAIN_T0 + 4.0, "残雨·最盛"), (RAIN_T0 + RAIN_OUT + 4.0, "残雨·将收")]
+    if LEAF_DUR > 0:
+        marks.append((LEAF_T0 + LEAF_DUR * 0.5, "落叶·最盛"))
     for p in POEMS:
         marks.append((p["t0"] + 0.6 + POEM_COL_STEP * 3, "诗文页(显到一半)"))
         marks.append((p["t0"] + 0.6 + POEM_COL_STEP * len(p["cols"]) + 1.5, "诗文页(出全)"))
