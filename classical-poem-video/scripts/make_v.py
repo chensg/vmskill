@@ -404,7 +404,10 @@ TITLE_VERTICAL = False
 TITLE_FS_V = 80                      # 竖排片名字号
 TITLE_X_V, TITLE_TOP_V = SUB_X, SUB_TOP
 TITLE_SIG_FS_V, TITLE_SIG_X_V = 46, 864      # 作者：左边一列，字更小，起点更低
-TITLE_SIG_DROP = 3                   # 作者从片名的第几个字往下起（题款的样子）
+# 作者从片名的第几个字往下起（题款的样子）。**这个数要量着定，不是审美**：
+# 落款那一列会不会压在树枝、屋脊上，逐档量一次底色就知道。《天净沙》上
+# drop=3 正压着一根枝子（最暗 34），drop=5 那一列全程 225 以上。
+TITLE_SIG_DROP = 5
 
 # ================= 平台安全区（竖版）=================
 # 2026-08-13 用《声声慢》在真机上比过的坐标。
@@ -2644,13 +2647,23 @@ def pass_b():
 
 
 # ================= 字幕 =================
-def _style(name, size, pol, spacing=0, align=8):
+def _style(name, size, pol, spacing=0, align=8, outline=None):
+    """`outline` 只有**小字号**才需要覆盖。
+
+    描边一直写死 3px，那是按正文字号（62~126）定的。46px 的落款用同一个 3 就出事：
+    楷体在这个字号上笔画本身才 2 像素宽，两边各 3 像素的**浅色**描边一抗锯齿，
+    笔画整个被冲成灰 —— 实测落款笔画 110~140，而同一屏上的片名是 40。
+    **数值判据照样全过**（`measure` 判的是"字底"离字色多远，不判字本身有多黑），
+    是放大到像素级才看出来的。小字号要么收描边，要么别指望它是墨色。
+    """
     if pol == "dark_on_light":
         pri, out, ol, sh = "&H00262A2D", "&H00EAF1F4", 3, 0
     else:
         # 白字的描边必须是**不透明的黑**，不是半透明 —— 写实画面的底是花的，
         # 半透明描边在细节多的地方等于没有。再加一层投影托住。
         pri, out, ol, sh = "&H00F4F4EE", "&H00000000", 3, 3
+    if outline is not None:
+        ol = outline
     return ("Style: %s,KaiTi,%d,%s,%s,%s,%s,0,0,0,0,100,100,%d,0,1,%d,%d,%d,40,40,0,1"
             % (name, size, pri, pri, out, out, spacing, ol, sh, align))
 
@@ -2662,10 +2675,11 @@ def styles_block():
            "StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow," \
            "Alignment,MarginL,MarginR,MarginV,Encoding\n" \
            + "\n".join([_style("T", 126, TITLE_POLARITY, 16, 5),
-                        _style("TS", 54, TITLE_POLARITY, 10, 5),
+                        _style("TS", 54, TITLE_POLARITY, 10, 5, 2),   # 54px 也偏细，描边收到 2
                         # 竖排片名/落款：和正文一样顶端对齐(align=8)，字距按字号给
                         _style("TV", TITLE_FS_V, TITLE_POLARITY, 10),
-                        _style("TSV", TITLE_SIG_FS_V, TITLE_POLARITY, 6),
+                        # 落款字号小，描边收到 1 —— 见 _style() 的注释
+                        _style("TSV", TITLE_SIG_FS_V, TITLE_POLARITY, 6, 8, 1),
                         _style("M", SUB_FS, POLARITY),
                         _style("MF", SUB_FS, other),          # FLIP_SHOTS 里那几镜的正文
                         _style("PM", POEM_FS, POLARITY, 8),   # 诗文页正文(竖排，顶端对齐)
