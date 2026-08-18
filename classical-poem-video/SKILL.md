@@ -1061,6 +1061,10 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
 
 ### 在 Codex 里跑这条流水线
 
+**完整的操作说明在 `references/codex.md`** —— 装在哪、怎么触发、三种模式各自的
+命令序列、Windows 上两个 shell 的分工、长渲染怎么后台跑、报错对照表。
+第一次在 Codex 上开工先读它。下面只留几条和 ChatCut 相关的：
+
 - ChatCut 相关的技能在 Codex 里叫 `chatcut-plugin-basics`（不是 `-claude` 那个），
   配乐用 `music` 技能、音效和 TTS 用 `voice` 技能
 - 需要结构化提问时 Codex 用 `ask_followup_questions`
@@ -1136,6 +1140,9 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
 - `scripts/vo_split.py` — **把一整条真人朗读切成一句一个文件**。
   好的诗词 TTS 难找，真人读一遍容易，但拿到的是整首读完的一个文件。
   切完填进 `VO` 表，下游一行都不用改
+- `references/codex.md` — **在 Codex 里怎么跑**：环境前提、目录结构、三种模式的
+  命令序列、PowerShell 和 bash 的分工（带 drawtext 的 ffmpeg 在 bash 下会段错误）、
+  长渲染的后台纪律、报错对照表。**第一次在 Codex 上开工先读它**
 - `scripts/lyric_sync.py` — **MV**：把一条带演唱的成品歌和一份歌词对上轴。
   `probe`（起音表/空档/谱图切片）→ **`spans`（人报每句起止，最可靠的一路）**
   / `snap`（只报起点，自动校人手滞后再吸附）/ `lrc`（吃现成时间戳）

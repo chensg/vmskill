@@ -277,7 +277,7 @@ def spans(starts, texts, total, peaks, end_last=None):
       - 一句最多挂 SUB_HOLD_MAX；再长说明中间有间奏，字幕该先下去
     末句没有"下一句"，用最后一个起音 + SUB_TAIL，再钳进歌长。
     """
-    out, tight = [], []
+    out, tight, guessed_last = [], [], False
     st = strong(peaks)
     for i, s in enumerate(starts):
         if i + 1 < len(starts):
@@ -294,10 +294,24 @@ def spans(starts, texts, total, peaks, end_last=None):
         else:
             # 末句尾巴要按**强峰**推。拿全部峰推会被片尾淡出里的噪声峰顶到歌末
             # （这支歌 50.21/50.42 各有一个弱峰，全曲才 50.64），
-            # 于是字幕一直挂到最后一帧，尾奏一点余地都不剩
+            # 于是字幕一直挂到最后一帧，尾奏一点余地都不剩。
+            #
+            # **而且必须同样套 SUB_HOLD_MAX。** 只给中间几句套上限、末句不套，
+            # 在有尾奏的歌上必然出事：尾奏里全是拨弦起音，"最后一个强起音"
+            # 落在 48.38s，而人其实 40.45s 就唱完了 —— 实测末句挂屏 13.08s。
+            # 末句的收尾是这条链路里**唯一一个没有下一句兜底的估计**，
+            # 所以它既要封顶，也要明说它是估的。
             last = max([p[0] for p in strong(peaks) if p[0] < total - 0.2] or [s])
-            e = min(max(s + 2.0, last + SUB_TAIL), total)
+            e = min(max(s + 2.0, last + SUB_TAIL), s + SUB_HOLD_MAX, total)
+            guessed_last = True
         out.append((s, max(s + 0.6, e)))
+    if guessed_last and end_last is None:
+        print("")
+        print("  !! **末句的收尾是估出来的**（按最后一个强起音 + %.2fs，封顶 %.2fs）。"
+              % (SUB_TAIL, SUB_HOLD_MAX))
+        print("     尾奏里全是伴奏的起音，检测器分不出人唱到哪儿停 —— 实测过一次"
+              "被拖到 13.08s。")
+        print("     **听一遍 proof，用 --end 给准数。**")
     if tight:
         print("")
         print("  !! %d 处句子贴得太紧（末字起音之后不足 %.2fs 字幕就得收）：" % (len(tight), MIN_HOLD))

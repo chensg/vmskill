@@ -1062,6 +1062,13 @@ def check_sung(shots=None, sung=None):
                            % (i + 1, i + 2, a, b, k, u0, u1,
                               max(0.0, _xf(i) - 2 * max(b - u0, u1 - a))))
     for k, (u0, u1) in enumerate(U, 1):
+        # **先验范围，再查落在哪一镜。** 直接 max(...) 的话，一个负的起点会让
+        # 生成器为空、抛 ValueError —— 配置填错换来一段 traceback，
+        # 而这套工具的价值恰恰在于 check 说人话。
+        if u0 < -1e-6 or u1 > total + 1e-6 or u1 <= u0:
+            bad.append("第 %d 句唱腔 (%.2f~%.2f) 超出 0~%.2f，或者起止反了 —— "
+                       "SUNG 表填错了" % (k, u0, u1, total))
+            continue
         n0 = max(i for i, s in enumerate(st) if u0 >= s - 1e-6)
         n1 = max(i for i, s in enumerate(st) if u1 >= s - 1e-6)
         if n0 != n1:
@@ -1478,7 +1485,13 @@ def check_timeline():
     # 所以允许逐页写 shot=（1 起）显式指定挂在哪一镜，不写就还按老规矩。
     first_poem_shot = len(SHOTS) - len(POEMS)
     for k, p in enumerate(POEMS):
-        s0 = starts[p.get("shot", first_poem_shot + k + 1) - 1]
+        n = p.get("shot", first_poem_shot + k + 1)
+        if not 1 <= n <= len(SHOTS):
+            # 同上：shot= 写超了要给一句话，不是 IndexError
+            bad.append("诗文页第 %d 页写的 shot=%d 不存在（一共 %d 镜）"
+                       % (k + 1, n, len(SHOTS)))
+            continue
+        s0 = starts[n - 1]
         if p["t0"] < s0:
             bad.append("诗文页(%.1fs) 早于它那一镜的起点 %.1fs" % (p["t0"], s0))
         if p["t1"] > total:
