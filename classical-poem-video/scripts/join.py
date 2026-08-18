@@ -168,6 +168,7 @@ def check_segments(segs):
             bad.append("%s 段长 %.4fs = %.3f 帧，不是整帧 —— concat 会累积 A/V 漂移"
                        % (s["name"], s["dur"], fr))
         li, tp = loudness(s["mp4"])
+        s["loud"] = li
         # **不要按下标取 v[0]/v[1] 当宽高** —— ffprobe 按流定义顺序返回字段，
         # 不是按 -show_entries 里写的顺序。第一版就这么打成了 "h264x320"。
         # 比较用整个列表（各段同序）是对的，但打印必须单独问。
@@ -218,16 +219,26 @@ def check_seams(raw, segs):
             bad.append("接缝 %.3fs 有黑场（%s）—— 中间接缝不该有淡入淡出。"
                        "查各段的 FADE_IN/FADE_OUT，注意 **d=0 的 fade 会退回 25 帧默认值**"
                        % (off, "、".join("%+.2fs 亮度 %.0f" % (dt, m) for dt, m in dark)))
-        if la is None or lb is None:
-            bad.append("接缝 %.3fs 量不出响度" % off)
+        # **要判的是"有没有哪一段自己归一过"，那要比整段响度，不是比接缝两侧的窗口。**
+        # 窗口量到的是**内容**：段尾常常故意留静默（金句后的呼吸），下一段开口就说话，
+        # 差个三四 dB 完全正常。第一版拿 4s 窗口当判据，在《经度》段一→段二上报了
+        # 3.4 dB "台阶" —— 而两段的整段响度差只有 0.02 dB，根本没有增益差。
+        # 那不是台阶，是写出来的呼吸。判错了会让人去改一个没有问题的东西。
+        sa, sb = s.get("loud"), segs[i + 1].get("loud")
+        if sa is None or sb is None:
+            bad.append("接缝 %.3fs 拿不到整段响度" % off)
         else:
-            step = abs(la - lb)
-            print("     响度  前 %.1f / 后 %.1f LUFS，差 %.1f dB%s"
-                  % (la, lb, step, "" if step <= SEAM_LOUD_STEP else "  << **台阶**"))
-            if step > SEAM_LOUD_STEP:
-                bad.append("接缝 %.3fs 响度差 %.1f dB（上限 %.1f）—— "
+            seg_step = abs(sa - sb)
+            win = ("前 %.1f / 后 %.1f LUFS，差 %.1f dB" % (la, lb, abs(la - lb))
+                   if (la is not None and lb is not None) else "量不出")
+            print("     整段响度  %s %.1f / %s %.1f LUFS，差 %.2f dB%s"
+                  % (s["name"], sa, segs[i + 1]["name"], sb, seg_step,
+                     "" if seg_step <= SEAM_LOUD_STEP else "  << **台阶**"))
+            print("     接缝窗口  %s   （这一行是内容，不是判据）" % win)
+            if seg_step > SEAM_LOUD_STEP:
+                bad.append("接缝 %.3fs 两段整段响度差 %.2f dB（上限 %.1f）—— "
                            "多半是某一段渲染时自己归一过了；段用文件必须**不归一**"
-                           % (off, step, SEAM_LOUD_STEP))
+                           % (off, seg_step, SEAM_LOUD_STEP))
     return bad
 
 

@@ -1010,6 +1010,9 @@ def _win(sh, p):
 
 REUSE_TIGHTEN = 0.80        # 后一镜的取景至少要收到前一镜的这个比例
 REUSE_SHIFT = 0.12          # 或者窗心至少移动这么多（占画幅）
+# 填了理由就降级成提示，空着照旧拦下。**不给静默绕过的开关** ——
+# 那样下一支照抄配置时就再也不知道这里做过妥协了。理由会打印在每次 check 里。
+REUSE_ACCEPT_REASON = ""
 
 
 def check_reuse():
@@ -1033,7 +1036,7 @@ def check_reuse():
     **只查相邻的**。段二镜 12/15 也共用一张图，但中间隔着镜 13、14 二十多秒，
     那是"回到同一个地方"的设计，不是跳接。
     """
-    bad = []
+    bad, warn_reuse = [], []
     for i in range(len(SHOTS) - 1):
         if i + 1 >= len(CLIPS) or CLIPS[i]["src"] != CLIPS[i + 1]["src"]:
             continue
@@ -1042,13 +1045,21 @@ def check_reuse():
         shift = (((b[0] + b[1]) / 2 - (a[0] + a[1]) / 2) ** 2
                  + ((b[2] + b[3]) / 2 - (a[2] + a[3]) / 2) ** 2) ** 0.5
         if tighten > REUSE_TIGHTEN and shift < REUSE_SHIFT:
-            bad.append("镜 %d/%d 共用 %s，但取景没分开："
+            (warn_reuse if REUSE_ACCEPT_REASON.strip() else bad).append(
+                       "镜 %d/%d 共用 %s，但取景没分开："
                        "镜%d 落幅占画面 %.1f%%、镜%d 起幅 %.1f%%（%s），窗心只移了 %.3f。"
                        "读作跳接，不是两镜 —— 收紧镜%d 的 z，或让它切到画面另一块去"
                        % (i + 1, i + 2, CLIPS[i]["src"], i + 1, a[4] * 100,
                           i + 2, b[4] * 100,
                           "反而更宽" if tighten > 1 else "只收到 %.0f%%" % (tighten * 100),
                           shift, i + 2))
+    if warn_reuse:
+        print("")
+        print("=== 一图两镜取景（%d 处低于判据，**已显式承认**）===" % len(warn_reuse))
+        for w in warn_reuse:
+            print("  " + w)
+        print("  理由：" + REUSE_ACCEPT_REASON.strip())
+        print("  交付时这一条要照抄进制作说明的「哪几处是妥协的」。")
     return bad
 
 
@@ -1057,11 +1068,18 @@ def selftest_reuse():
     if not any(CLIPS[i]["src"] == CLIPS[i + 1]["src"] for i in range(len(CLIPS) - 1)):
         print("回归自测: 本段没有相邻共用图，check_reuse 不适用")
         return True
+    # **自测必须绕过 REUSE_ACCEPT_REASON。** 填了理由之后 check_reuse 走降级路径、
+    # 返回空 bad，自测就永远测不到拦截 —— 一个承认机制把自测一起关掉了。
+    # 这一条是自测自己报"检查失效了"才发现的，它诚实地报了，而不是默默通过。
+    global REUSE_ACCEPT_REASON
+    reason_keep = REUSE_ACCEPT_REASON
+    REUSE_ACCEPT_REASON = ""
     keep = dict(SHOTS[1])
     SHOTS[1].update(z=SHOTS[0]["z"], f0=SHOTS[0]["f1"], f1=SHOTS[0]["f1"])
     src_keep = CLIPS[1]["src"]; CLIPS[1]["src"] = CLIPS[0]["src"]
     n = len(check_reuse())
     SHOTS[1].clear(); SHOTS[1].update(keep); CLIPS[1]["src"] = src_keep
+    REUSE_ACCEPT_REASON = reason_keep
     now = len(check_reuse())
     print("回归自测: 相邻两镜共用图且取景相同 → 报警 %d 条 —— %s"
           % (n, "对" if n else "**检查失效了**"))
