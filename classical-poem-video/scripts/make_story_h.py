@@ -2123,13 +2123,19 @@ def build_audio():
                      % (k, dur, g, fi, max(0.0, dur - fo), fo, int(t * 1000), int(t * 1000), k))
         mixed.append("[s%d]" % k)
         k += 1
-    # limit=0.85（−1.4 dBFS）不是 0.95。**段用文件是要交给 join 再编码一次的中间件**，
-    # 而 alimiter 只管样本峰值，管不住采样间(true peak)。实测 0.95 时段用出到
-    # **+0.04 dBTP** —— 顶在 0 上，AAC 解码会漏一层失真。
-    # 留 1.4 dB 余量，而且这是**所有段共用的常数**，所以不会变成逐段增益差（那才是接缝台阶）。
+    # **`level=disabled` 比 `limit` 本身更要紧。**
+    # alimiter 的 `level` 选项默认是开的，它会把输出**重新归一回 0 dBFS** ——
+    # 于是 `limit=0.85` 限完又被抬回去，一点余量都不剩。实测同一条 mix：
+    #     alimiter=limit=0.85                  样本峰值 -0.0 dB / 真峰值 +0.10 dBTP
+    #     alimiter=limit=0.85:level=disabled   样本峰值 -1.4 dB / 真峰值 -1.32 dBTP
+    # 之前把 0.95 改成 0.85 是白改的，从来没产生过余量 —— 参数写了但没生效，
+    # 和运镜那个"写了位移却没给足缩放"是同一个形状：**参数表上完全看不出来。**
+    #
+    # 为什么要留余量：**段用文件是要交给 join 再编码一次的中间件**，顶在 0 dBTP 上
+    # AAC 解码会漏一层失真。1.4 dB 是**所有段共用的常数**，不会变成逐段增益差。
     # 预览那一路照旧归一到 −15，看不出区别。
     parts.append("%samix=inputs=%d:normalize=0:dropout_transition=0,"
-                 "atrim=0:%.3f,alimiter=limit=0.85[a]" % ("".join(mixed), len(mixed), total))
+                 "atrim=0:%.3f,alimiter=limit=0.85:level=disabled[a]" % ("".join(mixed), len(mixed), total))
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(parts), "-map", "[a]",
            "-c:a", "pcm_s24le", "-t", "%.3f" % total, "mix.wav"],
