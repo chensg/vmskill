@@ -57,6 +57,57 @@
 6. **不要自带文字、印章、签名、水印**、匾额、招幌、旗子上的字、船身编号。
    诗句由脚本用楷体排上去；印章生成出来一律是乱码。
 
+## "留素纸"会被生成器画成**一块实心板**（2026-08-18，《天净沙·秋思》MV）
+
+前缀里那句"右侧 30% 要保持浅、素、无细节"，本意是给竖排字幕留一条干净的底。
+**Gemini 把它理解成了"在右边画一块空白纸板"** —— 七张图张张都有，
+带一条笔直的硬边（实测左缘 x 0.61~0.73，板内比板外亮 34~105 级）。
+成片上那条硬边比字幕还抢眼，用户第一句话就是"字幕下面那些方块"。
+
+**这块板事后补不掉。** 四条路都实测过：
+
+| 补法 | 结果 |
+|---|---|
+| **镜像**板左边那条画面翻过去 | **主体被复制了一份** —— 两只昏鸦、两座小桥、两个赶马人。补的宽度是 27%~39%，一定会把主体卷进去 |
+| 取窄带**横向拉开 + 柔化** | 不复制主体了，但出来是一条糊带子，和画的质感完全两回事；先柔后拉一样 |
+| 只把**硬边化成 340px 渐变** | 边化开了，那片浅区仍然一眼看得出是补的 |
+| **裁掉** | 板宽 27%~39%，裁完短边只剩 936~1124px。成片短边 1080，等于 **z ≤ 0.87~1.04** —— 运镜全没了，还要放大 |
+
+**所以要在提示词里堵住，不能指望后期。** 前缀里那一段改成（粗体是新加的）：
+
+```
+The right 30% of the picture must stay pale and quiet — but it is PART OF THE
+PAINTING, not a blank panel: painted mist, empty sky, pale water or the palest
+distance, continuous with the scene and carrying soft wash gradation.
+**Absolutely no flat rectangle of blank paper, no vertical band with a hard
+straight edge, no inscription slip, no cartouche, no margin, no mounting strip,
+no border of any kind — the paper must never show a visible boundary line.**
+```
+
+**这一条数值判据一个都拦不住。** `probe` 量的是字幕带亮度，而一块板的亮度
+**恰恰最漂亮**（实测 220~232，比真画面还干净）；`trace` 的落幅平坦度也全过
+（板是平的，但它落在字幕带上，不在落幅的取样区）。**只有眼睛看得出来** ——
+这是"抽静帧那一步不能省"的又一个例子，而且是最便宜的一次教训：
+发现得早还能重出图，发现得晚就只剩上面那四条都不好的路。
+
+## ffmpeg 补图的一个坑：`maskedmerge` 会把整幅拉成灰度
+
+补板时用 `[base][fill][mask]maskedmerge` 合成，**三路必须同像素格式**，
+喂一张灰度遮罩进去，ffmpeg 会把 base 和 fill 一起转成灰度 ——
+七张图**悄悄被去了色**，而单看某一张还挺像"淡设色"，
+是拉出前后对比图才发现的。
+
+要保色就用 alphamerge：
+
+```
+[a]<处理>,format=yuva444p[s];[s][mask]alphamerge[sa];[b][sa]overlay=0:0
+```
+
+顺带一条同类的：**探测和写入不能都读同一个文件**。第一版探边界读的是
+`素材/imgNN.png`，而它可能已经被上一轮补过了，于是改一次判据重跑一次，
+探到的是"补完之后的边"（左缘从 936 漂到 1300，有一张直接探不到板）。
+探测一律读 `_orig/` 的原件。
+
 ## 风格统一的唯一保证：共用风格前缀
 
 **每张提示词都由「共用风格前缀 + 这一镜的画面描述」组成，前缀一字不改。**
