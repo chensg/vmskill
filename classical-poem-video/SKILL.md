@@ -1,6 +1,6 @@
 ---
 name: classical-poem-video
-description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐音效，本地 ffmpeg 合成竖版 1080x1920 或横版 1920x1080 短片。两种模式共用一条流水线。(1) 诗词模式：一句一镜、楷体竖排字幕、片尾诗文页——《登高》《水调歌头》《雨霖铃》《清平调》 or any 古诗词/宋词/唐诗。(2) 讲述模式：历史小故事 / 冷知识 / 科普，TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、外加一张事实分级表防止把推断说成史实——《没有夏天的那一年》(1816 无夏之年 → 自行车) 那一类。三条开工前定死的轴：运镜还是**一镜一张静态图**（MOTION，可逐镜覆盖）、配乐是生成/公版/**不要背景音乐**（MUSIC_MODE）、图是按任务书生成还是**自己去找公版或图库**（IMG_SOURCE，找来的必须登记来源与授权）。(3) MV 模式：用户给一条**带演唱的成品歌**（自己写的 / suno、mureka 生成的 / 买了授权的）加一份歌词，要一支**字幕跟着唱腔走**的片子——`lyric_sync.py` 打点吸附 + `MUSIC_MODE="song"`，片长锁死等于歌长、换镜只能落在句间空档。Use when Codex is asked to turn a poem or a 历史小故事 into a short, add an episode to such a series, re-cut one in another style (水墨 / 工笔重彩 / 英式水彩 / 电影写实) or another aspect ratio, or asks about 讲述稿 / 分镜 / 运镜 / 静帧 / 不要运镜 / 字幕 / 旁白 / 配乐 / 公版音乐 / 无背景音乐 / 音效 / 诗文页 / 封面 / 素材来源 / 授权署名. Also use when handed **一个带音乐带演唱的 MP3** and asked to make an MV / 音乐视频 / 歌词字幕, or asked about 唱腔同步 / 对轴 / 打点 / LRC / 歌词时间戳 / 卡拉OK字幕 / 逐字字幕, or why lyric subtitles drift out of sync with the singing. Also use when handed a folder of images to assemble, or asked why subtitles are illegible or collide with the platform action rail, why a camera move looks static, why generated music starts on silence, why rain drifts upward, or how long each shot should be.
+description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐音效，本地 ffmpeg 合成竖版 1080x1920 或横版 1920x1080 短片。两种模式共用一条流水线。(1) 诗词模式：一句一镜、楷体竖排字幕、片尾诗文页——《登高》《水调歌头》《雨霖铃》《清平调》 or any 古诗词/宋词/唐诗。(2) 讲述模式：历史小故事 / 冷知识 / 科普 / **荐书（书评、介绍一本书）**，TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、外加一张事实分级表防止把推断说成史实——《没有夏天的那一年》(1816 无夏之年 → 自行车) 那一类；荐书是它的一个子型（三幕、165~185s、第三幕问「这本书自己在问什么」），见 `references/storytelling.md` 第七节。三条开工前定死的轴：运镜还是**一镜一张静态图**（MOTION，可逐镜覆盖）、配乐是生成/公版/**不要背景音乐**（MUSIC_MODE）、图是按任务书生成还是**自己去找公版或图库**（IMG_SOURCE，找来的必须登记来源与授权）。(3) MV 模式：用户给一条**带演唱的成品歌**（自己写的 / suno、mureka 生成的 / 买了授权的）加一份歌词，要一支**字幕跟着唱腔走**的片子——`lyric_sync.py` 打点吸附 + `MUSIC_MODE="song"`，片长锁死等于歌长、换镜只能落在句间空档。Use when Codex is asked to turn a poem, a 历史小故事, or **一本书（荐书 / 书评 / 介绍一本书 / 读书视频）** into a short, add an episode to such a series, re-cut one in another style (水墨 / 工笔重彩 / 英式水彩 / 电影写实) or another aspect ratio, or asks about 讲述稿 / 分镜 / 运镜 / 静帧 / 不要运镜 / 字幕 / 旁白 / 配乐 / 公版音乐 / 无背景音乐 / 音效 / 诗文页 / 封面 / 素材来源 / 授权署名. Also use when handed **一个带音乐带演唱的 MP3** and asked to make an MV / 音乐视频 / 歌词字幕, or asked about 唱腔同步 / 对轴 / 打点 / LRC / 歌词时间戳 / 卡拉OK字幕 / 逐字字幕, or why lyric subtitles drift out of sync with the singing. Also use when handed a folder of images to assemble, or asked why subtitles are illegible or collide with the platform action rail, why a camera move looks static, why generated music starts on silence, why rain drifts upward, or how long each shot should be.
 ---
 
 # 静帧短片流水线
@@ -32,6 +32,11 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 
 已跑通并交付的讲述片：《没有夏天的那一年》（1816 无夏之年 → 自行车，
 13 镜 / 25 条旁白 / 113.97s / −15.1 LUFS）。它的完整配置就在 `make_story_v.py` 里。
+
+**讲述模式有一个子型：荐书片**（介绍一本书 —— 简介 + 内容 + 评论 + 现实意义）。
+机件全一样，但结构、片长、版权三处不同：三幕、165~185s、第三幕**只问
+「这本书自己在问什么」**（外挂社会议题会把书盖住，踩过）、不用书封不用剧照。
+见 `references/storytelling.md` 第七节。第一支：《吞下宇宙的男孩》（21 镜 / 180.1s）。
 
 ## 三条轴：开工前定死，两种模式都适用
 
