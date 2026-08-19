@@ -532,17 +532,32 @@ def check_credits():
 
 
 def selftest_credits():
-    """回归：把登记抽掉，检查必须报警。"""
+    """回归：把登记抽掉，检查必须报警。
+
+    **两路各要一条自己的干净基线，不能共用"当前配置"的 base。**
+    原来两路都拿 `base = len(check_credits())` 比，而 base 里可能已经有一条
+    **别的**告警（实际撞上的是 `MUSIC_MODE='library'` 还没填 `MUSIC_FROM_LIBRARY`）：
+    注入故障后条数不增，自测就报"**检查失效了**" —— 假警，而且偏偏是在
+    检查本身好好的时候报。一个乱叫的自测和一个不叫的自测一样会被无视。
+
+    修法：基线和注入只差**被测的那一维**，别的维度保持不动。
+    """
     global IMG_SOURCE, MUSIC_MODE, CREDITS, MUSIC_CREDIT
     ki, km, kc, kmc = IMG_SOURCE, MUSIC_MODE, CREDITS, MUSIC_CREDIT
-    base = len(check_credits())
+    empty = dict(work="", performer="", source="", license="", url="")
+
+    IMG_SOURCE, CREDITS = "generated", {}                    # 素材那一路的干净基线
+    base_i = len(check_credits())
     IMG_SOURCE, CREDITS = "found", {}
-    a = len(check_credits()) > base
+    a = len(check_credits()) > base_i
     IMG_SOURCE, CREDITS = ki, kc
-    MUSIC_MODE, MUSIC_CREDIT = "public_domain", dict(work="", performer="",
-                                                     source="", license="", url="")
-    b = len(check_credits()) > base
+
+    MUSIC_MODE, MUSIC_CREDIT = "none", kmc                   # 配乐那一路的干净基线
+    base_m = len(check_credits())
+    MUSIC_MODE, MUSIC_CREDIT = "public_domain", empty
+    b = len(check_credits()) > base_m
     MUSIC_MODE, MUSIC_CREDIT = km, kmc
+
     print("回归自测: 素材标 found 但没登记来源 —— %s" % ("对" if a else "**检查失效了**"))
     print("          配乐标 public_domain 但没填授权 —— %s" % ("对" if b else "**检查失效了**"))
     return a and b
