@@ -3,6 +3,7 @@
 历史小故事短片 · 竖版构建脚本模板 (1080x1920，有旁白)
 
   python make_story_v.py sync    # 量旁白实测时长 -> 时间轴。改了配音先跑它
+  python make_story_v.py vofit   # **有平台硬上限时**：拉伸旁白把片长压进去（不变调）
   python make_story_v.py check   # 事实分级/语速/时间轴/安全区/运镜自检。永远先跑
   python make_story_v.py budget  # **出图之前跑**：按每镜运动反推图要多大，分档抄进任务书
   python make_story_v.py prep    # 裁 9:16 + 统一调色 -> img01..N，并自动 probe
@@ -81,6 +82,17 @@ CLAIMS = [
 # 末句的 post 抬到 GAP_POST。转场落在这段静默的正中，于是永远压不到字幕。
 # 手工在 13 个边界上凑这两个数，一定会漏掉一两处，而漏掉的那处要到成片才看得出来。
 VO_DIR = "vo"
+VO_RAW = "vo_raw"           # vofit 的原件备份。有它就永远从它重新推导，拉伸不会叠加
+
+# ---- 平台硬上限（YouTube Shorts 180s / 其它平台按需填）----
+# **有硬线时，"让 TTS 说快一点"保证不了它。** 语速是要来的，不是控制得住的：
+# 同一套提示词，《吞下宇宙的男孩》实测 4.51 字/秒；按 4.8 排片长，回来就是超线。
+# 所以要一个自己能控的机件 —— `vofit`：量完实测旁白，算出把片长压到目标所需的
+# atempo 倍率，逐条拉伸（不变调）。1.06 以内听不出来；超过 ATEMPO_MAX 就不是
+# 拉伸的问题了，是稿子太长，脚本会**拒绝执行并告诉你还差多少个汉字**。
+HARD_LIMIT = None           # 秒。None = 没有硬线。YouTube Shorts 填 180
+LIMIT_SAFETY = 2.0          # 留给编码/首尾帧的余量
+ATEMPO_MAX = 1.08           # 再快就听得出来了
 PRE_DEF, POST_DEF = 0.18, 0.28
 GAP_PRE, GAP_POST = 0.45, 0.70
 NARR = [
@@ -1029,6 +1041,12 @@ def check_timeline():
         except ValueError:
             warn.append("读不出音乐时长")
 
+    if HARD_LIMIT and total > HARD_LIMIT - LIMIT_SAFETY:
+        (bad if total > HARD_LIMIT else warn).append(
+            "片长 %.1fs %s硬上限 %.0fs（余量 %.1fs）—— 配音齐了跑 `vofit`，"
+            "它会算 atempo 倍率；倍率不够会告诉你还得砍多少字"
+            % (total, "超过" if total > HARD_LIMIT else "逼近", HARD_LIMIT, LIMIT_SAFETY))
+
     ns = sum(1 for n in range(1, len(SHOTS) + 1) if is_static(n))
     print("\n片长 %.1fs (%d:%04.1f)  镜头 %d  旁白 %d 条  %dx%d"
           % (total, total // 60, total % 60, len(SHOTS), len(NARR), W, H))
@@ -1053,6 +1071,106 @@ def check_timeline():
     else:
         print("\n自检通过。")
     return not bad
+
+
+def vofit(target=None):
+    """把成片压到硬上限以内 —— **靠拉伸旁白，不靠祈祷 TTS 说得快**。
+
+    静默和转场是排定的，动它们就是动节奏；能安全动的只有语速。
+    atempo 不变调，1.06 以内听不出来（语音上 1.08 开始有"赶"的感觉）。
+
+    做法：量实测旁白总长 speech、静默总长 silence = total − speech，
+    要压到 target 就要 speech2 = target − silence，倍率 = speech / speech2。
+
+    **倍率超过 ATEMPO_MAX 时拒绝执行**，并换算成"还得砍多少汉字"。
+    这一条很要紧：把 1.2 倍的活交给 atempo，等于用一个听得出来的毛病
+    换一个看不出来的超时 —— 那不是修好，是藏起来。
+
+    原件备份在 VO_RAW，每次都从备份重新推导，所以反复跑不会把拉伸叠上去。
+    """
+    durs_map, missing = vo_durs()
+    if missing:
+        sys.exit("!!! 还缺 %d 条旁白，vofit 要实测时长才能算" % len(missing))
+    if target is None:
+        if not HARD_LIMIT:
+            sys.exit("!!! 没有 HARD_LIMIT，也没给目标片长")
+        target = HARD_LIMIT - LIMIT_SAFETY
+
+    total = total_len()
+    speech = sum(durs_map[n["vo"]][0] for n in NARR)
+    silence = total - speech
+    print("")
+    print("=== vofit ===")
+    print("  现在   片长 %.1fs = 旁白 %.1fs + 静默与转场 %.1fs" % (total, speech, silence))
+    print("  目标   片长 %.1fs%s" % (target,
+          ("（硬线 %.0fs − 余量 %.1fs）" % (HARD_LIMIT, LIMIT_SAFETY)) if HARD_LIMIT else ""))
+    # **先把原件的总长拿到手**，一切都按它算 —— 拉伸永远作用在 VO_RAW 上，
+    # 所以分子必须也是原件。拿"已经拉过一次"的时长算倍率、再作用到原件上，
+    # 第二次调整会走反方向：实测第二次目标 18.0s 反而从 18.6s 变成 18.8s，而且一声不吭。
+    raw_speech = speech
+    if os.path.isdir(VO_RAW):
+        raw_speech = 0.0
+        for n in NARR:
+            r = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                                "format=duration", "-of", "csv=p=0",
+                                os.path.join(VO_RAW, os.path.basename(vo_path(n)))],
+                               capture_output=True, text=True)
+            raw_speech += float(r.stdout.strip())
+        if abs(raw_speech - speech) > 0.05:
+            print("  原件   旁白 %.1fs（现在这版是拉伸过的，倍率一律按原件算）" % raw_speech)
+
+    # 原速就装得下 —— 把上一轮的拉伸放回去，不要让它永远留着。
+    # （这一条让 vofit 收敛到"刚好够的倍率"，而不是"历史上最紧的那一次"。）
+    if silence + raw_speech <= target + 1e-6:
+        if os.path.isdir(VO_RAW) and abs(raw_speech - speech) > 0.05:
+            for n in NARR:
+                dst = vo_path(n)
+                run(["ffmpeg", "-y", "-v", "error", "-i",
+                     os.path.join(VO_RAW, os.path.basename(dst)), "-c", "copy", dst],
+                    "还原 " + n["vo"])
+            global _VO
+            _VO = None
+            print("  原速就在目标以内 —— 已放回原速，片长 %.1fs" % total_len())
+        else:
+            print("  已经在目标以内，不用动。")
+        return True
+
+    want = target - silence
+    if want <= 0:
+        sys.exit("!!! 光静默和转场就有 %.1fs，已经超过目标 %.1fs —— 拉伸救不了，"
+                 "要减镜数或缩转场" % (silence, target))
+
+    factor = raw_speech / want
+    chars = sum(n_chars(n["txt"]) for n in NARR)
+    rate = chars / raw_speech
+    if factor > ATEMPO_MAX:
+        saved = raw_speech - (raw_speech / ATEMPO_MAX)
+        short = (silence + raw_speech - target) - saved
+        print("  !! 要 %.3f 倍才压得进 %.1fs，超过 ATEMPO_MAX=%.2f" % (factor, target, ATEMPO_MAX))
+        print("     拉到 %.2f 倍最多省 %.1fs，还差 %.1fs" % (ATEMPO_MAX, saved, short))
+        print("     按本批实测语速 %.2f 字/秒，**还得砍掉约 %d 个汉字**"
+              % (rate, int(-(-short * rate // 1))))
+        sys.exit("     别把这活交给 atempo：听得出来的毛病换看不出来的超时，不是修好。")
+
+    if not os.path.isdir(VO_RAW):
+        os.makedirs(VO_RAW)
+        for n in NARR:
+            src = vo_path(n)
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-c", "copy",
+                            os.path.join(VO_RAW, os.path.basename(src))], check=True)
+        print("  原件已备份到 %s/（以后每次都从这里重新推导）" % VO_RAW)
+
+    print("  倍率 %.3f（上限 %.2f）—— 逐条拉伸，不变调" % (factor, ATEMPO_MAX))
+    for n in NARR:
+        dst = vo_path(n)
+        raw = os.path.join(VO_RAW, os.path.basename(dst))
+        run(["ffmpeg", "-y", "-v", "error", "-i", raw,
+             "-filter:a", "atempo=%.6f" % factor, "-q:a", "2", dst],
+            "拉伸 " + n["vo"])
+    _VO = None
+    print("  拉伸后 片长 %.1fs（语速 %.2f -> %.2f 字/秒）"
+          % (total_len(), chars / raw_speech, chars / raw_speech * factor))
+    return True
 
 
 def sync():
@@ -2112,6 +2230,9 @@ def cover():
 
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if what == "vofit":
+        vofit(float(sys.argv[2]) if len(sys.argv) > 2 else None)
+        sys.exit(0)
     if what in ("sync", "prep", "probe", "trace", "still", "measure", "cover",
                 "pick", "motion", "pixels", "mquality", "credits", "budget"):
         {"sync": sync, "prep": prep, "probe": probe, "trace": trace, "still": still,
