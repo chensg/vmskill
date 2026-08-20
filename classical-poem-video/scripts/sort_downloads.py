@@ -45,10 +45,22 @@ DISCARD_PREFIXES = ("试听", "试读", "废弃")
 
 
 def sfx_rename_map(seg_dir):
-    """从 build/make_story_h.py 的 SFX_CREDITS 里读出 {站点原始名片段: 目标名}。
+    """从 build/make_story_h.py 的 SFX_CREDITS 里读出 {文件名片段: 目标名}。
 
     找来的音效下载下来是站点的文件名，而 SFX 表里写的是我们自己的名字。
-    两者的桥就在 SFX_CREDITS 的 url 里 —— 那串 slug 通常就在文件名中。
+    两者的桥就在 SFX_CREDITS 的 url 里。
+
+    **桥要搭在数字 id 上，不是词干上。** Pixabay 的 url slug 是
+
+        <分类>-<标题>-<id>      household-fireplace-17909
+
+    而真正下载下来的文件名是
+
+        <上传者>-<标题>-<id>    freesound_community-fireplace-17909.mp3
+
+    **分类被换成了上传者。** 按词干匹配就对不上（household- vs freesound_community-），
+    而两边一定共有的只有末尾那串数字。词干仍然留着当备用 ——
+    有些站点的文件名里没有 id。
     """
     p = os.path.join(seg_dir, "build", "make_story_h.py")
     if not os.path.exists(p):
@@ -70,13 +82,14 @@ def sfx_rename_map(seg_dir):
         if not u:
             continue
         slug = u.group(1).rstrip("/").rsplit("/", 1)[-1]
-        # 去掉尾部的数字 id，留下可辨认的词干
+        num = re.search(r"-(\d+)$", slug)
+        if num:
+            out["-" + num.group(1)] = target       # 首选：数字 id，唯一且精确
         stem = re.sub(r"-\d+$", "", slug)
         stem = re.sub(r"^[a-z]+-[a-z]+-effects-", "", stem)
         if len(stem) >= 6:
-            out[stem] = target
+            out[stem] = target                     # 备用：词干
     return out
-
 
 def plan(seg_dir):
     src = os.path.join(seg_dir, "素材")
@@ -118,50 +131,65 @@ def plan(seg_dir):
 
 
 def selftest():
-    """回归自测：把 SFX_CREDITS 的解析拿假数据跑一遍。
+    """回归自测：拿**真实的下载文件名**跑一遍，看能不能落到正确的目标名。
 
-    为什么专门给这个函数写自测：它的失效形式是**恒返回空字典** ——
-    不抛异常、不打印任何东西，只是"没有要改名的文件"，
-    而那和"确实没有要改名的文件"长得一模一样。
-    这种检查失效活了三段才被发现。**一个永远不报警的检查比没有检查更糟。**
+    为什么专门给这个函数写自测：它的失效形式是**恒返回空字典**或**认不出文件** ——
+    不抛异常、不打印任何东西，只是「没有要改名的文件」，
+    而那和「确实没有要改名的文件」长得一模一样。这种失效已经犯过两次：
+
+      一次是内层正则要求 `),` 后跟换行，而外层已经把那个换行吃掉了，
+        于是最后一条永远匹配不上，整张表恒为空。活了三段。
+      一次是按词干匹配。Pixabay 的 url slug 是 <分类>-<标题>-<id>，
+        下载文件名却是 <上传者>-<标题>-<id> —— **分类被换成了上传者**，
+        于是 household-fireplace 认不出 freesound_community-fireplace-17909.mp3。
+
+    **所以这里验的是「文件名 -> 目标名」，不是「表里有几条」。**
+    数条数在第二次那个坑上会照样通过：表是满的，只是认不出文件。
     """
     import tempfile
-    ok = True
+    C1 = ('SFX_CREDITS = {\n'
+          '    "s16_炉火.mp3": dict(\n'
+          '        author="inchadney (via Freesound)",\n'
+          '        url="https://pixabay.com/sound-effects/household-fireplace-17909/",\n'
+          '    ),\n'
+          '}\n')
+    C2 = ('SFX_CREDITS = {\n'
+          '    "s14_金属零件.mp3": dict(\n'
+          '        url="https://pixabay.com/sound-effects/'
+          'household-tools-metal-tools-tool-kit-parts-metal-13197/",\n'
+          '    ),\n'
+          '    "s15_索具风声.mp3": dict(\n'
+          '        url="https://pixabay.com/sound-effects/nature-shroud-wind-wistles-27053/",\n'
+          '    ),\n'
+          '}\n')
     cases = [
-        ("一条", 1, '''SFX_CREDITS = {
-    "s16_炉火.mp3": dict(
-        author="somebody (via Freesound)",
-        url="https://pixabay.com/sound-effects/household-fireplace-17909/",
-    ),
-}
-'''),
-        ("两条", 2, '''SFX_CREDITS = {
-    "sA_甲.mp3": dict(
-        url="https://pixabay.com/sound-effects/nature-shroud-wind-wistles-27053/",
-    ),
-    "sB_乙.mp3": dict(
-        url="https://pixabay.com/sound-effects/household-tools-metal-kit-13197/",
-    ),
-}
-'''),
-        ("没有这一块", 0, "SFX = []"),
+        # 说明, credits 源码, 下载文件名, 期望目标名（None = 不该认出来）
+        ("上传者前缀", C1, "freesound_community-fireplace-17909.mp3", "s16_炉火.mp3"),
+        ("原样 slug", C1, "household-fireplace-17909.mp3", "s16_炉火.mp3"),
+        ("浏览器后缀", C1, "freesound_community-fireplace-17909 (1).mp3", "s16_炉火.mp3"),
+        ("不相干的文件", C1, "s06_钟走时.mp3", None),
+        ("两条·第一条", C2, "sspsurvival-tools-metal-tools-tool-kit-parts-metal-13197.mp3",
+         "s14_金属零件.mp3"),
+        ("两条·第二条", C2, "freesound_community-shroud-wind-wistles-27053.mp3",
+         "s15_索具风声.mp3"),
+        ("没有这一块", "SFX = []", "freesound_community-fireplace-17909.mp3", None),
     ]
-    for name, want, src in cases:
+    ok = True
+    for name, src, fname, want in cases:
         d = tempfile.mkdtemp()
         os.makedirs(os.path.join(d, "build"))
         io.open(os.path.join(d, "build", "make_story_h.py"), "w",
                 encoding="utf-8").write(src)
-        got = sfx_rename_map(d)
-        good = len(got) == want
+        ren = sfx_rename_map(d)
+        hit = [t for key, t in ren.items() if key in fname]
+        got = hit[0] if hit else None
+        good = got == want
         ok = ok and good
-        print("  %-12s 期望 %d 条，实得 %d 条  %s%s"
-              % (name, want, len(got), "ok" if good else "**不对**",
-                 "  " + repr(got) if got else ""))
-    # 作者名里的 "(via Freesound)" 带一个右括号+引号+逗号 —— 内层正则如果写成
-    # `\),\s*` 而不管引号，就会在这里提前收尾，把 url 甩在匹配之外。
+        print("  %-14s %-52s -> %-16s %s"
+              % (name, fname, got or "(不改名)", "ok" if good else
+                 "**不对，该是 %s**" % (want or "(不改名)")))
     print("  自测%s" % ("通过" if ok else "**失败**"))
     return 0 if ok else 1
-
 
 def main():
     if "--selftest" in sys.argv:
