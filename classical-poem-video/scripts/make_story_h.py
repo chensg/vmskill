@@ -70,6 +70,8 @@ SEG_LAST = (SEG_INDEX == SEG_TOTAL)  # 只有最后一段有片尾淡出，也�
 OUT_NAME = "%s_段用.mp4" % SEG_NAME       # 给 join 用：不归一
 PREVIEW_NAME = "%s_预览.mp4" % SEG_NAME   # 给人看：归一 + 头尾淡场
 SRT_NAME = "%s.srt" % SEG_NAME
+CHECK_NAME = "%s_检查片.mp4" % SEG_NAME   # 门禁二：出图前的占位检查片
+PV_FS = 34                                # 占位板上标签的字号
 COVER_NAME = "封面_横版.png"
 COVER_FROM = 5
 
@@ -486,6 +488,72 @@ SRC_NATIVE = (1672, 941)
 #
 # 决定：保持 1920x1080。**但不让检查悄悄放行** —— 填了理由才降级成提示，
 # 空着照旧拦下。理由会打印在 check 里，交付时也要照抄进制作说明。
+# ================= 出图前的两道门禁 =================
+# **出图是整条流水线上最贵、最不可逆的一步；改稿是最便宜的一步。**
+# 所以这两件事必须在出图之前由**人**确认过，不是由检查通过。
+# 两个都是字符串：留空 = 没确认，`budget` 会拦住；填了就是签字，内容会打印出来。
+#
+# 不给一个布尔开关，理由和 PP_ACCEPT_REASON 一样：True 是无痕的，
+# 半年后回看没人知道当时确认了什么、改了什么。**要写人话。**
+GATE_SCRIPT_OK = ""
+# ↑ 讲述稿人工确认。写清楚：谁看的、什么时候、改了哪几处、还是原样通过。
+#   例：'2026-08-21 用户看过，第三幕两处改写（"社会议题"删掉，换成书自己在问什么），确认可用'
+#
+#   为什么这一道必须是人：稿子的毛病全是**检查判不出来的那一类** ——
+#   哪句话是废话、哪个转折跳了、第三幕是不是在替读者下结论。
+#   `check_claims` 只管"有没有把推断说成史实"，管不了"好不好听"。
+
+GATE_PREVIEW_OK = ""
+# ↑ 只有字幕 + 声音的检查片人工确认。跑 `python 本脚本 preview` 出片，
+#   交给用户听完再填。写清楚听下来改了什么。
+#   例：'2026-08-21 用户听过检查片，VO_08a 重生成（原版带贬义），其余通过；片长 138.0s 认可'
+#
+#   这一版**能定死四件事，全在出图之前**：
+#     旁白好不好听 · 断句与气口 · 字幕跟不跟得上 · **片长**（有硬线时尤其要紧）
+#   真图到了直接替换同名文件，CLIPS / SHOTS / NARR 一个字都不用动。
+
+
+def check_gates():
+    """出图前的两道门禁。`budget` 末尾调用 —— 尺寸表照印，但不签字就不许拿去出图。
+
+    **为什么拦在 budget 上**：budget 是"出图之前跑、把尺寸抄进任务书"的那一步，
+    是流水线上最后一个还来得及改稿的位置。再往后就是花钱花时间的出图。
+
+    **为什么是拦而不是提示**：这两件事被跳过的时候不会有任何症状 ——
+    图出完了、片子渲出来了、一切检查全绿，只是稿子不好听、或者片长超了硬线。
+    那时候再回头，前面所有的钱都白花。**一个只提示不拦的门禁等于没有门禁。**
+    """
+    me = os.path.basename(sys.argv[0])
+    rows = [("讲述稿人工确认", GATE_SCRIPT_OK,
+             "把%s讲述稿交给用户读一遍。稿子的毛病是检查判不出来的那一类。"
+             % ("本段" if SEG_TOTAL > 1 else "")),
+            ("检查片人工确认", GATE_PREVIEW_OK,
+             "跑 `python %s preview` 出一支只有字幕+声音的片子，交给用户听。" % me)]
+    print("")
+    print("=== 出图前的两道门禁 ===")
+    bad = []
+    for name, val, how in rows:
+        if val.strip():
+            print("  [已签字] %s" % name)
+            print("           %s" % val.strip())
+        else:
+            print("  [ 未过 ] %s" % name)
+            print("           %s" % how)
+            bad.append(name)
+    if bad:
+        print("")
+        # 单独跑 `gates` 时上面没有尺寸表，别说一句不存在的东西
+        from_budget = len(sys.argv) > 1 and sys.argv[1] == "budget"
+        print("  %s**先不要出图**。还差 %d 道：%s"
+              % ("上面的尺寸表" if from_budget else "", len(bad), "、".join(bad)))
+        print("  确认完把结论写进脚本顶部的 GATE_SCRIPT_OK / GATE_PREVIEW_OK，")
+        print("  **写人话，不要写 True** —— 半年后回看要知道当时确认了什么。")
+        sys.exit(1)
+    print("")
+    print("  两道都过了，可以出图。")
+    return True
+
+
 PP_ACCEPT_REASON = (
     "生成器封顶 1672x941，源图短边比成片短边还小，pp 无法达到 1.0。"
     "已在最差镜（镜5 pp 0.56）做 1080p/720p 判决性对比："
@@ -635,6 +703,9 @@ def budget():
     print("  上面是**裁成成片比例之后**的尺寸要求，已按 CLIPS 的 zoom 折回。")
     print("  生成器出不了 16:9 的话还要再除裁切损失（出 3:2 裁 16:9 只剩 89%）。")
     print("  **务必显式指定尺寸** —— 很多工具默认出 1K，那样只剩六成细节，这一条被坑过两次。")
+    # **拦在这里，不拦在别处。** budget 是"出图之前跑、把尺寸抄进任务书"的那一步，
+    # 也是流水线上最后一个还来得及改稿的位置。再往后就是花钱花时间的出图。
+    check_gates()
 
 
 def music_on():
@@ -2319,6 +2390,123 @@ def srt_ts(t):
                                     ms // 1000 % 60, ms % 1000)
 
 
+def preview():
+    """出图之前的检查片：**占位画面 + 真旁白 + 真字幕**。门禁二靠它。
+
+    交给用户的是一支能听完的片子，不是一堆数字。它定死四件事，全在出图之前：
+    旁白好不好听 · 断句与气口 · 字幕跟不跟得上 · **片长**。
+    真图到了直接替换同名文件，CLIPS / SHOTS / NARR 一个字都不用动。
+
+    ---- 三条实现上的讲究 ----
+
+    1. **所有文字都走 ASS，一个 drawtext 都不用。** 带 drawtext 的 ffmpeg 在
+       Git bash 下会 Fontconfig error + 段错误（见 references/codex.md），
+       而 `subtitles=`（libass）这条路整条流水线天天在跑，是验过的。
+       占位板上的镜号、文件名、画面描述因此全部当字幕烧，不画进图里。
+
+    2. **背景只出一张，不是一镜一张。** 镜与镜的分界靠镜号标签变化看出来，
+       够用；一镜一张要多跑 N 条 ffmpeg 换不来任何信息。
+
+    3. **只有旁白，没有音效没有音乐。** 这一版要验的是"话说得对不对"，
+       多铺一层会让人分神去听氛围。而且这时候音效多半还没找。
+
+    ---- 这一版验不了什么（必须说清楚，别让它冒充通过）----
+
+      motion            **结构性失效** —— 占位板是均匀灰，中位帧差恒为 0
+      trace / measure   不适用 —— 量的是真实画面的明暗
+      字幕排版          **有效** —— 断行/宽度只跟字号坐标有关，跟画面无关
+    """
+    lines, durs, total, starts = timeline()
+    durs_map, missing = vo_durs()
+    if missing:
+        sys.exit("!!! 还缺 %d 条旁白，出不了检查片: %s"
+                 % (len(missing), ", ".join(missing[:5])))
+
+    # ---- 背景：深灰 + 一条压暗的横带标出字幕位置 ----
+    y0 = max(0, SUB_BOT - 2 * SUB_LH - 14)
+    bh = min(H - y0, 2 * SUB_LH + 28)
+    run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+         "-i", "color=c=0x2b2b2b:s=%dx%d" % (W, H),
+         "-vf", "drawbox=x=0:y=%d:w=%d:h=%d:color=0x171717@1:t=fill" % (y0, W, bh),
+         "-frames:v", "1", "_pv_bg.png"], "占位背景")
+
+    # ---- 一份 ASS 装下全部文字：镜号 / 图名 / 描述 / 正文字幕 ----
+    ev = []
+    for i, c in enumerate(CLIPS):
+        t0 = starts[i]
+        t1 = starts[i + 1] if i + 1 < len(starts) else total
+        desc = SHOTS[i].get("desc", "")
+        head = "镜 %d / %d" % (i + 1, len(CLIPS))
+        reuse = [j + 1 for j, d in enumerate(CLIPS) if d["src"] == c["src"]]
+        if len(reuse) > 1:
+            head += "   （%s 共用一张图）" % " / ".join("镜%d" % r for r in reuse)
+        z0, z1 = SHOTS[i]["z"]
+        move = ("静帧" if z0 == z1 and SHOTS[i]["f0"] == SHOTS[i]["f1"]
+                else "推近" if z1 > z0 else "拉远" if z1 < z0 else "横移")
+        head += "   %s z %.2f→%.2f   %.1fs" % (move, z0, z1, t1 - t0)
+        for k, txt in enumerate([head, c["src"], desc]):
+            if not txt:
+                continue
+            ev.append("Dialogue: 0,%s,%s,PV,,0,0,0,,{\\pos(%d,%d)}%s"
+                      % (ts(t0), ts(t1), W // 2,
+                         int(H * 0.16) + k * int(PV_FS * 1.7), txt))
+    # **逐行堆叠，不要挤成一条。** 排版要和成片一模一样，
+    # 否则「字幕跟不跟得上」这一项验的就不是真东西了。
+    for st, en, txt, _, _, _ in lines:
+        parts = sub_lines(txt)
+        for j, q in enumerate(parts):
+            y = SUB_BOT - (len(parts) - 1 - j) * SUB_LH - SUB_FS // 2
+            ev.append("Dialogue: 1,%s,%s,M,,0,0,0,,{\\pos(%d,%d)}%s"
+                      % (ts(st), ts(en), SUB_CX, y, q))
+    with open("_pv.ass", "w", encoding="utf-8-sig") as f:
+        f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
+                "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n" % (W, H)
+                + styles_block()[:-1] + "\n"
+                + _style("PV", PV_FS, "light_on_dark", 2) + "\n"
+                + "\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,"
+                  "MarginV,Effect,Text\n" + "\n".join(ev) + "\n")
+
+    # ---- 音频：只有旁白，每条按实测反算到 VO_TARGET ----
+    ins, parts, bus = ["-loop", "1", "-i", "_pv_bg.png"], [], []
+    for j, n in enumerate(NARR):
+        path = vo_path(n)
+        meas = integrated_lufs(path)
+        g = VO_TARGET - meas if meas is not None else 0.0
+        vs = lines[j][4]
+        ins += ["-i", path]
+        parts.append("[%d:a]aresample=48000,aformat=fltp:cl=stereo,volume=%.1fdB,"
+                     "adelay=%d|%d,apad[v%d]"
+                     % (j + 1, g, int(vs * 1000), int(vs * 1000), j + 1))
+        bus.append("[v%d]" % (j + 1))
+    parts.append("%samix=inputs=%d:normalize=0:dropout_transition=0,"
+                 "atrim=0:%.3f,alimiter=limit=0.85:level=disabled[a]"
+                 % ("".join(bus), len(bus), total))
+    parts.append("[0:v]fps=%d,format=yuv420p,subtitles=_pv.ass:fontsdir=%s[v]"
+                 % (FPS, FONTS.replace("\\", "/")))
+
+    out = os.path.join("..", CHECK_NAME)
+    run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
+        + ["-filter_complex", ";".join(parts), "-map", "[v]", "-map", "[a]",
+           "-t", "%.3f" % total, "-c:v", "libx264", "-crf", "23",
+           "-preset", "veryfast", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "192k", out],
+        "检查片 %d 镜 / %d 条旁白 / %.1fs -> %s" % (len(CLIPS), len(NARR), total, out))
+    for f in ("_pv_bg.png", "_pv.ass"):
+        if os.path.exists(f):
+            os.remove(f)
+    print("")
+    print("  **这一版没有音效、没有音乐**，要验的是话说得对不对。")
+    print("  片长 %.3fs = %.1f 分。%s"
+          % (total, total / 60.0,
+             "硬线 %ds，%s" % (HARD_LIMIT,
+                              "还差 %.1fs" % (HARD_LIMIT - total) if total <= HARD_LIMIT
+                              else "**已超 %.1fs**" % (total - HARD_LIMIT))
+             if globals().get("HARD_LIMIT") else "没有硬线"))
+    print("  交给用户听完，把结论写进 GATE_PREVIEW_OK，才允许出图。")
+    print("  motion / trace / measure 对占位板**不适用**，这时候别跑。")
+    return out
+
+
 def make_srt():
     """正文字幕 → 外挂 SRT。
 
@@ -2599,12 +2787,15 @@ def cover():
 
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
+    # `preview` 和 `budget` 都必须在**没有图**的时候跑得起来 —— 那正是它们的位置。
     if what in ("sync", "prep", "probe", "trace", "still", "measure", "cover",
-                "pick", "motion", "pixels", "mquality", "credits", "budget", "srt"):
+                "pick", "motion", "pixels", "mquality", "credits", "budget",
+                "srt", "preview", "gates"):
         {"sync": sync, "prep": prep, "probe": probe, "trace": trace, "still": still,
          "measure": measure, "cover": cover, "pick": pick_music_in,
          "motion": motion, "pixels": pixels, "srt": make_srt,
-         "mquality": mquality, "credits": credits, "budget": budget}[what]()
+         "mquality": mquality, "credits": credits, "budget": budget,
+         "preview": preview, "gates": check_gates}[what]()
         sys.exit(0)
     ok = check_timeline()
     if what == "check":
