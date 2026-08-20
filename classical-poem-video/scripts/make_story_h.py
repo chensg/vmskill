@@ -812,6 +812,32 @@ def cut_points():
     return shot_starts()[1:]
 
 
+def sfx_dur(e):
+    """音效该放多长。**优先写 span（盖几镜），不要写死 dur。**
+
+    写死秒数的毛病和当初手写 est 一模一样：旁白一改，镜长就变，
+    而秒数不会跟着变 —— 它不报错，只是悄悄错位。段五头一版就踩了：
+    照着 budget 打印的**渲染长**填 dur（每镜含两侧各半个 xfade，比内容长约 1s），
+    于是镜 7~9 那条房间底噪多压了 3 秒进镜 10，盖在该由钟声独占的地方。
+    参数表上完全看不出来，要把起止秒数打出来对才发现。
+
+    span=n 表示从这一镜起盖 n 镜的**内容**，尾巴伸到最后那个转场的正中 ——
+    也就是画面正好 50/50 的那一帧。声音在那里断，是断在切点上而不是切点后。
+    """
+    if e.get("dur") is not None:
+        return e["dur"]
+    st, total = shot_starts(), total_len()
+    i = e["shot"] - 1
+    j = min(i + e.get("span", 1), len(SHOTS))          # 末镜下标 +1
+    # **不要再加 xf/2。** 转场骑在内容边界正中（见 cut_points），
+    # 所以画面 50/50 的那一帧就是 st[j] 本身，加半个转场是往后多伸了。
+    end = st[j] if j < len(SHOTS) else total
+    # **起点要和混音处用同一个夹过的值。** 混音里是 max(0, st+off)，
+    # 这里如果直接用 st+off，负的 off（镜 1 那种"提前进来"）就会把长度多算 |off|，
+    # 尾巴越过切点 —— 半秒的事，听不出来，但它是错的。
+    return max(0.1, end - max(0.0, st[i] + e.get("off", 0.0)))
+
+
 def shot_of(t):
     n = 1
     for i, s in enumerate(shot_starts(), 1):
@@ -2206,7 +2232,8 @@ def build_audio():
     st_shots = shot_starts()
     print("\n=== 音效（目标响度锚在 VO_TARGET=%.1f 上，不是音乐）===" % SFX_ANCHOR)
     for s in SFX:
-        f, tgt, fi, fo, dur = s["f"], s["tgt"], s["fi"], s["fo"], s["dur"]
+        f, tgt, fi, fo = s["f"], s["tgt"], s["fi"], s["fo"]
+        dur = sfx_dur(s)
         if not 1 <= s["shot"] <= len(SHOTS):
             sys.exit("!!! 音效 %s 的 shot=%d 超出 %d 镜" % (f, s["shot"], len(SHOTS)))
         t = max(0.0, st_shots[s["shot"] - 1] + s["off"])

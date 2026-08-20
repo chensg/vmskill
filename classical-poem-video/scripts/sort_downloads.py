@@ -58,7 +58,13 @@ def sfx_rename_map(seg_dir):
     if not m:
         return {}
     out = {}
-    for blk in re.finditer(r'"([^"]+\.mp3)"\s*:\s*dict\((.*?)\),\s*\n', m.group(1), re.S):
+    # 结尾那个 `|$` **不是可有可无的**：上面外层正则非贪婪匹配到换行加右花括号，
+    # 那个换行被它吃掉了，所以 group(1) 的末尾是 4 个空格加右圆括号加逗号，
+    # **后面没有换行**。内层只认换行结尾的话，最后一条永远匹配不上 ——
+    # 而 SFX_CREDITS 通常就只有一两条，于是整张映射表恒为空，
+    # 脚本一声不吭地什么都不改名：它不报错，只是说「没有要改名的」。
+    # 这个坑活了三段没被发现，因为那三次找来的音效都是我手工改的名。
+    for blk in re.finditer(r'"([^"]+\.mp3)"\s*:\s*dict\((.*?)\),\s*(?:\n|$)', m.group(1), re.S):
         target, body = blk.group(1), blk.group(2)
         u = re.search(r'url\s*=\s*"([^"]+)"', body)
         if not u:
@@ -111,9 +117,58 @@ def plan(seg_dir):
     return moves, warns
 
 
+def selftest():
+    """回归自测：把 SFX_CREDITS 的解析拿假数据跑一遍。
+
+    为什么专门给这个函数写自测：它的失效形式是**恒返回空字典** ——
+    不抛异常、不打印任何东西，只是"没有要改名的文件"，
+    而那和"确实没有要改名的文件"长得一模一样。
+    这种检查失效活了三段才被发现。**一个永远不报警的检查比没有检查更糟。**
+    """
+    import tempfile
+    ok = True
+    cases = [
+        ("一条", 1, '''SFX_CREDITS = {
+    "s16_炉火.mp3": dict(
+        author="somebody (via Freesound)",
+        url="https://pixabay.com/sound-effects/household-fireplace-17909/",
+    ),
+}
+'''),
+        ("两条", 2, '''SFX_CREDITS = {
+    "sA_甲.mp3": dict(
+        url="https://pixabay.com/sound-effects/nature-shroud-wind-wistles-27053/",
+    ),
+    "sB_乙.mp3": dict(
+        url="https://pixabay.com/sound-effects/household-tools-metal-kit-13197/",
+    ),
+}
+'''),
+        ("没有这一块", 0, "SFX = []"),
+    ]
+    for name, want, src in cases:
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "build"))
+        io.open(os.path.join(d, "build", "make_story_h.py"), "w",
+                encoding="utf-8").write(src)
+        got = sfx_rename_map(d)
+        good = len(got) == want
+        ok = ok and good
+        print("  %-12s 期望 %d 条，实得 %d 条  %s%s"
+              % (name, want, len(got), "ok" if good else "**不对**",
+                 "  " + repr(got) if got else ""))
+    # 作者名里的 "(via Freesound)" 带一个右括号+引号+逗号 —— 内层正则如果写成
+    # `\),\s*` 而不管引号，就会在这里提前收尾，把 url 甩在匹配之外。
+    print("  自测%s" % ("通过" if ok else "**失败**"))
+    return 0 if ok else 1
+
+
 def main():
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     if len(sys.argv) < 2:
-        sys.exit("用法: python sort_downloads.py <段目录> [--apply]")
+        sys.exit("用法: python sort_downloads.py <段目录> [--apply]" + chr(10)
+                 + "      python sort_downloads.py --selftest")
     seg = sys.argv[1].rstrip("/\\")
     apply_ = "--apply" in sys.argv
     moves, warns = plan(seg)
