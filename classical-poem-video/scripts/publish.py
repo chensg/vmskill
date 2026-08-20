@@ -82,6 +82,11 @@ def parse(path):
         if mg:
             out[cur]["tags"] = re.findall(r"#\S+", mg.group(1))
             continue
+        # **列表项一律是注释，不是正文。** 第一版把「- 推荐用第 1 条，因为…」
+        # 算进了正文字数，抖音（正文上限 55）当场被这一行顶爆 —— 假警。
+        # 正文是散文行，注释是列表项，按这个分就干净了。
+        if re.match(r"^[-*]\s", line):
+            continue
         body_chars += len(line)
     if cur:
         out[cur]["body"] = body_chars
@@ -186,6 +191,16 @@ def selftest():
     r4 = check(p4)
     print("回归自测: 没写 AI 生成声明 → %s" % ("报警了，对" if not r4 else "**漏了**"))
     ok = ok and (not r4)
+
+    p5 = os.path.join(d, "note.md")
+    io.open(p5, "w", encoding="utf-8").write(
+        "## 抖音\n- 标题：短标题 #a\n- 话题：#a\n"
+        "- 推荐用第 1 条，因为：" + "理" * 80 + "\n"
+        "片中画面为 AI 生成。\n")
+    r5 = check(p5)
+    print("回归自测: 80 字的『推荐』注释（抖音正文上限 55）→ %s"
+          % ("不算进正文，对" if r5 else "**又把注释当正文了**"))
+    ok = ok and r5
 
     print("\n回归自测总体: %s" % ("通过" if ok else "**有失效的检查**"))
     return ok
