@@ -299,6 +299,13 @@ SFX = [
 # **s01 是唯一一条会循环的**：要盖镜 3~6 共 34s，而 ElevenLabs 生成上限 22s。
 # 连续的涌浪循环一次几乎听不出接缝，接受了；换成别的声音就不能这么办。
 SFX_GAIN_WARN = 12.0
+
+# 找来的音效的来源。**自己生成的不用登记，从站点下的必须登记** ——
+# `credits` 会把它写进交付的《素材来源》，没有它那份文件会断言
+# "音效均无第三方权利"，而那是**一句会被交出去的假话**。
+# 键是 SFX 表里的文件名，值至少要有 title / author / source / license / url。
+# `sort_downloads.py` 也读它：按 url 末尾的数字 id 把下载来的原始文件名改成这里的键。
+SFX_CREDITS = {}
 # 全片的声音动机：航海钟的走时声（s06）。没有音乐，它替代音乐当那条听得出来的线 ——
 # 段一镜 2 第一次出现，镜 10~11 回来。此后每一段的关键处各回来一次，段五收尾再响。
 
@@ -2126,9 +2133,37 @@ def credits():
             lines.append("- %s：%s" % (label, MUSIC_CREDIT.get(k, "**缺**")))
         lines += ["", "> **录音权与作品权是两回事。** 上面登记的是**这一次录音**的授权，"
                       "不是作曲家去世多少年。"]
-    lines += ["", "## 旁白与音效", "",
-              "旁白 %d 条为 TTS 生成；音效 %d 条为生成。均无第三方权利。"
-              % (len(NARR), len(SFX))]
+    lines += ["", "## 旁白与音效", "", "旁白 %d 条为 TTS 生成，无第三方权利。" % len(NARR)]
+    # **音效不能一句"均为生成"带过。** 找来的音效有第三方权利，来源就写在同一个
+    # 脚本的 SFX_CREDITS 里 —— 第一版的 credits 根本不读它，于是在交付物里
+    # **断言了一件不成立的事**（"音效 N 条为生成，均无第三方权利"）。
+    # 它不报错，只是把一句假话写进了要交出去的文件。四支片子都这么写过。
+    used = []
+    for e in SFX:
+        if e["f"] not in used:
+            used.append(e["f"])
+    found = [f for f in used if f in SFX_CREDITS]
+    if not found:
+        lines.append("音效 %d 条（%d 个文件）全部为生成或自有素材库，无第三方权利。"
+                     % (len(SFX), len(used)))
+    else:
+        lines.append("音效 %d 条，用到 %d 个文件，其中 **%d 个来自第三方**，逐条登记如下。"
+                     % (len(SFX), len(used), len(found)))
+        lines += ["", "| 文件 | 作品 | 作者 | 来源 | 授权 | 链接 |",
+                  "|---|---|---|---|---|---|"]
+        for f in found:
+            e = SFX_CREDITS[f]
+            lines.append("| %s | %s | %s | %s | %s | %s |"
+                         % (f, e.get("title", "**缺**"), e.get("author", "**缺**"),
+                            e.get("source", "**缺**"), e.get("license", "**缺**"),
+                            e.get("url", "**缺**")))
+        lines += ["", "其余 %d 个文件为生成或自有素材库，无第三方权利。" % (len(used) - len(found)),
+                  "",
+                  "> **署名一律给。** Pixabay 的 License Summary 说署名非强制，"
+                  "但同一页也写着「certain Content may be subject to additional "
+                  "intellectual property rights，**It is your responsibility to check**」——"
+                  "而从 Freesound 转载的条目，原始授权可能是 CC-BY（要求署名）。"
+                  "署名成本为零，不署名的风险不为零。"]
     out = os.path.join("..", "素材来源.md")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
