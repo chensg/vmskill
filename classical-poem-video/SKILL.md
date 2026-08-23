@@ -1,6 +1,6 @@
 ---
 name: classical-poem-video
-description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐音效，本地 ffmpeg 合成竖版 1080x1920 或横版 1920x1080 短片。两种模式共用一条流水线。(1) 诗词模式：一句一镜、楷体竖排字幕、片尾诗文页——《登高》《水调歌头》《雨霖铃》《清平调》 or any 古诗词/宋词/唐诗。(2) 讲述模式：历史小故事 / 冷知识 / 科普 / **荐书（书评、介绍一本书）**，TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、外加一张事实分级表防止把推断说成史实——《没有夏天的那一年》(1816 无夏之年 → 自行车) 那一类；荐书是它的一个子型（三幕、165~185s、第三幕问「这本书自己在问什么」），见 `references/storytelling.md` 第七节。三条开工前定死的轴：运镜还是**一镜一张静态图**（MOTION，可逐镜覆盖）、配乐是生成/公版/**不要背景音乐**（MUSIC_MODE）、图是按任务书生成还是**自己去找公版或图库**（IMG_SOURCE，找来的必须登记来源与授权）。(3) MV 模式：用户给一条**带演唱的成品歌**（自己写的 / suno、mureka 生成的 / 买了授权的）加一份歌词，要一支**字幕跟着唱腔走**的片子——`lyric_sync.py` 打点吸附 + `MUSIC_MODE="song"`，片长锁死等于歌长、换镜只能落在句间空档。Use when Codex is asked to turn a poem, a 历史小故事, or **一本书（荐书 / 书评 / 介绍一本书 / 读书视频）** into a short, add an episode to such a series, re-cut one in another style (水墨 / 工笔重彩 / 英式水彩 / 电影写实) or another aspect ratio, or asks about 讲述稿 / 分镜 / 运镜 / 静帧 / 不要运镜 / 字幕 / 旁白 / 配乐 / 公版音乐 / 无背景音乐 / 音效 / 诗文页 / 封面 / 素材来源 / 授权署名. Also use when handed **一个带音乐带演唱的 MP3** and asked to make an MV / 音乐视频 / 歌词字幕, or asked about 唱腔同步 / 对轴 / 打点 / LRC / 歌词时间戳 / 卡拉OK字幕 / 逐字字幕, or why lyric subtitles drift out of sync with the singing. Also use when handed a folder of images to assemble, or asked why subtitles are illegible or collide with the platform action rail, why a camera move looks static, why generated music starts on silence, why rain drifts upward, or how long each shot should be.
+description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐音效，本地 ffmpeg 合成竖版 1080x1920 或横版 1920x1080 短片。四种模式共用一条流水线。(1) 诗词模式：一句一镜、楷体竖排字幕、片尾诗文页——《登高》《水调歌头》《雨霖铃》《清平调》 or any 古诗词/宋词/唐诗。(2) 讲述模式：历史小故事 / 冷知识 / 科普 / **荐书（书评、介绍一本书）**，TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、外加一张事实分级表防止把推断说成史实——《没有夏天的那一年》(1816 无夏之年 → 自行车) 那一类；荐书是它的一个子型（三幕、165~185s、第三幕问「这本书自己在问什么」），见 `references/storytelling.md` 第七节。三条开工前定死的轴：运镜还是**一镜一张静态图**（MOTION，可逐镜覆盖）、配乐是生成/公版/**不要背景音乐**（MUSIC_MODE）、图是按任务书生成还是**自己去找公版或图库**（IMG_SOURCE，找来的必须登记来源与授权）。(3) MV 模式：用户给一条**带演唱的成品歌**（自己写的 / suno、mureka 生成的 / 买了授权的）加一份歌词，要一支**字幕跟着唱腔走**的片子——`lyric_sync.py` 打点吸附 + `MUSIC_MODE="song"`，片长锁死等于歌长、换镜只能落在句间空档。(4) **小说第一人称模式**：把一本**公版小说**做成连载 —— 让书里的一个角色（不一定是主角）对着观众把他自己那段经历讲一遍，**一集 600s±60（10 分钟）、一集一个完整的故事、一本书分多集**。横版 1920×1080 + 外挂 SRT + 一幕一段用 `join.py` 拼集（走《经度》那条长片路子），`MOTION` 默认 `static`（记忆是静止的），**TTS 不能照抄讲述模式**（讲述者的声音 ≠ 角色的声音），多两张表：人称合约与忠实度分级。见 `references/storytelling.md` 第九节。Use when Codex is asked to turn a poem, a 历史小故事, or **一本书（荐书 / 书评 / 介绍一本书 / 读书视频）** into a short, add an episode to such a series, re-cut one in another style (水墨 / 工笔重彩 / 英式水彩 / 电影写实) or another aspect ratio, or asks about 讲述稿 / 分镜 / 运镜 / 静帧 / 不要运镜 / 字幕 / 旁白 / 配乐 / 公版音乐 / 无背景音乐 / 音效 / 诗文页 / 封面 / 素材来源 / 授权署名. Also use when asked to turn **一本小说 / 名著 / 公版小说** into a **第一人称讲述 / 角色自述 / 有声故事连载**, to add 下一集 to such a 连载, or asks about 人称合约 / 视角 / 我是谁在讲 / 忠实度 / 改编尺度 / 切集 / 每集自足 / 角色配音 / 声音试听 / 全集总谱 / 中译本能不能抄 / 名著角色形象的版权. Also use when handed **一个带音乐带演唱的 MP3** and asked to make an MV / 音乐视频 / 歌词字幕, or asked about 唱腔同步 / 对轴 / 打点 / LRC / 歌词时间戳 / 卡拉OK字幕 / 逐字字幕, or why lyric subtitles drift out of sync with the singing. Also use when handed a folder of images to assemble, or asked why subtitles are illegible or collide with the platform action rail, why a camera move looks static, why generated music starts on silence, why rain drifts upward, or how long each shot should be.
 ---
 
 # 静帧短片流水线
@@ -60,6 +60,15 @@ emotionScale 3 / **不设 speedRatio**），加一条统一的 `performancePromp
 机件全一样，但结构、片长、版权三处不同：三幕、165~185s、第三幕**只问
 「这本书自己在问什么」**（外挂社会议题会把书盖住，踩过）、不用书封不用剧照。
 见 `references/storytelling.md` 第七节。第一支：《吞下宇宙的男孩》（21 镜 / 180.1s）。
+
+**讲述模式还有第二个子型：小说第一人称片**（让书里的一个角色自己把那段经历讲一遍，
+**一本书连载多集，一集 600s ± 60**）。它和荐书片正好相反 —— 荐书片站在书外面，
+这个站在书里面。机件仍然全一样，但**横版 + 外挂 SRT + 分幕 join**（走《经度》那条路）、
+`MOTION` 默认翻成 `static`、**TTS 那套配置不能照抄**（讲述者的声音 ≠ 角色的声音），
+另外多两张表：**人称合约**（谁在讲 / 何时讲 / 对谁讲 / 为什么现在讲）和
+**忠实度分级**（原著 / 暗示 / 我加的）。版权上有一个极容易踩的坑：
+**原著公版 ≠ 角色形象公版**（怪物的螺栓头是 1931 年环球影业的美术设计，至今在版权内）。
+见 `references/storytelling.md` 第九节。**第一支还没跑完，那一节里标「待实测」的都别当数。**
 
 ## 三条轴：开工前定死，两种模式都适用
 
@@ -1162,8 +1171,14 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
   `SHOTS` 不写 `dur`，时间轴由旁白实测推出来
 - `references/storytelling.md` — 讲述模式独有的那些事：**出图前的两道门禁**（第〇节）、
   事实分级（史实/概数/假说）、旁白气口与语速判据、横排字幕怎么避开操作栏、
-  转场当叙事标点、侧链躲闪的数值、**旁白 TTS 的完整配置与去 AI 味的提示词**（第八节）。
-  **做故事片时读它**
+  转场当叙事标点、侧链躲闪的数值、**旁白 TTS 的完整配置与去 AI 味的提示词**（第八节）、
+  **小说第一人称片**（第九节：人称合约、忠实度分级、切集判据、角色声音的 TTS 配置、
+  连载合约、公版原著的三条版权规矩）。**做故事片、荐书片、小说片时读它**
+- `scripts/make_story_h.py` — **讲述模式 横版 1920×1080 的"一段"**，字幕外挂不烧录，
+  内含《经度》段一的完整真实配置（已交付 706s 全片）。长片和**小说第一人称连载**
+  都走它 + `join.py`：一幕一个段目录，段内不归一、只有首尾段有淡场、段长吸到整帧
+- `scripts/join.py` — 把分段渲好的片子拼成全片：concat + **一次**全局响度归一 +
+  按实际段起点合并 SRT + 接缝校验。分段制作的坑全在接缝上，且大半不报警
 - `references/sourcing.md` — 找图与生成图：五个画种的共用风格前缀（可原样复用）、
   暗调写实的"留暗"要求怎么写、**`IMG_SOURCE='found'` 那一路怎么走**、验证纪律。
   **要选图或写生成提示词时读它**
