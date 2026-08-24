@@ -1103,13 +1103,33 @@ def selftest_seg():
     return ok and now == 0
 
 
-def _win(sh, p):
-    """镜 sh 在进度 p(0~1) 时的取景窗：(左, 右, 上, 下, 占画面比例)。"""
+def _win(sh, p, clip=None):
+    """镜 sh 在进度 p(0~1) 时的取景窗：(左, 右, 上, 下, 占画面比例)。
+
+    **给了 clip 就换算到「源图」坐标系。** CLIPS 的 zoom/cx/cy 是 prep 阶段的裁切，
+    prep 为每一镜产出它自己的 imgNN —— 所以相邻两镜共用同一张源图时，
+    只比 SHOTS 的 z/f 会**漏掉这一层**：明明已经用 cx/cy 切到画面另一块去了，
+    check_reuse 仍然报「取景没分开」，而且报的是 100.0% / 窗心移动 0.000
+    （z 恒为 1 的静帧镜必然如此），看起来完全像配置写错了。
+
+    这和 trace 少算 vignette / scrim 是同一个形状的坑：**筛子少建模了流水线里的
+    一道，于是长期报假警。** 技能文档说的省图手段本来就是「CLIPS 里 cx/cy/zoom
+    不同」，判据却只看 SHOTS —— 两边对不上，要补的是判据。
+    （2026-08-25《潘多拉的瓮》：33 镜里 9 处假警，全部是已经切开了的。）
+    """
     z = sh["z"][0] + (sh["z"][1] - sh["z"][0]) * p
     half = 1 / (2 * z)
     fx = min(max(sh["f0"][0] + (sh["f1"][0] - sh["f0"][0]) * p, half), 1 - half)
     fy = min(max(sh["f0"][1] + (sh["f1"][1] - sh["f0"][1]) * p, half), 1 - half)
-    return (fx - half, fx + half, fy - half, fy + half, 1.0 / z)
+    if clip is None:
+        return (fx - half, fx + half, fy - half, fy + half, 1.0 / z)
+    cz = clip.get("zoom", 1.0) or 1.0
+    cx, cy = clip.get("cx", 0.5), clip.get("cy", 0.5)
+    # prep 窗在源图上：中心 (cx,cy)、边长 1/cz；SHOTS 窗再在它里面取 1/z。
+    h = half / cz
+    return (cx + (fx - 0.5) / cz - h, cx + (fx - 0.5) / cz + h,
+            cy + (fy - 0.5) / cz - h, cy + (fy - 0.5) / cz + h,
+            1.0 / (z * cz))
 
 
 REUSE_TIGHTEN = 0.80        # 后一镜的取景至少要收到前一镜的这个比例
@@ -1144,7 +1164,7 @@ def check_reuse():
     for i in range(len(SHOTS) - 1):
         if i + 1 >= len(CLIPS) or CLIPS[i]["src"] != CLIPS[i + 1]["src"]:
             continue
-        a, b = _win(SHOTS[i], 1.0), _win(SHOTS[i + 1], 0.0)
+        a, b = _win(SHOTS[i], 1.0, CLIPS[i]), _win(SHOTS[i + 1], 0.0, CLIPS[i + 1])
         tighten = b[4] / a[4]
         shift = (((b[0] + b[1]) / 2 - (a[0] + a[1]) / 2) ** 2
                  + ((b[2] + b[3]) / 2 - (a[2] + a[3]) / 2) ** 2) ** 0.5
