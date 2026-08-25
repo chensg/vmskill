@@ -1358,6 +1358,26 @@ def selftest_credits():
     return a and b
 
 
+def check_coldopen(lines):
+    """**冷开场那句不能压在开场淡入里。**
+
+    第二节写着「冷开场第一句的 pre 给 1.2~1.6s」，但不写也能跑、别的检查也不报，
+    所以**连着两支都漏了**（《白衣女人》集一集二，第二支是在集一刚把这条写进技能之后）。
+    光写进文档不管用，这里拦。
+
+    判据：第一条旁白的**出声点**必须落在 FADE_IN 之后，且留 0.2s 余量。
+    出声点 = 第一条字幕起点 + 0.10（字幕比声音早 0.10s 起，见 timeline()）。
+    """
+    if not SEG_FIRST or FADE_IN <= 0 or not lines:
+        return []
+    vs = lines[0][4]                      # 第一条旁白的落点
+    if vs < FADE_IN + 0.2:
+        return ["冷开场压在淡入里：旁白 %.2fs 出声，而 FADE_IN 要到 %.2fs 才走完 —— "
+                "给第一条 NARR 写 pre=1.2~1.6（现在是 %.2f）"
+                % (vs, FADE_IN, vs)]
+    return []
+
+
 def check_timeline():
     lines, durs, total, _ = timeline()
     _, missing = vo_durs()
@@ -1371,6 +1391,7 @@ def check_timeline():
     bad += check_xfades()
     bad += check_moves()
     bad += check_resolution()
+    bad += check_coldopen(lines)
 
     for st, en, txt, _, _, _ in lines:
         for c in cuts:
