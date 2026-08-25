@@ -1358,6 +1358,24 @@ def selftest_credits():
     return a and b
 
 
+def check_endcard():
+    """**下集预告板不能指向本集自己。**
+
+    换集时从上一支复制脚本，`ENDCARD` 会原样继承过来。《白衣女人》集二就这样
+    带着集一的板子渲完了整片 —— 成片里写着「下一集 · 黑水园」，而黑水园就是这一集。
+    `check_seg` 只验 ENDCARD 该不该存在，不验里面写了什么，所以一路全绿，
+    **是用户看片的时候发现的**。
+
+    判据很笨但够用：预告板的 head 里不许出现本集的 TITLE。
+    """
+    if not ENDCARD:
+        return []
+    if TITLE and TITLE in ENDCARD.get("head", ""):
+        return ["下集预告板写的是本集自己（TITLE=%r 出现在 ENDCARD.head=%r）—— "
+                "换集时忘了重填？" % (TITLE, ENDCARD["head"])]
+    return []
+
+
 def check_coldopen(lines):
     """**冷开场那句不能压在开场淡入里。**
 
@@ -1392,6 +1410,7 @@ def check_timeline():
     bad += check_moves()
     bad += check_resolution()
     bad += check_coldopen(lines)
+    bad += check_endcard()
 
     for st, en, txt, _, _, _ in lines:
         for c in cuts:
