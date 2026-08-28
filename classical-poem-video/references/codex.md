@@ -126,8 +126,25 @@ GATE_PREVIEW_OK = "2026-08-21 用户听过检查片，VO_08a 重生成（原版�
 
 ```bash
 python join.py 段一 段二 段三 段四 段五   # 拼接 + 一次全局归一 + 合并 SRT + 接缝校验
-python join.py --selftest                # 回归自测
+python join.py --selftest                # 回归自测（含多音轨那几条）
 ```
+
+### 双语音轨（YouTube 多语言音轨，只有横版这一路做）
+
+在上面的序列里插两步。`LANGS = ["zh"]` 时这些一步都不发生。
+
+```bash
+# ---- 中文那条走完 sync/check，英文稿按「槽」写完、TTS 生成完，放进 vo_en/ ----
+python make_story_h.py langfit      # 逐句把英文压进中文的槽；压不进去它报还得砍几个词
+python make_story_h.py preview en   # 单听英文那条（这时候图还没出，改稿最便宜）
+python make_story_h.py check        # 多一段「英文轨逐句对槽」，从磁盘文件重验
+python make_story_h.py c            # 一条画面 + 两条音轨 + 两份 SRT
+python join.py 段一 段二 ...        # 两条轨各自归一，两份 SRT 各自合并
+python publish.py check 发布文案.md  # **默认要求**有 ## YouTube (EN) 那一块
+```
+
+`langfit` 退出码 1 = 有句子压不进去。**不要绕过它去渲** ——
+渲出来的样子是英文那句说到转场底下，而你放中文版检查时一切正常。
 
 ### MV 模式（带演唱的成品歌 + 歌词）
 

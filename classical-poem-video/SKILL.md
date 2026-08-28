@@ -1,6 +1,6 @@
 ---
 name: classical-poem-video
-description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐音效，本地 ffmpeg 合成竖版 1080x1920 或横版 1920x1080 短片。四种模式共用一条流水线。(1) 诗词模式：一句一镜、楷体竖排字幕、片尾诗文页——《登高》《水调歌头》《雨霖铃》《清平调》 or any 古诗词/宋词/唐诗。(2) 讲述模式：历史小故事 / 冷知识 / 科普 / **荐书（书评、介绍一本书）**，TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、外加一张事实分级表防止把推断说成史实——《没有夏天的那一年》(1816 无夏之年 → 自行车) 那一类；荐书是它的一个子型（三幕、165~185s、第三幕问「这本书自己在问什么」），见 `references/storytelling.md` 第七节。三条开工前定死的轴：运镜还是**一镜一张静态图**（MOTION，可逐镜覆盖）、配乐是生成/公版/**不要背景音乐**（MUSIC_MODE）、图是按任务书生成还是**自己去找公版或图库**（IMG_SOURCE，找来的必须登记来源与授权）。(3) MV 模式：用户给一条**带演唱的成品歌**（自己写的 / suno、mureka 生成的 / 买了授权的）加一份歌词，要一支**字幕跟着唱腔走**的片子——`lyric_sync.py` 打点吸附 + `MUSIC_MODE="song"`，片长锁死等于歌长、换镜只能落在句间空档。(4) **小说第一人称模式**：把一本**公版小说**做成连载 —— 让书里的一个角色（不一定是主角）对着观众把他自己那段经历讲一遍，**一集 600s±60（10 分钟）、一集一个完整的故事、一本书分多集**。横版 1920×1080 + 外挂 SRT + 一幕一段用 `join.py` 拼集（走《经度》那条长片路子），`MOTION` 默认 `static`（记忆是静止的），**TTS 不能照抄讲述模式**（讲述者的声音 ≠ 角色的声音），多两张表：人称合约与忠实度分级。见 `references/storytelling.md` 第九节。Use when Codex is asked to turn a poem, a 历史小故事, or **一本书（荐书 / 书评 / 介绍一本书 / 读书视频）** into a short, add an episode to such a series, re-cut one in another style (水墨 / 工笔重彩 / 英式水彩 / 电影写实) or another aspect ratio, or asks about 讲述稿 / 分镜 / 运镜 / 静帧 / 不要运镜 / 字幕 / 旁白 / 配乐 / 公版音乐 / 无背景音乐 / 音效 / 诗文页 / 封面 / 素材来源 / 授权署名. Also use when asked to turn **一本小说 / 名著 / 公版小说** into a **第一人称讲述 / 角色自述 / 有声故事连载**, to add 下一集 to such a 连载, or asks about 人称合约 / 视角 / 我是谁在讲 / 忠实度 / 改编尺度 / 切集 / 每集自足 / 角色配音 / 声音试听 / 全集总谱 / 中译本能不能抄 / 名著角色形象的版权. Also use when handed **一个带音乐带演唱的 MP3** and asked to make an MV / 音乐视频 / 歌词字幕, or asked about 唱腔同步 / 对轴 / 打点 / LRC / 歌词时间戳 / 卡拉OK字幕 / 逐字字幕, or why lyric subtitles drift out of sync with the singing. Also use when handed a folder of images to assemble, or asked why subtitles are illegible or collide with the platform action rail, why a camera move looks static, why generated music starts on silence, why rain drifts upward, or how long each shot should be.
+description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐音效，本地 ffmpeg 合成竖版 1080x1920 或横版 1920x1080 短片。四种模式共用一条流水线。(1) 诗词模式：一句一镜、楷体竖排字幕、片尾诗文页——《登高》《水调歌头》《雨霖铃》《清平调》 or any 古诗词/宋词/唐诗。(2) 讲述模式：历史小故事 / 冷知识 / 科普 / **荐书（书评、介绍一本书）**，TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、外加一张事实分级表防止把推断说成史实——《没有夏天的那一年》(1816 无夏之年 → 自行车) 那一类；荐书是它的一个子型（三幕、165~185s、第三幕问「这本书自己在问什么」），见 `references/storytelling.md` 第七节。三条开工前定死的轴：运镜还是**一镜一张静态图**（MOTION，可逐镜覆盖）、配乐是生成/公版/**不要背景音乐**（MUSIC_MODE）、图是按任务书生成还是**自己去找公版或图库**（IMG_SOURCE，找来的必须登记来源与授权）。(3) MV 模式：用户给一条**带演唱的成品歌**（自己写的 / suno、mureka 生成的 / 买了授权的）加一份歌词，要一支**字幕跟着唱腔走**的片子——`lyric_sync.py` 打点吸附 + `MUSIC_MODE="song"`，片长锁死等于歌长、换镜只能落在句间空档。(4) **小说第一人称模式**：把一本**公版小说**做成连载 —— 让书里的一个角色（不一定是主角）对着观众把他自己那段经历讲一遍，**一集 600s±60（10 分钟）、一集一个完整的故事、一本书分多集**。横版 1920×1080 + 外挂 SRT + 一幕一段用 `join.py` 拼集（走《经度》那条长片路子），`MOTION` 默认 `static`（记忆是静止的），**TTS 不能照抄讲述模式**（讲述者的声音 ≠ 角色的声音），多两张表：人称合约与忠实度分级。见 `references/storytelling.md` 第九节。Use when Codex is asked to turn a poem, a 历史小故事, or **一本书（荐书 / 书评 / 介绍一本书 / 读书视频）** into a short, add an episode to such a series, re-cut one in another style (水墨 / 工笔重彩 / 英式水彩 / 电影写实) or another aspect ratio, or asks about 讲述稿 / 分镜 / 运镜 / 静帧 / 不要运镜 / 字幕 / 旁白 / 配乐 / 公版音乐 / 无背景音乐 / 音效 / 诗文页 / 封面 / 素材来源 / 授权署名. Also use when asked to turn **一本小说 / 名著 / 公版小说** into a **第一人称讲述 / 角色自述 / 有声故事连载**, to add 下一集 to such a 连载, or asks about 人称合约 / 视角 / 我是谁在讲 / 忠实度 / 改编尺度 / 切集 / 每集自足 / 角色配音 / 声音试听 / 全集总谱 / 中译本能不能抄 / 名著角色形象的版权. Also use when handed **一个带音乐带演唱的 MP3** and asked to make an MV / 音乐视频 / 歌词字幕, or asked about 唱腔同步 / 对轴 / 打点 / LRC / 歌词时间戳 / 卡拉OK字幕 / 逐字字幕, or why lyric subtitles drift out of sync with the singing. Also use when asked for a **中英双语 / 双音轨 / 多音轨 / YouTube 多语言音轨 / 英文配音 / 英文字幕** version of a 横版讲述长片 or 小说连载, to add an English audio track to an existing one, or asks about 对轴 / 逐句压 / langfit / 英文稿怎么写才塞得进 / 两份 SRT / 发布文案的英文版 / 为什么拼完只剩一条音轨. Also use when handed a folder of images to assemble, or asked why subtitles are illegible or collide with the platform action rail, why a camera move looks static, why generated music starts on silence, why rain drifts upward, or how long each shot should be.
 ---
 
 # 静帧短片流水线
@@ -1131,9 +1131,41 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
 - 本地 `ffmpeg` / `ffprobe` 是这条流水线的主力，**成片就是本地合成的**，
   ChatCut 项目只用来生成音频素材
 
+## 双语音轨：一条画面，两条音轨
+
+**只在横版这一路做**（`make_story_h.py` + `join.py`）：讲述长片、小说第一人称连载。
+`LANGS = ["zh", "en"]` 打开，出**一条画面 + 中英两条音轨 + 两份 SRT**。
+
+竖版（`make_story_v.py`）**不做**：抖音小红书没有外挂字幕这回事，那一路必须烧字，
+而烧进画面的中文字幕会跟着英文轨一起播。竖版要英文版是另渲一支片子，不是加一条轨。
+
+一句话推出全部设计：**YouTube 的多语言音轨是一条视频 + N 条音轨，画面只有一份。**
+
+- **时间轴归中文。** 英文塞进中文量出来的槽里，画面一帧不动 ——
+  反过来让画面迁就英文，两条轨就是两支片子，多音轨本身没有意义了
+- **逐句压，不是整条一个倍率**（那是竖版 `vofit` 解决另一个问题的办法）。
+  `langfit` 逐句 atempo，上限 ×1.06；**压不进去的不压**，报出这一句还得砍几个词。
+  把 1.2 倍的活交给 atempo，是用一个听得出来的毛病换一个看不出来的错位
+- **镜末那一句借不到静默** —— 镜末的静默正中骑着转场，借了就把话说到转场底下去
+- **英文稿是配音改写，不是翻译。** 逐句直译一定长出去（中文一个字信息更密），
+  长出去的那几句要**换个说法**，不是靠压
+
+三处会静默出错，都做了检查：
+
+1. **改了翻译忘了跑 `langfit`** —— `check` 每次从**磁盘上的英文文件**重新量对不对得上槽
+2. **`concat` 默认只留一条音轨** —— 不给 `-map` 时 ffmpeg 每种类型只挑一条，
+   拼完只剩中文轨，而且返回码 0、能播、时长对。`join.py` 显式 `-map 0`，
+   自测里先跑一遍不加 `-map 0` 的命令验证危险是真的
+3. **两条轨各自归一** —— 说话密度不同，整合响度天生不同；共用一个测量值会差出台阶，
+   而观众正是在切换音轨的那一刻听见它
+
+细则、流程、还没实测的四个数，见 `references/storytelling.md` 第十节。
+
 ## 交付
 
 成片规格：H.264 + AAC 48k 立体声，响度归一到 **−15 LUFS**（平台标准 −14~−16）。
+双语片是**一个 mp4 里两条音轨**（语言元数据 `zho` / `eng` 写进文件，YouTube 直接认），
+字幕中英各一份外挂 SRT，发布文案多一块 `## YouTube (EN)`。
 封面单独出一张，同时用 `-disposition:v:1 attached_pic` 嵌进 mp4 做封面帧
 （脚本没做这一步，`c` 跑完之后手动 remux 一次，`-c copy` 不重编码）。
 
@@ -1196,9 +1228,13 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
   连载合约、公版原著的三条版权规矩）。**做故事片、荐书片、小说片时读它**
 - `scripts/make_story_h.py` — **讲述模式 横版 1920×1080 的"一段"**，字幕外挂不烧录，
   内含《经度》段一的完整真实配置（已交付 706s 全片）。长片和**小说第一人称连载**
-  都走它 + `join.py`：一幕一个段目录，段内不归一、只有首尾段有淡场、段长吸到整帧
+  都走它 + `join.py`：一幕一个段目录，段内不归一、只有首尾段有淡场、段长吸到整帧。
+  **双语音轨也只在这一路**（`LANGS = ["zh", "en"]`）：一条画面 + 两条音轨 + 两份 SRT，
+  多一个 `langfit` 命令把英文逐句压进中文定的槽
 - `scripts/join.py` — 把分段渲好的片子拼成全片：concat + **一次**全局响度归一 +
-  按实际段起点合并 SRT + 接缝校验。分段制作的坑全在接缝上，且大半不报警
+  按实际段起点合并 SRT + 接缝校验。分段制作的坑全在接缝上，且大半不报警。
+  多音轨时**每条轨各自归一**、接缝逐条判台阶，concat 显式 `-map 0`
+  （不加会静默丢掉英文轨，自测里把这个危险演了一遍）
 - `references/sourcing.md` — 找图与生成图：五个画种的共用风格前缀（可原样复用）、
   暗调写实的"留暗"要求怎么写、**`IMG_SOURCE='found'` 那一路怎么走**、验证纪律。
   **要选图或写生成提示词时读它**

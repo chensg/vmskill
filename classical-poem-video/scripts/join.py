@@ -25,6 +25,13 @@
 4. **各段 SRT 的时间码都从 0 起。** 合并时必须按**实际拼接后的段起点**累加偏移，
    不能用预算值 —— 差几十毫秒，到第五段就是明显错位。
 
+5. **多音轨的段用文件，concat 默认只会留下一条音轨。** ffmpeg 不给 -map 时按
+   "每种类型挑最好的一条"选流，两条音轨的片子拼完只剩一条，**而且不报错**：
+   出来的全片能播、时长对、中文轨也对，只有英文轨没了。所以这里显式 `-map 0`。
+   归一同理 —— 每条轨**各自量、各自归**到同一个目标，拿中文的测量值去归英文，
+   两条轨会差出一个台阶，而观众正是在切换音轨的那一刻听见它。
+   段与段之间音轨条数或语言对不上时**直接拒绝拼**：那种片子拼出来只会更难查。
+
 ===== 为什么视频用 -c copy =====
 
 各段的"段用"文件是同一套编码参数出来的（libx264 crf18 / yuv420p / 同尺寸同帧率），
@@ -49,7 +56,7 @@ SEAM_LOUD_STEP = 3.0      # 接缝两侧响度差超过这么多就报警（dB�
 SEAM_WIN = 4.0            # 接缝两侧各取多长来量响度
 BLACK_MEAN = 8.0          # 平均亮度低于这个算黑场
 OUT_NAME = "全片.mp4"
-OUT_SRT = "全片.srt"
+OUT_SRT = "全片%s.srt"      # %s 是语言后缀：中文是空串，英文是 ".en"
 
 
 def run(args, desc):
@@ -64,6 +71,40 @@ def probe(path, keys, stream="v:0"):
                         "-of", "default=nw=1:nk=1", path],
                        capture_output=True, text=True)
     return [x.strip() for x in r.stdout.strip().splitlines()]
+
+
+def audio_tracks(path):
+    """每条音轨的语言码，按流顺序。没有 language 标签的返回 "und"。"""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                        "-show_entries", "stream_tags=language",
+                        "-of", "default=nw=1:nk=1", path],
+                       capture_output=True, text=True)
+    out = [x.strip() or "und" for x in r.stdout.splitlines()]
+    if out:
+        return out
+    # 有音轨但一条 language 都没有时上面会返回空 —— 那时按流数补 und，
+    # **不能返回空列表**，否则"有 0 条音轨"和"有音轨但没标语言"混成一件事。
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                        "-show_entries", "stream=index", "-of", "csv=p=0", path],
+                       capture_output=True, text=True)
+    return ["und"] * len([x for x in r.stdout.splitlines() if x.strip()])
+
+
+def srt_suffixes(d, name):
+    """这一段目录里有哪几份字幕：{后缀: 路径}。中文是 ""，英文是 ".en"。
+
+    **后缀是从磁盘上读出来的，不是按语言码查表算的。** 查表要在这里和
+    make_story_h.py 的 LANG_INFO 各写一份，迟早分叉；读文件不会。
+    """
+    out = {}
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for fn in names:
+        if fn.startswith(name) and fn.lower().endswith(".srt"):
+            out[fn[len(name):-4]] = os.path.join(d, fn)
+    return out
 
 
 def duration(path):
@@ -83,13 +124,18 @@ def frame_mean(path, t):
     return (sum(b) / len(b)) if b else None
 
 
-def loudness(path, ss=None, t=None):
+def loudness(path, ss=None, t=None, ai=None):
+    """整合响度。ai 给了就只量第 ai 条音轨 —— 多音轨时不指定会量到默认那条，
+    于是"英文轨自己归一过"这种错永远查不出来。"""
     a = ["ffmpeg", "-hide_banner"]
     if ss is not None:
         a += ["-ss", "%.3f" % ss]
     if t is not None:
         a += ["-t", "%.3f" % t]
-    a += ["-i", path, "-af", "loudnorm=print_format=json", "-f", "null", "-"]
+    a += ["-i", path]
+    if ai is not None:
+        a += ["-map", "0:a:%d" % ai]
+    a += ["-af", "loudnorm=print_format=json", "-f", "null", "-"]
     p = subprocess.run(a, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     try:
@@ -124,7 +170,7 @@ def parse_srt(path):
 
 
 def collect(seg_dirs):
-    """找每段的段用 mp4 和 srt，并核对编码参数一致。"""
+    """找每段的段用 mp4 和各语言 srt，并核对编码参数、音轨条数与语言一致。"""
     segs, bad = [], []
     for d in seg_dirs:
         if not os.path.isdir(d):
@@ -132,14 +178,15 @@ def collect(seg_dirs):
             continue
         name = os.path.basename(os.path.normpath(d))
         mp4 = os.path.join(d, "%s_段用.mp4" % name)
-        srt = os.path.join(d, "%s.srt" % name)
         if not os.path.exists(mp4):
             bad.append("缺段用文件: " + mp4)
             continue
-        if not os.path.exists(srt):
+        srts = srt_suffixes(d, name)
+        if not srts:
             print("   提示: %s 没有 srt，这一段不会有字幕" % name)
-            srt = None
-        segs.append(dict(name=name, mp4=mp4, srt=srt, dur=duration(mp4),
+        tracks = audio_tracks(mp4)
+        segs.append(dict(name=name, mp4=mp4, srts=srts, tracks=tracks,
+                         dur=duration(mp4),
                          v=probe(mp4, ["width", "height", "r_frame_rate",
                                        "pix_fmt", "codec_name"]),
                          a=probe(mp4, ["codec_name", "sample_rate", "channels"], "a:0")))
@@ -154,6 +201,22 @@ def collect(seg_dirs):
         if s["a"] != ref["a"]:
             bad.append("%s 的音频参数和 %s 不一致：%s vs %s"
                        % (s["name"], ref["name"], s["a"], ref["a"]))
+        # **音轨对不上就不拼。** 条数不同 concat 会拼出一个流布局混乱的文件；
+        # 条数相同而顺序不同（一段 zho/eng、另一段 eng/zho）更坏 ——
+        # 拼出来能播、时长对，只有中间某一段说的是另一种语言。
+        if s["tracks"] != ref["tracks"]:
+            bad.append("%s 的音轨和 %s 对不上：%s vs %s —— "
+                       "多音轨必须每段条数相同、顺序相同（同一段没开 LANGS？）"
+                       % (s["name"], ref["name"], "/".join(s["tracks"]),
+                          "/".join(ref["tracks"])))
+        if set(s["srts"]) != set(ref["srts"]):
+            bad.append("%s 的字幕份数和 %s 对不上：%s vs %s"
+                       % (s["name"], ref["name"],
+                          sorted(s["srts"]) or "无", sorted(ref["srts"]) or "无"))
+    if len(ref["tracks"]) > 1 and len(ref["srts"]) < len(ref["tracks"]):
+        # 不算错（有人就是只要一份字幕），但十有八九是漏了 —— 必须说出来
+        print("   提示: 有 %d 条音轨却只有 %d 份字幕 —— 多音轨片子通常每种语言各一份"
+              % (len(ref["tracks"]), len(ref["srts"])))
     return segs, bad
 
 
@@ -167,8 +230,9 @@ def check_segments(segs):
         if off >= 1e-3:
             bad.append("%s 段长 %.4fs = %.3f 帧，不是整帧 —— concat 会累积 A/V 漂移"
                        % (s["name"], s["dur"], fr))
-        li, tp = loudness(s["mp4"])
-        s["loud"] = li
+        # 每条轨各量各的：只量默认轨的话，"英文轨自己归一过了"查不出来
+        s["loud"] = [loudness(s["mp4"], ai=j)[0] for j in range(len(s["tracks"]))]
+        li, tp = loudness(s["mp4"], ai=0)
         # **不要按下标取 v[0]/v[1] 当宽高** —— ffprobe 按流定义顺序返回字段，
         # 不是按 -show_entries 里写的顺序。第一版就这么打成了 "h264x320"。
         # 比较用整个列表（各段同序）是对的，但打印必须单独问。
@@ -176,6 +240,11 @@ def check_segments(segs):
         print("  %-6s %8.3fs = %8.1f 帧  %s  I=%6.1f LUFS  TP=%+5.2f dBTP%s"
               % (s["name"], s["dur"], fr, "x".join(wh) if len(wh) == 2 else "?",
                  li or 0, tp or 0, flag))
+        if len(s["tracks"]) > 1:
+            print("         音轨 %d 条：%s"
+                  % (len(s["tracks"]),
+                     "  ".join("%s I=%.1f" % (c, l if l is not None else float("nan"))
+                               for c, l in zip(s["tracks"], s["loud"]))))
         if tp is not None and tp > 0:
             print("         ** 真峰值顶到 0 以上：这一段渲染时限幅没留余量"
                   "（alimiter 要加 level=disabled，否则 limit 会被 level 抬回 0）")
@@ -188,9 +257,12 @@ def concat_video(segs, work):
         for s in segs:
             f.write("file '%s'\n" % os.path.abspath(s["mp4"]).replace("\\", "/"))
     raw = os.path.join(work, "_raw.mp4")
+    # **-map 0 不能省。** 不给 -map 时 ffmpeg 每种类型只挑一条流，
+    # 两条音轨的片子拼完只剩一条，而且不报错（见文件头第 5 条）。
     run(["ffmpeg", "-y", "-v", "error", "-stats", "-f", "concat", "-safe", "0",
-         "-i", lst, "-c", "copy", raw],
-        "拼接 %d 段（视频 -c copy，不重编码）" % len(segs))
+         "-i", lst, "-map", "0", "-c", "copy", raw],
+        "拼接 %d 段（视频 -c copy，%d 条音轨全带上）"
+        % (len(segs), len(segs[0]["tracks"])))
     return raw, lst
 
 
@@ -224,49 +296,80 @@ def check_seams(raw, segs):
         # 差个三四 dB 完全正常。第一版拿 4s 窗口当判据，在《经度》段一→段二上报了
         # 3.4 dB "台阶" —— 而两段的整段响度差只有 0.02 dB，根本没有增益差。
         # 那不是台阶，是写出来的呼吸。判错了会让人去改一个没有问题的东西。
-        sa, sb = s.get("loud"), segs[i + 1].get("loud")
-        if sa is None or sb is None:
+        # **逐条音轨判。** 只判默认轨的话，"英文那段自己归一过了"会整条溜过去 ——
+        # 而中文轨听起来完全正常，没人会去听英文轨找台阶。
+        la_l, lb_l = s.get("loud") or [], segs[i + 1].get("loud") or []
+        codes = s.get("tracks") or ["a:0"]
+        if not la_l or not lb_l or len(la_l) != len(lb_l):
             bad.append("接缝 %.3fs 拿不到整段响度" % off)
         else:
-            seg_step = abs(sa - sb)
             win = ("前 %.1f / 后 %.1f LUFS，差 %.1f dB" % (la, lb, abs(la - lb))
                    if (la is not None and lb is not None) else "量不出")
-            print("     整段响度  %s %.1f / %s %.1f LUFS，差 %.2f dB%s"
-                  % (s["name"], sa, segs[i + 1]["name"], sb, seg_step,
-                     "" if seg_step <= SEAM_LOUD_STEP else "  << **台阶**"))
+            for j, (sa, sb) in enumerate(zip(la_l, lb_l)):
+                code = codes[j] if j < len(codes) else "a:%d" % j
+                if sa is None or sb is None:
+                    bad.append("接缝 %.3fs 的 %s 轨拿不到整段响度" % (off, code))
+                    continue
+                seg_step = abs(sa - sb)
+                print("     整段响度[%s]  %s %.1f / %s %.1f LUFS，差 %.2f dB%s"
+                      % (code, s["name"], sa, segs[i + 1]["name"], sb, seg_step,
+                         "" if seg_step <= SEAM_LOUD_STEP else "  << **台阶**"))
+                if seg_step > SEAM_LOUD_STEP:
+                    bad.append("接缝 %.3fs 的 %s 轨两段整段响度差 %.2f dB（上限 %.1f）—— "
+                               "多半是某一段渲染时自己归一过了；段用文件必须**不归一**"
+                               % (off, code, seg_step, SEAM_LOUD_STEP))
             print("     接缝窗口  %s   （这一行是内容，不是判据）" % win)
-            if seg_step > SEAM_LOUD_STEP:
-                bad.append("接缝 %.3fs 两段整段响度差 %.2f dB（上限 %.1f）—— "
-                           "多半是某一段渲染时自己归一过了；段用文件必须**不归一**"
-                           % (off, seg_step, SEAM_LOUD_STEP))
     return bad
 
 
-def merge_srt(segs, out_path):
-    """按**实际**段长累加偏移。用预算值差几十毫秒，到第五段就是明显错位。"""
-    ev, off, n = [], 0.0, 0
-    for s in segs:
-        if s["srt"]:
-            for st, en, body in parse_srt(s["srt"]):
-                n += 1
-                ev.append("%d\n%s --> %s\n%s\n"
-                          % (n, srt_ts(st + off), srt_ts(en + off), body))
-        off += s["dur"]
-    with open(out_path, "w", encoding="utf-8-sig") as f:
-        f.write("\n".join(ev))
-    print("\n合并字幕 %d 条 -> %s" % (n, out_path))
-    return n
+def merge_srt(segs, work):
+    """按**实际**段长累加偏移，每种语言各合一份。
+    用预算值差几十毫秒，到第五段就是明显错位。"""
+    outs = []
+    for suffix in sorted(set().union(*[set(s["srts"]) for s in segs]) or {""}):
+        ev, off, n = [], 0.0, 0
+        for s in segs:
+            p = s["srts"].get(suffix)
+            if p:
+                for st, en, body in parse_srt(p):
+                    n += 1
+                    ev.append("%d\n%s --> %s\n%s\n"
+                              % (n, srt_ts(st + off), srt_ts(en + off), body))
+            off += s["dur"]
+        out_path = os.path.join(work, OUT_SRT % suffix)
+        with open(out_path, "w", encoding="utf-8-sig") as f:
+            f.write("\n".join(ev))
+        print("合并字幕 %d 条 -> %s" % (n, out_path))
+        outs.append((out_path, n))
+    return outs
 
 
-def normalize(raw, out):
-    li, tp = loudness(raw)
-    print("\n拼完整条实测 I=%.1f LUFS  TP=%+.2f dBTP" % (li, tp))
+def normalize(raw, out, tracks):
+    """**一次**全局归一（不是逐段），但**每条音轨各归各的**。
+
+    两条轨的内容不一样（说话密度、静默比例都不同），整合响度天生不同。
+    拿其中一条的测量值去归另一条，两条轨就差出一个固定的台阶 ——
+    而观众正是在切换音轨的那一刻听见它。所以逐条量、逐条归到**同一个目标**。
+    """
+    fc, maps, meta = [], ["-map", "0:v:0"], []
+    for j, code in enumerate(tracks):
+        li, tp = loudness(raw, ai=j)
+        print("拼完整条 [%s] 实测 I=%.1f LUFS  TP=%+.2f dBTP"
+              % (code, li if li is not None else float("nan"),
+                 tp if tp is not None else float("nan")))
+        fc.append("[0:a:%d]loudnorm=I=%.1f:TP=%.1f:linear=true,aresample=48000[a%d]"
+                  % (j, TARGET_I, TARGET_TP, j))
+        maps += ["-map", "[a%d]" % j]
+        # 语言元数据要在这里**重新写一遍**：concat 之后它不一定还在，
+        # 而丢了的样子是 YouTube 上两条轨都叫"未定"，看不出是谁丢的。
+        meta += ["-metadata:s:a:%d" % j, "language=%s" % code,
+                 "-disposition:a:%d" % j, "default" if j == 0 else "0"]
     run(["ffmpeg", "-y", "-v", "error", "-stats", "-i", raw,
-         "-af", "loudnorm=I=%.1f:TP=%.1f:linear=true,aresample=48000"
-         % (TARGET_I, TARGET_TP),
-         "-c:v", "copy", "-c:a", "aac", "-b:a", "320k",
-         "-movflags", "+faststart", out],
-        "**一次**全局归一到 %.1f LUFS（视频 copy）-> %s" % (TARGET_I, out))
+         "-filter_complex", ";".join(fc)] + maps
+        + ["-c:v", "copy", "-c:a", "aac", "-b:a", "320k",
+           "-movflags", "+faststart"] + meta + [out],
+        "**一次**全局归一到 %.1f LUFS，%d 条音轨各归各的（视频 copy）-> %s"
+        % (TARGET_I, len(tracks), out))
 
 
 def selftest():
@@ -299,9 +402,104 @@ def selftest():
     return 0 if (hit_black and hit_step) else 1
 
 
+def _mkseg(work, name, langs, srts, vol="0dB"):
+    """造一段测试用的段用文件：langs 有几个就有几条音轨。"""
+    d = os.path.join(work, name)
+    os.makedirs(d)
+    mp4 = os.path.join(d, "%s_段用.mp4" % name)
+    a = ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+         "-i", "testsrc2=size=320x180:rate=%d:duration=4" % FPS]
+    for j, _ in enumerate(langs):
+        a += ["-f", "lavfi", "-i", "sine=frequency=%d:duration=4" % (440 + j * 220)]
+    a += ["-map", "0:v"]
+    for j, _ in enumerate(langs):
+        a += ["-map", "%d:a" % (j + 1)]
+    for j, code in enumerate(langs):
+        a += ["-metadata:s:a:%d" % j, "language=%s" % code]
+    a += ["-af", "volume=" + vol,
+          "-c:v", "libx264", "-crf", "28", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-b:a", "128k", "-t", "4", mp4]
+    subprocess.run(a, check=True)
+    for suffix in srts:
+        with open(os.path.join(d, "%s%s.srt" % (name, suffix)), "w",
+                  encoding="utf-8-sig") as f:
+            f.write("1\n00:00:00,500 --> 00:00:02,000\n%s%s\n" % (name, suffix or ".zh"))
+    return d
+
+
+def selftest_tracks():
+    """回归：多音轨的三件事。
+
+    第三件是这里唯一**会静默出错**的，所以它先把危险本身演一遍：
+    同一条 concat 命令去掉 `-map 0`，两条音轨的片子拼完只剩一条，
+    而且返回码是 0、能播、时长对。演完再验加上 `-map 0` 的那条留住了两条。
+    一个"永远拼得出文件"的拼接脚本比没有脚本更糟。
+    """
+    work = tempfile.mkdtemp(prefix="jointracks_")
+    ok = True
+    print("\n=== 回归自测（多音轨）===")
+    d1 = _mkseg(work, "双1", ["zho", "eng"], ["", ".en"])
+    d2 = _mkseg(work, "双2", ["zho", "eng"], ["", ".en"])
+    d3 = _mkseg(work, "单3", ["zho"], [""])
+
+    segs, bad = collect([d1, d2])
+    hit = (not bad) and segs[0]["tracks"] == ["zho", "eng"] \
+        and set(segs[0]["srts"]) == {"", ".en"}
+    print("两段都是双轨双字幕 —— %s" % ("对，认出来了" if hit else "**没认出来** %s" % bad))
+    ok = ok and hit
+
+    _, bad2 = collect([d1, d3])
+    hit = any("音轨" in b for b in bad2)
+    print("其中一段只有单轨   —— %s" % ("对，报警了" if hit else "**放行了**"))
+    ok = ok and hit
+
+    # ---- 先演一遍不加 -map 0 会怎样 ----
+    lst = os.path.join(work, "_c.txt")
+    with open(lst, "w", encoding="utf-8") as f:
+        for s in segs:
+            f.write("file '%s'\n" % os.path.abspath(s["mp4"]).replace("\\", "/"))
+    naive = os.path.join(work, "_naive.mp4")
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                    "-i", lst, "-c", "copy", naive], check=True)
+    dropped = audio_tracks(naive)
+    print("不加 -map 0 拼出来   —— %d 条音轨 %s，%s"
+          % (len(dropped), dropped,
+             "对，危险是真的" if len(dropped) == 1 else "**这版 ffmpeg 没丢轨，这条演示失效了**"))
+    ok = ok and len(dropped) == 1
+
+    raw, _ = concat_video(segs, work)
+    kept = audio_tracks(raw)
+    print("加了 -map 0 拼出来   —— %d 条音轨 %s，%s"
+          % (len(kept), kept, "对，留住了" if kept == ["zho", "eng"] else "**丢轨了**"))
+    ok = ok and kept == ["zho", "eng"]
+
+    out = os.path.join(work, OUT_NAME)
+    normalize(raw, out, segs[0]["tracks"])
+    after = audio_tracks(out)
+    print("归一之后           —— %d 条音轨 %s，%s"
+          % (len(after), after,
+             "对，语言元数据还在" if after == ["zho", "eng"] else "**丢了**"))
+    ok = ok and after == ["zho", "eng"]
+
+    merge_srt(segs, work)
+    got = []
+    for suffix in ("", ".en"):
+        p = os.path.join(work, OUT_SRT % suffix)
+        got.append(os.path.exists(p) and len(parse_srt(p)) == 2)
+    # 第二段那一条必须被推后一整段（4.0s）
+    shifted = parse_srt(os.path.join(work, OUT_SRT % ""))[1][0]
+    print("合并字幕           —— 中英各一份 %s，第二段偏移 %.2fs %s"
+          % ("对" if all(got) else "**不对**", shifted,
+             "对" if abs(shifted - 4.5) < 0.05 else "**没按实际段长累加**"))
+    ok = ok and all(got) and abs(shifted - 4.5) < 0.05
+    return ok
+
+
 def main():
     if "--selftest" in sys.argv:
-        sys.exit(selftest())
+        a = selftest()
+        b = selftest_tracks()
+        sys.exit(0 if (a == 0 and b) else 1)
     args = sys.argv[1:]
     if not args:
         sys.exit("用法: python join.py 段一 段二 ...   或   python join.py --selftest")
@@ -316,14 +514,23 @@ def main():
     raw, lst = concat_video(segs, work)
     bad += check_seams(raw, segs)
     out = os.path.join(work, OUT_NAME)
-    normalize(raw, out)
-    merge_srt(segs, os.path.join(work, OUT_SRT))
+    normalize(raw, out, segs[0]["tracks"])
+    print("")
+    merge_srt(segs, work)
     total = duration(out)
     li, tp = loudness(out)
     print("\n=== 全片 ===")
     print("  %s" % out)
     print("  %.3fs = %d:%05.2f = %.0f 帧   I=%.1f LUFS  TP=%+.2f dBTP"
           % (total, int(total // 60), total % 60, total * FPS, li, tp))
+    got = audio_tracks(out)
+    print("  音轨 %d 条：%s%s"
+          % (len(got), " / ".join("a:%d=%s" % (j, c) for j, c in enumerate(got)),
+             "" if got == segs[0]["tracks"]
+             else "  << **和段用文件对不上**（%s）" % "/".join(segs[0]["tracks"])))
+    if got != segs[0]["tracks"]:
+        bad.append("全片的音轨 %s 和段用文件的 %s 不一致 —— concat 或归一把轨弄丢了"
+                   % ("/".join(got), "/".join(segs[0]["tracks"])))
     for p in (raw, lst):
         try:
             os.remove(p)

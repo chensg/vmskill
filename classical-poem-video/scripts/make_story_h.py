@@ -11,7 +11,8 @@
   python make_story_h.py a       # 每张图做 Ken Burns（或按 MOTION 出静帧）-> shots/
   python make_story_h.py motion  # 量每镜首尾帧差：运镜镜要看得出动，静帧镜要真的不动
   python make_story_h.py b       # 转场串成无字无声 master.mp4
-  python make_story_h.py c       # 旁白+音效 -> 段用成片 + 预览 + SRT
+  python make_story_h.py langfit # **双语时**：把英文逐句压进中文定的槽（放在 c 之前）
+  python make_story_h.py c       # 旁白+音效 -> 段用成片 + 预览 + SRT（每种语言一条轨）
   python make_story_h.py srt     # 只重出字幕文件（改了文案跑这个，不用重渲）
   python make_story_h.py still   # 抽静帧看画面（字幕不烧，所以这一趟只验画面）
   python make_story_h.py measure # 拿 trace 的落幅取样框复验运镜（**不再是量字幕底**）
@@ -42,6 +43,20 @@
   MOTION      运镜还是静帧，可逐镜覆盖 dict(..., motion="static")
   MUSIC_MODE  生成 / 公版 / 库里挑 / 没有
   IMG_SOURCE  按任务书生成 / 自己找（找来的必须登记来源，check 会拦）
+
+===== 双语音轨（YouTube 多语言音轨）=====
+`LANGS = ["zh", "en"]` 打开，出**一条画面 + 两条音轨 + 两份 SRT**。要点：
+
+  - **时间轴归中文**。英文旁白塞进中文量出来的槽里，画面一帧都不动 ——
+    画面只有一份，这是"多音轨"这三个字本身的要求。
+  - NARR 每条加 `en="..."`，英文音频放 `vo_en/`，然后跑 `langfit`：
+    逐句 atempo（不变调，上限 ×1.06），压不进去的**不压**，报出还得砍几个词。
+  - `check` 每次都从**磁盘上的英文文件**重验一遍对不对得上槽 ——
+    "改了翻译、重新生成、忘了跑 langfit" 只有这一条拦得住。
+  - 音乐音效是同一床，侧链按各自的旁白算；两条轨各自量、各自归一到同一目标。
+
+**竖版 make_story_v.py 不做这个**：抖音小红书没有外挂字幕，那一路必须烧字，
+烧了就不能多音轨。竖版要英文版是另渲一支片子，不是加一条轨。
 """
 import json
 import os
@@ -69,7 +84,9 @@ SEG_FIRST = (SEG_INDEX == 1)       # 只有第一段有开场淡入
 SEG_LAST = (SEG_INDEX == SEG_TOTAL)  # 只有最后一段有片尾淡出，也只有它验假说自拆
 OUT_NAME = "%s_段用.mp4" % SEG_NAME       # 给 join 用：不归一
 PREVIEW_NAME = "%s_预览.mp4" % SEG_NAME   # 给人看：归一 + 头尾淡场
-SRT_NAME = "%s.srt" % SEG_NAME
+# 字幕文件名由 srt_name(lang) 生成：中文 段一.srt，英文 段一.en.srt。
+# **这里不再定义 SRT_NAME** —— 留一个没人读的常量在这儿，
+# 迟早有人改它然后奇怪为什么文件名没变。
 CHECK_NAME = "%s_检查片.mp4" % SEG_NAME   # 门禁二：出图前的占位检查片
 PV_FS = 34                                # 占位板上标签的字号
 COVER_NAME = "封面_横版.png"
@@ -105,6 +122,9 @@ CLAIMS = [
 # ---- 旁白 ----
 # 一条 = 一句 VO = 一屏字幕。txt 里的 ｜ 是**手工断行位置**，不上屏。
 #   shot  这一句落在第几镜(1 起)
+#   en    这一句的英文（LANGS 里有 "en" 时每条必填）。断行符同样用 ｜。
+#         **英文是塞进中文槽里的**，不是自由翻译 —— 一句太长就压不进去，
+#         langfit 会报出这一句还得砍几个词。见下面「双语音轨」那一节。
 #   pre/post  这一句前后的静默，不写就用 PRE_DEF/POST_DEF。只在要留戏的地方写：
 #             冷开场 1.2~1.6；转折句前 0.8；金句前 0.8 后 1.2
 #   est   排片用的秒数。**这一支里它已经不是估算了** —— 32 条 TTS 都生成完了，
@@ -415,6 +435,46 @@ SUB_SEP = "｜"              # 手工断行符，不上屏。不要交给自动�
 # 「1815 年 4 月，印尼松巴哇岛，」按字数是 18 个超标，按宽度只有 14.4 个字，够得下。
 ASCII_W = 0.55
 
+# ================= 双语音轨（YouTube 多音轨）=================
+# YouTube 的多语言音轨是**一条视频 + N 条音轨**，画面只有一份。这一句推出下面全部设计：
+#
+#   1. **时间轴归中文所有。** 英文旁白必须塞进中文量出来的槽里。反过来让画面
+#      迁就英文，两条轨就是两支片子，多音轨本身就没有意义了。
+#   2. **正文字幕一律外挂**（横版本来就是），中英各一份 SRT。烧进画面的中文字幕
+#      会跟着英文轨一起播 —— 这是这个功能最容易犯、而且自己看中文版时永远发现不了的错。
+#   3. 音乐和音效是**同一床**，只有旁白换语言。侧链躲闪按各自的旁白算：
+#      英文的停顿位置和中文不一样，拿中文的包络去躲英文，会在错的地方让路。
+#
+# **竖版（make_story_v.py）不做这个。** 抖音小红书没有外挂字幕这回事，那一路必须
+# 烧字，烧了就不能多音轨。竖版要英文版是另渲一支片子，不是加一条轨。
+LANGS = ["zh"]              # 只写 ["zh"] 就是单语，整条流水线和以前一模一样
+DEFAULT_LANG = "zh"         # 定时间轴的那一条，也是播放器默认选中的那一条
+LANG_INFO = {
+    # code 是 ISO 639-2，YouTube 按它认音轨语言；name 写进音轨标题给人看
+    "zh": dict(code="zho", name="中文", srt_suffix=""),
+    "en": dict(code="eng", name="English", srt_suffix=".en"),
+}
+VO_DIR_OF = {"zh": VO_DIR, "en": "vo_en"}
+# 逐句压的原件备份。**倍率永远从原件算**，不从上一次压完的文件算 —— 否则第二次
+# 调整会走反方向，而且一声不吭（竖版 vofit 上踩过，见那边的注释）。
+VO_RAW_OF = {"en": "vo_en_raw"}
+
+# 英文语速，词/秒。**必须自己量，不要填通行值** —— 它和中文的 EST_RATE 是同一类数，
+# 取决于音色、emotion 和 performancePrompt。留 None 时 langfit 用**本批实测**的语速
+# 去换算"还得砍几个词"，并把量到的数打出来让你回填。第一支英文片做完就填上。
+EN_RATE = None
+
+# 逐句压的倍率上限。atempo 不变调，1.06 以内听不出来，1.08 开始有"赶"的感觉。
+# 超过上限**不压**，报出这一句还得砍几个词 —— 把 1.2 倍的活交给 atempo，
+# 等于用一个听得出来的毛病换一个看不出来的错位，那不是修好，是藏起来。
+LANG_TEMPO_MAX = 1.06
+# 一句英文最多能从**它后面那段静默**里借多少秒。
+# **镜末那一句不许借**：镜末的静默正中骑着转场，借了就是把话说到转场底下去，
+# 而这件事在参数表和波形上都看不出来，要放出来听才发现。
+LANG_BORROW = 0.30
+# 英文一行的字数上限。中文是 20 个全角字，英文按半角算大约是它的两倍。
+SUB_MAX_CHARS_EN = 42
+
 # ================= 平台安全区：**这一支不适用** =================
 # 竖版那套 (929,864,1080,1632) / 顶部 173 是抖音小红书真机比出来的，用来防
 # **烧录**字幕撞操作栏。这一支字幕外挂，由播放器渲染，播放器自己会避开它的控件 ——
@@ -465,7 +525,7 @@ PROBE_TOL = 8.0
 PROBE_EDGE = 0.05           # 离干净区两端再让开一点，躲开转场的第一/最后一帧
 
 VO_CACHE = "vo_times.json"
-_VO = None
+_VO = {}                    # 按语言缓存：{lang: (durs_map, missing)}
 _VIG_CACHE = {}
 _SCRIM_CACHE = {}
 
@@ -754,31 +814,64 @@ def est_of(n):
     return n_chars(n["txt"]) / EST_RATE
 
 
-def vo_path(n):
+def n_words(txt):
+    """英文按**词**数算，不按字符数 —— 换算「还得砍几个词」时要的是词。"""
+    return len([w for w in re.split(r"\s+", " ".join(sub_lines(txt or ""))) if w])
+
+
+def lang_text(n, lang):
+    return n["txt"] if lang == DEFAULT_LANG else (n.get(lang) or "")
+
+
+def srt_name(lang):
+    return "%s%s.srt" % (SEG_NAME, LANG_INFO[lang]["srt_suffix"])
+
+
+def vo_path(n, lang=None):
+    lang = lang or DEFAULT_LANG
     f = n["vo"] if n["vo"].lower().endswith((".mp3", ".wav", ".m4a")) else n["vo"] + ".mp3"
-    return os.path.join(VO_DIR, f)
+    return os.path.join(VO_DIR_OF.get(lang, VO_DIR), f)
 
 
-def vo_durs():
+def vo_cache_of(lang):
+    return VO_CACHE if lang == DEFAULT_LANG else "vo_times_%s.json" % lang
+
+
+def est_of_lang(n, lang):
+    """这一条还没生成时的估算时长。
+
+    非默认语言只有量过语速（EN_RATE）之后才估得准；没量过就退回中文那一条的估算。
+    **这个回退值不是给人拿去排片的** —— 缺文件这件事本身由 check_langs 报出来，
+    这里只是让流水线在缺文件时还能跑完把表打出来。
+    """
+    if lang == DEFAULT_LANG:
+        return est_of(n)
+    if EN_RATE:
+        return n_words(lang_text(n, lang)) / EN_RATE
+    return est_of(n)
+
+
+def vo_durs(lang=None):
     """量每条旁白的实测时长，按 (文件, mtime, 大小) 缓存。
 
     时间轴是**量出来的，不是排出来的** —— 换了配音重新生成，时间轴自动跟着变。
     手工回填一定会漏一条，而漏掉的那一条要到成片才听得出来。
     mp3 还没生成时回退到 est，并让 check 大字提醒时间轴是估算的。"""
-    global _VO
-    if _VO is not None:
-        return _VO
+    lang = lang or DEFAULT_LANG
+    if lang in _VO:
+        return _VO[lang]
+    cache_path = vo_cache_of(lang)
     cache = {}
-    if os.path.exists(VO_CACHE):
+    if os.path.exists(cache_path):
         try:
-            cache = json.load(open(VO_CACHE, encoding="utf-8"))
+            cache = json.load(open(cache_path, encoding="utf-8"))
         except (ValueError, OSError):
             cache = {}
     out, missing, dirty = {}, [], False
     for n in NARR:
-        p = vo_path(n)
+        p = vo_path(n, lang)
         if not os.path.exists(p):
-            missing.append(n["vo"]); out[n["vo"]] = (est_of(n), False); continue
+            missing.append(n["vo"]); out[n["vo"]] = (est_of_lang(n, lang), False); continue
         st = os.stat(p)
         key = "%s|%d|%d" % (n["vo"], int(st.st_mtime), st.st_size)
         if key not in cache:
@@ -788,16 +881,27 @@ def vo_durs():
             try:
                 cache[key] = float(r.stdout.strip())
             except ValueError:
-                cache[key] = est_of(n)
+                cache[key] = est_of_lang(n, lang)
             dirty = True
         out[n["vo"]] = (cache[key], True)
     if dirty:
         try:
-            json.dump(cache, open(VO_CACHE, "w", encoding="utf-8"))
+            json.dump(cache, open(cache_path, "w", encoding="utf-8"))
         except OSError:
             pass
-    _VO = (out, missing)
-    return _VO
+    _VO[lang] = (out, missing)
+    return _VO[lang]
+
+
+def per_shot():
+    """每一镜下面挂着哪几条旁白（NARR 的下标）。timeline 和双语两边都要用它，
+    抄成两份迟早会分叉。"""
+    per = [[] for _ in range(len(SHOTS))]
+    for k, n in enumerate(NARR):
+        if not 1 <= n["shot"] <= len(SHOTS):
+            sys.exit("!!! 旁白 %s 的 shot=%d 超出 %d 镜" % (n["vo"], n["shot"], len(SHOTS)))
+        per[n["shot"] - 1].append(k)
+    return per
 
 
 def pads(k, per):
@@ -832,11 +936,7 @@ def timeline():
     """
     durs_map, _ = vo_durs()
     n_shots = len(SHOTS)
-    per = [[] for _ in range(n_shots)]
-    for k, n in enumerate(NARR):
-        if not 1 <= n["shot"] <= n_shots:
-            sys.exit("!!! 旁白 %s 的 shot=%d 超出 %d 镜" % (n["vo"], n["shot"], n_shots))
-        per[n["shot"] - 1].append(k)
+    per = per_shot()
     D = []
     for i in range(n_shots):
         if per[i]:
@@ -896,6 +996,52 @@ def clip_starts():
 def cut_points():
     """转场中点 = 内容边界 S_{i+1}，也就是两句旁白之间那段静默的正中。"""
     return shot_starts()[1:]
+
+
+def lang_slots():
+    """每一句留给别的语言的空间：(中文实测时长, 可借的静默)。
+
+    **镜末那一句借不到东西。** 镜末的静默正中骑着转场（理由见 timeline 的注释），
+    借了就是把话说到转场底下去 —— 而这件事在参数表和波形上都看不出来，
+    要放出来听才发现。镜内的句子可以从后面那段气口里借一点，但最多借一半：
+    剩下的一半是气口本身，把气口借光了英文那条轨会变成连珠炮。
+    """
+    zh, _ = vo_durs(DEFAULT_LANG)
+    per = per_shot()
+    out = []
+    for k, n in enumerate(NARR):
+        _, post = pads(k, per)
+        grp = per[n["shot"] - 1]
+        pos = grp.index(k)
+        if pos == len(grp) - 1:
+            borrow = 0.0
+        else:
+            gap = post + pads(grp[pos + 1], per)[0]
+            borrow = min(LANG_BORROW, gap / 2.0)
+        out.append((zh[n["vo"]][0], borrow))
+    return out
+
+
+def lang_lines(lang=None):
+    """某条语言的字幕行，字段和 timeline() 的 lines 完全一样。
+
+    **起点一律沿用中文定出来的槽** —— 画面只有一份，起点动了就不是多音轨了。
+    只有收尾跟着这条语言自己的音频走：英文那句短一点，字幕就早一点收。
+    """
+    lang = lang or DEFAULT_LANG
+    zh_lines = timeline()[0]
+    if lang == DEFAULT_LANG:
+        return zh_lines
+    durs_map, _ = vo_durs(lang)
+    per = per_shot()
+    out = []
+    for k, n in enumerate(NARR):
+        _, post = pads(k, per)
+        vs = zh_lines[k][4]
+        vd = durs_map[n["vo"]][0]
+        out.append((max(0.0, vs - 0.10), vs + vd + min(post, 0.35),
+                    lang_text(n, lang), n["shot"], vs, vd))
+    return out
 
 
 def sfx_dur(e):
@@ -1041,6 +1187,118 @@ def check_subs():
         if en - st < vd:
             bad.append("字幕『%s』在屏 %.1fs，短于它自己的旁白 %.1fs" % (txt, en - st, vd))
     return bad
+
+
+def check_langs(quiet=False):
+    """多音轨的自检。四件事，都是「单看中文那条轨完全正常」的那一类：
+
+      一、每一条旁白有没有写英文
+      二、英文音频齐不齐
+      三、**逐句对不对得上槽** —— 量的是**磁盘上的文件**，不是 langfit 当时的结论
+      四、英文字幕一行有没有超长
+
+    第三条是这里唯一会**静默出错**的：英文音频长出槽去，不报错、不崩、
+    波形上也看不出来，只会让那句话说到转场底下去 —— 而你手上放的是中文版，
+    一切正常。所以它必须在每次 check 时从文件重新量，
+    "改了翻译、重新生成、忘了跑 langfit" 就是靠这一条拦住的。
+    """
+    bad = []
+    if len(LANGS) <= 1:
+        return bad
+    slots = lang_slots()
+    for lang in LANGS:
+        if lang == DEFAULT_LANG:
+            continue
+        info = LANG_INFO.get(lang)
+        if not info:
+            bad.append("LANGS 里的 %r 在 LANG_INFO 里没有登记" % lang)
+            continue
+        no_txt = [x["vo"] for x in NARR if not x.get(lang)]
+        if no_txt:
+            bad.append("%d 条旁白没写 %s 文本（%s%s）"
+                       % (len(no_txt), lang, ", ".join(no_txt[:3]),
+                          "..." if len(no_txt) > 3 else ""))
+        durs_map, missing = vo_durs(lang)
+        if missing:
+            bad.append("%s 轨还缺 %d 条音频（%s%s），要放在 %s/ 下"
+                       % (info["name"], len(missing), ", ".join(missing[:3]),
+                          "..." if len(missing) > 3 else "",
+                          VO_DIR_OF.get(lang, lang)))
+        over = []
+        if not quiet:
+            print("\n=== %s 轨逐句对槽（槽是中文定的，%s 塞进去）==="
+                  % (info["name"], info["name"]))
+        for k, x in enumerate(NARR):
+            base, borrow = slots[k]
+            room = base + borrow
+            d, real = durs_map[x["vo"]][0], durs_map[x["vo"]][1]
+            if not real:
+                continue
+            flag = ""
+            if d > room + 0.02:
+                flag = "  << 超 %.2fs" % (d - room)
+                over.append((x["vo"], d - room))
+            if not quiet:
+                print("  %-11s 槽 %5.2f(+%.2f 可借)  实测 %5.2f%s"
+                      % (x["vo"], base, borrow, d, flag))
+        if over:
+            worst = max(over, key=lambda z: z[1])
+            bad.append("%s 轨有 %d 条塞不进中文的槽（最长的 %s 超 %.2fs）—— "
+                       "跑 `python make_story_h.py langfit %s`；"
+                       "压不进去的那几句它会报出还得砍几个词"
+                       % (info["name"], len(over), worst[0], worst[1], lang))
+        for x in NARR:
+            for p in sub_lines(x.get(lang) or ""):
+                if len(p) > SUB_MAX_CHARS_EN:
+                    bad.append("%s 字幕行『%s』%d 字，超过一行上限 %d —— 用 %s 手工断行"
+                               % (info["name"], p[:34], len(p), SUB_MAX_CHARS_EN, SUB_SEP))
+    return bad
+
+
+def selftest_langs():
+    """回归：把双语的三种错法逐个造出来，检查必须报警。
+
+    造错的办法是**换掉 NARR 和 vo_durs**，不去碰磁盘 —— 自测不该依赖
+    这台机器上有没有英文配音文件，否则它会在没有文件的机器上"通过"。
+    """
+    global LANGS, NARR, vo_durs, _VO
+    keep = (LANGS, NARR, vo_durs, _VO)
+    base = [
+        dict(vo="T1", shot=1, txt="第一句。", en="First line."),
+        dict(vo="T2", shot=1, txt="第二句。", en="Second line."),
+        dict(vo="T3", shot=2, txt="第三句。", en="Third line."),
+    ]
+    zh = {"T1": 3.0, "T2": 3.0, "T3": 3.0}
+
+    def fake(en_map):
+        def f(lang=None):
+            m = zh if (lang or DEFAULT_LANG) == DEFAULT_LANG else en_map
+            return ({x["vo"]: (m[x["vo"]], True) for x in NARR}, [])
+        return f
+
+    def count(narr, en_map):
+        global NARR, vo_durs, _VO
+        NARR, vo_durs, _VO = narr, fake(en_map), {}
+        return len(check_langs(quiet=True))
+
+    LANGS = ["zh", "en"]
+    fit = {"T1": 3.0, "T2": 3.0, "T3": 3.0}
+    # T3 是镜 2 里唯一一条 = 镜末，借不到静默，槽就是 3.0
+    cases = [
+        ("有一条没写英文", [base[0], base[1], dict(base[2], en="")], fit),
+        ("镜末那条英文超槽", base, dict(fit, T3=4.2)),
+        ("英文字幕一行超长", [dict(base[0], en="x" * (SUB_MAX_CHARS_EN + 5))] + base[1:], fit),
+    ]
+    ok = True
+    results = [(name, count(narr, em)) for name, narr, em in cases]
+    now = count(base, fit)
+    LANGS, NARR, vo_durs, _VO = keep
+    for name, c in results:
+        print("回归自测: %s → 报警 %d 条 —— %s"
+              % (name, c, "对" if c else "**检查失效了**"))
+        ok = ok and c > 0
+    print("          三条都合规 报警 %d 条 —— %s" % (now, "对" if now == 0 else "**误报**"))
+    return ok and now == 0
 
 
 def check_seg(quiet=False):
@@ -1419,6 +1677,7 @@ def check_timeline():
     bad += check_resolution()
     bad += check_coldopen(lines)
     bad += check_endcard()
+    bad += check_langs()
 
     for st, en, txt, _, _, _ in lines:
         for c in cuts:
@@ -1483,13 +1742,19 @@ def check_timeline():
              {"generated": "生成", "public_domain": "公版",
               "library": "库里挑的", "none": "无"}.get(MUSIC_MODE),
              {"generated": "按任务书生成", "found": "自己找的"}.get(IMG_SOURCE)))
-    print("字幕: **外挂 SRT**（%s），不烧进画面；标题字卡烧进画面" % SRT_NAME)
+    print("字幕: **外挂 SRT**（%s），不烧进画面；标题字卡烧进画面"
+          % " / ".join(srt_name(l) for l in LANGS))
+    if len(LANGS) > 1:
+        print("音轨: %d 条（%s），默认 %s —— YouTube 多语言音轨，画面只有一份"
+              % (len(LANGS), " / ".join(LANG_INFO[l]["name"] for l in LANGS),
+                 LANG_INFO[DEFAULT_LANG]["name"]))
     print("每镜时长: " + "  ".join("%.1f" % d for d in durs))
     print("转场落点: " + "  ".join("%.1f" % c for c in cuts))
     selftest_seg()
     selftest_reuse()
     selftest_moves()
     selftest_credits()
+    selftest_langs()
     for w in warn:
         print("提示: " + w)
     if bad:
@@ -1503,10 +1768,12 @@ def check_timeline():
 
 def sync():
     """量旁白 -> 打出时间轴。改了配音先跑它（缓存会自动失效，不用手工清）。"""
-    if os.path.exists(VO_CACHE):
-        os.remove(VO_CACHE)
+    for lang in LANGS:
+        p = vo_cache_of(lang)
+        if os.path.exists(p):
+            os.remove(p)
     global _VO
-    _VO = None
+    _VO = {}
     lines, durs, total, _ = timeline()
     durs_map, missing = vo_durs()
     print("=== 旁白实测 ===")
@@ -1523,6 +1790,116 @@ def sync():
               % (i + 1, st[i], d, xf(i) if i < len(SHOTS) - 1 else 0.0))
     if missing:
         print("\n还缺 %d 条旁白，上面带 (估算) 的是按 est 排的。" % len(missing))
+
+
+def langfit(lang="en"):
+    """把某条语言的旁白**逐句**压进中文定出来的槽里。
+
+    ---- 为什么是逐句，不是整条一个倍率（竖版 vofit 那样）----
+    vofit 解决的是"整片超硬线"，全片同一个倍率听不出来。这里解决的是
+    "这一句和画面对不上"：各句超出的比例天差地别，拿全片平均倍率去压，
+    短句被无谓地拉快、长句照样压不进去，**而且两头都听得出来**。
+
+    ---- 倍率永远从原件算 ----
+    原件在 VO_RAW_OF[lang]，第一次跑时自动备份。拿"已经压过一次"的文件算倍率
+    再作用到原件上，第二次调整会走反方向，而且一声不吭（竖版 vofit 踩过）。
+
+    ---- 压不进去的句子不压 ----
+    报出这一句还得砍几个词，并且把文件**放回原速**（不是留着上一次压的结果 ——
+    那会让磁盘上的状态取决于跑过几次，无法复现）。这时脚本 exit 1，
+    但塞得下的那些句子已经压好了：逐句是彼此独立的，全盘拒绝只会让你多跑几趟。
+    真正的安全网是 check_langs()，它每次 check 都从磁盘重验一遍。
+    """
+    if lang == DEFAULT_LANG:
+        sys.exit("!!! langfit 是把别的语言压进 %s 的槽，不能对 %s 自己跑"
+                 % (DEFAULT_LANG, DEFAULT_LANG))
+    if lang not in LANGS:
+        sys.exit("!!! LANGS 里没有 %r —— 先在「双语音轨」那一节把它打开" % lang)
+    vdir = VO_DIR_OF.get(lang, lang)
+    if not os.path.isdir(vdir):
+        sys.exit("!!! 没有 %s/ —— %s 旁白还没就位" % (vdir, lang))
+    raw_dir = VO_RAW_OF.get(lang, "vo_%s_raw" % lang)
+    if not os.path.isdir(raw_dir):
+        os.makedirs(raw_dir)
+        for x in NARR:
+            src = vo_path(x, lang)
+            if os.path.exists(src):
+                subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-c", "copy",
+                                os.path.join(raw_dir, os.path.basename(src))], check=True)
+        print("原件已备份到 %s/（以后每次都从这里重新推导，压不会叠加）" % raw_dir)
+
+    slots = lang_slots()
+    rows, missing = [], []
+    for k, x in enumerate(NARR):
+        dst = vo_path(x, lang)
+        raw = os.path.join(raw_dir, os.path.basename(dst))
+        if not os.path.exists(raw):
+            missing.append(x["vo"]); continue
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                            "format=duration", "-of", "csv=p=0", raw],
+                           capture_output=True, text=True)
+        try:
+            d = float(r.stdout.strip())
+        except ValueError:
+            missing.append(x["vo"]); continue
+        base, borrow = slots[k]
+        rows.append((x, dst, raw, d, base + borrow))
+    if not rows:
+        sys.exit("!!! %s/ 下一条原件都没量到" % raw_dir)
+
+    # 换算"还得砍几个词"用的语速：EN_RATE 填了就用它，没填就用**本批实测**。
+    # 用本批实测比填一个通行值靠谱 —— 语速取决于音色和表演方向，不是常数。
+    words = sum(n_words(lang_text(x, lang)) for x, _, _, _, _ in rows)
+    speech = sum(d for _, _, _, d, _ in rows)
+    rate = EN_RATE or (words / speech if speech else 0.0)
+
+    print("")
+    print("=== langfit %s：中文定槽，逐句压（倍率上限 ×%.2f，可借静默 %.2fs）==="
+          % (lang, LANG_TEMPO_MAX, LANG_BORROW))
+    over, moved = [], 0
+    for x, dst, raw, d, room in rows:
+        if d <= room + 1e-3:
+            act = "原速"
+            cmd = ["ffmpeg", "-y", "-v", "error", "-i", raw, "-c", "copy", dst]
+        else:
+            tempo = d / room
+            if tempo > LANG_TEMPO_MAX:
+                over.append((x["vo"], d, room, tempo,
+                             (d - room * LANG_TEMPO_MAX) * rate))
+                act = "**压不进，已放回原速**"
+                cmd = ["ffmpeg", "-y", "-v", "error", "-i", raw, "-c", "copy", dst]
+            else:
+                act = "×%.3f" % tempo
+                moved += 1
+                cmd = ["ffmpeg", "-y", "-v", "error", "-i", raw,
+                       "-filter:a", "atempo=%.6f" % tempo, "-q:a", "2", dst]
+        if subprocess.run(cmd).returncode != 0:
+            sys.exit("!!! 处理 %s 失败" % x["vo"])
+        print("  %-11s 槽 %5.2f  原件 %5.2f  %s" % (x["vo"], room, d, act))
+
+    _VO.pop(lang, None)
+    c = vo_cache_of(lang)
+    if os.path.exists(c):
+        os.remove(c)
+
+    if missing:
+        print("\n提示: %d 条没有原件（%s%s）—— 先把音频放进 %s/ 再跑一次"
+              % (len(missing), ", ".join(missing[:3]),
+                 "..." if len(missing) > 3 else "", vdir))
+    print("\n本批 %s 实测语速 **%.2f 词/秒**（%d 词 / %.1fs）%s"
+          % (lang, words / speech if speech else 0, words, speech,
+             "" if EN_RATE else "  << EN_RATE 还是 None，把这个数填上去"))
+    print("压了 %d 条，原速 %d 条。" % (moved, len(rows) - moved - len(over)))
+    if over:
+        print("\n!! %d 条压不进去（超过 ×%.2f 就不压了）：" % (len(over), LANG_TEMPO_MAX))
+        for vo, d, room, tempo, cut in over:
+            print("   %-11s 槽 %.2fs，现在 %.2fs，要 ×%.3f 才塞得下 —— "
+                  "**还得砍约 %d 个词**" % (vo, room, d, tempo, int(-(-cut // 1))))
+        print("\n   别把这活交给 atempo：听得出来的毛病换看不出来的错位，不是修好。")
+        print("   要改的是英文稿，中文那条轨和画面一个字都不用动。")
+        return False
+    print("全部塞得进。**接着跑 check** —— 它会从磁盘上的文件再验一遍。")
+    return True
 
 
 # ================= 素材 =================
@@ -2356,15 +2733,27 @@ def valleys(curve, off, total, starts, thr=-25.0, minlen=0.4):
           "该换一条曲子的理由")
 
 
-def build_audio():
-    """旁白 + 音乐(侧链躲闪) + 音效。
+def mix_name(lang):
+    return "mix_%s.wav" % lang
+
+
+def build_audio(lang=None):
+    """旁白 + 音乐(侧链躲闪) + 音效，混出**一条语言**的音床。
 
     音乐**必须侧链躲闪**，只调低音量是不够的：压到听不见音乐就没意义，
-    压不够旁白就发浑。每条旁白**单独**归一到 VO_TARGET，顺带抹平 TTS 的忽大忽小。"""
+    压不够旁白就发浑。每条旁白**单独**归一到 VO_TARGET，顺带抹平 TTS 的忽大忽小。
+
+    **多音轨时这个函数每种语言各跑一遍。** 音乐和音效是同一床、同样的切入点和增益，
+    只有旁白换语言 —— 但侧链要按**各自的**旁白重算：英文的停顿位置和中文不一样，
+    拿中文的包络去躲英文，音乐会在英文正在说话的地方抬起来。
+    旁白的落点一律取中文定出来的 vs（画面只有一份），所以这里不重排时间轴。
+    """
+    lang = lang or DEFAULT_LANG
     lines, _, total, _ = timeline()
-    durs_map, missing = vo_durs()
+    durs_map, missing = vo_durs(lang)
     if missing:
-        sys.exit("!!! 还缺 %d 条旁白，不能混音: %s" % (len(missing), ", ".join(missing[:3])))
+        sys.exit("!!! %s 轨还缺 %d 条旁白，不能混音: %s"
+                 % (LANG_INFO[lang]["name"], len(missing), ", ".join(missing[:3])))
     ins, parts, vbus, k = [], [], [], 0
     if music_on():
         ins += ["-i", MUSIC]
@@ -2374,11 +2763,12 @@ def build_audio():
                      % (MUSIC_IN, MUSIC_IN + total, MUSIC_GAIN, total,
                         MUSIC_FADE_IN, max(0.0, total - 3)))
         k = 1
-    print("\n=== 旁白增益（每条按实测反算到 %.1f LUFS）===" % VO_TARGET)
+    print("\n=== %s 旁白增益（每条按实测反算到 %.1f LUFS）==="
+          % (LANG_INFO[lang]["name"], VO_TARGET))
     # lines 与 NARR 严格同序（timeline 按镜号分组、组内保序，而 NARR 本来就按镜号排），
     # 所以按下标取起点，不要按文本去匹配 —— 两句话一字不差是很常见的
     for j, n in enumerate(NARR):
-        path = vo_path(n)
+        path = vo_path(n, lang)
         meas = integrated_lufs(path)
         g = VO_TARGET - meas if meas is not None else 0.0
         print("   %-11s 实测 %6.1f → %+6.1f dB" % (n["vo"], meas if meas else 0, g))
@@ -2442,13 +2832,15 @@ def build_audio():
     # 预览那一路照旧归一到 −15，看不出区别。
     parts.append("%samix=inputs=%d:normalize=0:dropout_transition=0,"
                  "atrim=0:%.3f,alimiter=limit=0.85:level=disabled[a]" % ("".join(mixed), len(mixed), total))
+    out = mix_name(lang)
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(parts), "-map", "[a]",
-           "-c:a", "pcm_s24le", "-t", "%.3f" % total, "mix.wav"],
-        "混音: 旁白 %d 条 + %s + 音效 %d 条"
-        % (len(NARR),
+           "-c:a", "pcm_s24le", "-t", "%.3f" % total, out],
+        "混音(%s): 旁白 %d 条 + %s + 音效 %d 条 -> %s"
+        % (LANG_INFO[lang]["name"], len(NARR),
            "音乐(从 %.1fs 切入，侧链躲闪)" % MUSIC_IN if music_on() else "无音乐",
-           len(mixed) - (2 if music_on() else 1)))
+           len(mixed) - (2 if music_on() else 1), out))
+    return out
 
 
 def measure_loudness(path):
@@ -2493,8 +2885,11 @@ def srt_ts(t):
                                     ms // 1000 % 60, ms % 1000)
 
 
-def preview():
+def preview(lang=None):
     """出图之前的检查片：**占位画面 + 真旁白 + 真字幕**。门禁二靠它。
+
+    多音轨时可以 `preview en` 单听英文那条 —— 英文塞得进槽是 langfit 算出来的，
+    **听起来赶不赶只有放出来才知道**，而这时候图还没出，改稿最便宜。
 
     交给用户的是一支能听完的片子，不是一堆数字。它定死四件事，全在出图之前：
     旁白好不好听 · 断句与气口 · 字幕跟不跟得上 · **片长**。
@@ -2519,11 +2914,13 @@ def preview():
       trace / measure   不适用 —— 量的是真实画面的明暗
       字幕排版          **有效** —— 断行/宽度只跟字号坐标有关，跟画面无关
     """
-    lines, durs, total, starts = timeline()
-    durs_map, missing = vo_durs()
+    lang = lang or DEFAULT_LANG
+    _, durs, total, starts = timeline()
+    lines = lang_lines(lang)
+    durs_map, missing = vo_durs(lang)
     if missing:
-        sys.exit("!!! 还缺 %d 条旁白，出不了检查片: %s"
-                 % (len(missing), ", ".join(missing[:5])))
+        sys.exit("!!! %s 轨还缺 %d 条旁白，出不了检查片: %s"
+                 % (LANG_INFO[lang]["name"], len(missing), ", ".join(missing[:5])))
 
     # ---- 背景：深灰 + 一条压暗的横带标出字幕位置 ----
     y0 = max(0, SUB_BOT - 2 * SUB_LH - 14)
@@ -2572,7 +2969,7 @@ def preview():
     # ---- 音频：只有旁白，每条按实测反算到 VO_TARGET ----
     ins, parts, bus = ["-loop", "1", "-i", "_pv_bg.png"], [], []
     for j, n in enumerate(NARR):
-        path = vo_path(n)
+        path = vo_path(n, lang)
         meas = integrated_lufs(path)
         g = VO_TARGET - meas if meas is not None else 0.0
         vs = lines[j][4]
@@ -2587,13 +2984,15 @@ def preview():
     parts.append("[0:v]fps=%d,format=yuv420p,subtitles=_pv.ass:fontsdir=%s[v]"
                  % (FPS, FONTS.replace("\\", "/")))
 
-    out = os.path.join("..", CHECK_NAME)
+    out = os.path.join("..", CHECK_NAME if lang == DEFAULT_LANG
+                       else CHECK_NAME.replace(".mp4", ".%s.mp4" % lang))
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(parts), "-map", "[v]", "-map", "[a]",
            "-t", "%.3f" % total, "-c:v", "libx264", "-crf", "23",
            "-preset", "veryfast", "-pix_fmt", "yuv420p",
            "-c:a", "aac", "-b:a", "192k", out],
-        "检查片 %d 镜 / %d 条旁白 / %.1fs -> %s" % (len(CLIPS), len(NARR), total, out))
+        "检查片(%s) %d 镜 / %d 条旁白 / %.1fs -> %s"
+        % (LANG_INFO[lang]["name"], len(CLIPS), len(NARR), total, out))
     for f in ("_pv_bg.png", "_pv.ass"):
         if os.path.exists(f):
             os.remove(f)
@@ -2610,15 +3009,18 @@ def preview():
     return out
 
 
-def make_srt():
-    """正文字幕 → 外挂 SRT。
+def make_srt(lang=None):
+    """正文字幕 → 外挂 SRT。多音轨时每种语言各一份，文件名由 srt_name() 定。
 
     两处和烧录不一样：
       - 手工断行符 SUB_SEP 在 SRT 里就是真正的换行（烧录时是分行定位）
       - **相邻两条不能重叠**：烧录时重叠只是两行字同时在屏上，SRT 里
         重叠会让播放器行为不一致（有的堆叠、有的闪、有的丢）。所以硬性收尾。
+
+    英文那份的**起点和中文完全一样**（槽是中文定的），只有收尾跟着英文音频走。
     """
-    lines = timeline()[0]
+    lang = lang or DEFAULT_LANG
+    lines = lang_lines(lang)
     ev, fixed = [], 0
     for i, (st, en, txt, _, _, _) in enumerate(lines):
         if i + 1 < len(lines) and en > lines[i + 1][0] - 0.04:
@@ -2626,11 +3028,12 @@ def make_srt():
             fixed += 1
         ev.append("%d\n%s --> %s\n%s\n" % (len(ev) + 1, srt_ts(st), srt_ts(en),
                                            "\n".join(sub_lines(txt))))
-    out = os.path.join("..", SRT_NAME)
+    out = os.path.join("..", srt_name(lang))
     with open(out, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(ev))
-    print("已生成 %s（%d 条%s）"
-          % (out, len(ev), "，收掉 %d 处重叠" % fixed if fixed else ""))
+    print("已生成 %s（%s，%d 条%s）"
+          % (out, LANG_INFO[lang]["name"], len(ev),
+             "，收掉 %d 处重叠" % fixed if fixed else ""))
     return out
 
 
@@ -2690,23 +3093,73 @@ def video_chain(tag="[0:v]", scrim=False, grain=True, text=True):
     return pre + "%snull[v]" % base
 
 
+def audio_meta():
+    """音轨的语言元数据。**不写就全是 und（未定）**，上传 YouTube 之后
+    要在网页上一条条手点，而且看不出是缺了元数据还是平台没认出来。"""
+    meta = []
+    for j, lang in enumerate(LANGS):
+        info = LANG_INFO[lang]
+        meta += ["-metadata:s:a:%d" % j, "language=%s" % info["code"],
+                 "-metadata:s:a:%d" % j, "title=%s" % info["name"],
+                 "-disposition:a:%d" % j,
+                 "default" if lang == DEFAULT_LANG else "0"]
+    return meta
+
+
+def verify_tracks(path):
+    """渲完立刻验**输出**里的音轨，不是复述配置。
+
+    和 join 里那条黑场检查同一个道理：**配置对不等于输出对**。
+    filter_complex 或 -map 写错一个下标，ffmpeg 不一定报错 ——
+    它会安安静静地少写一条轨，而文件能播、时长对、中文轨也对。
+    这一条几乎不花时间，却是唯一能在段这一级发现丢轨的地方
+    （到了 join 那里，每段都少一条就成了"各段一致"，看不出来）。
+    """
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                        "-show_entries", "stream_tags=language",
+                        "-of", "default=nw=1:nk=1", path],
+                       capture_output=True, text=True)
+    got = [x.strip() or "und" for x in r.stdout.splitlines()]
+    want = [LANG_INFO[l]["code"] for l in LANGS]
+    if got != want:
+        sys.exit("!!! %s 的音轨是 %s，应该是 %s —— 渲染时把轨弄丢或弄乱了，"
+                 "不要拿它去 join" % (path, "/".join(got) or "无", "/".join(want)))
+    return got
+
+
 def pass_c():
-    has_text = make_ass(); has = make_scrim(); total = total_len(); build_audio()
-    m = measure_loudness("mix.wav")
-    if norm_mode() == "loudnorm":
-        norm = ("loudnorm=I=%.1f:TP=%.1f:LRA=%s:measured_I=%s:measured_TP=%s:"
-                "measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true,aresample=48000"
-                % (TARGET_I, TARGET_TP, m["input_lra"], m["input_i"], m["input_tp"],
-                   m["input_lra"], m["input_thresh"], m["target_offset"]))
-    else:
-        # 既没有音乐也没有旁白，只剩稀疏音效 —— 归一会把 SFX 表里的目标响度
-        # 全部作废（理由见 norm_mode()）。只过一道重采样。
-        print("   **不归一**（只有音效，SFX 表里的目标响度就是成片响度）")
-        norm = "aresample=48000"
-    make_srt()
-    ins = ["-i", "master.mp4"] + (["-loop", "1", "-i", "scrim.png"] if has else []) \
-        + ["-i", "mix.wav"]
-    ai = "[%d:a]" % (2 if has else 1)
+    has_text = make_ass(); has = make_scrim(); total = total_len()
+    mixes, norms = {}, {}
+    for lang in LANGS:
+        mixes[lang] = build_audio(lang)
+    for lang in LANGS:
+        if len(LANGS) > 1:
+            print("\n--- %s 轨 ---" % LANG_INFO[lang]["name"])
+        m = measure_loudness(mixes[lang])
+        if norm_mode() == "loudnorm":
+            # **每条轨各自量、各自归一到同一个目标。** 拿中文那条的测量值去归英文，
+            # 两条轨会差出一个台阶，而观众切换音轨时那个台阶特别明显。
+            norms[lang] = ("loudnorm=I=%.1f:TP=%.1f:LRA=%s:measured_I=%s:measured_TP=%s:"
+                           "measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true,"
+                           "aresample=48000"
+                           % (TARGET_I, TARGET_TP, m["input_lra"], m["input_i"],
+                              m["input_tp"], m["input_lra"], m["input_thresh"],
+                              m["target_offset"]))
+        else:
+            # 既没有音乐也没有旁白，只剩稀疏音效 —— 归一会把 SFX 表里的目标响度
+            # 全部作废（理由见 norm_mode()）。只过一道重采样。
+            print("   **不归一**（只有音效，SFX 表里的目标响度就是成片响度）")
+            norms[lang] = "aresample=48000"
+    for lang in LANGS:
+        make_srt(lang)
+    ins = ["-i", "master.mp4"] + (["-loop", "1", "-i", "scrim.png"] if has else [])
+    base = 2 if has else 1
+    for lang in LANGS:
+        ins += ["-i", mixes[lang]]
+    amaps = []
+    for lang in LANGS:
+        amaps += ["-map", "[a_%s]" % lang]
+    ameta = audio_meta()
     enc = ["-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p",
            "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart",
            "-r", str(FPS), "-t", "%.3f" % total]
@@ -2717,10 +3170,11 @@ def pass_c():
     #       归一由 join 在拼完之后做一次。淡场按 SEG_FIRST/SEG_LAST 决定，已在 pass_b 里做完。
     # 预览：归一 + 尾部淡出，只为单看这一段。**不要拿它去拼片。**
     seg = os.path.join("..", OUT_NAME)
-    fc = [video_chain("[0:v]", has, text=has_text), ai + "aresample=48000[a]"]
+    fc = [video_chain("[0:v]", has, text=has_text)]
+    fc += ["[%d:a]aresample=48000[a_%s]" % (base + j, l) for j, l in enumerate(LANGS)]
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
-        + ["-filter_complex", ";".join(fc), "-map", "[v]", "-map", "[a]"] + enc + [seg],
-        "段用（**不归一**，给 join 拼片）-> " + seg)
+        + ["-filter_complex", ";".join(fc), "-map", "[v]"] + amaps + enc + ameta + [seg],
+        "段用（**不归一**，%d 条音轨，给 join 拼片）-> %s" % (len(LANGS), seg))
 
     prev = os.path.join("..", PREVIEW_NAME)
     vf = video_chain("[0:v]", has, text=has_text)
@@ -2728,15 +3182,24 @@ def pass_c():
         vf = vf.replace("[v]", "[vp]") + \
             ";[vp]fade=t=out:st=%.3f:d=%.2f:c=%s[v]" \
             % (total - PREVIEW_FADE_OUT, PREVIEW_FADE_OUT, FADE_COLOR)
-    fcp = [vf, ai + norm + "[a]"]
+    fcp = [vf]
+    fcp += ["[%d:a]%s[a_%s]" % (base + j, norms[l], l) for j, l in enumerate(LANGS)]
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
-        + ["-filter_complex", ";".join(fcp), "-map", "[v]", "-map", "[a]"] + enc + [prev],
+        + ["-filter_complex", ";".join(fcp), "-map", "[v]"] + amaps + enc + ameta + [prev],
         "预览（归一到 %.1f LUFS + 尾部淡出，给人看）-> %s" % (TARGET_I, prev))
+
+    verify_tracks(seg)
+    verify_tracks(prev)
 
     print("\n完成三件：")
     print("  段用   %s   **不归一**，给 join" % seg)
     print("  预览   %s   归一 + 淡出，单看这一段用这个" % prev)
-    print("  字幕   %s   外挂，播放器渲染" % os.path.join("..", SRT_NAME))
+    print("  字幕   %s   外挂，播放器渲染"
+          % " / ".join(os.path.join("..", srt_name(l)) for l in LANGS))
+    if len(LANGS) > 1:
+        print("  音轨   %s   语言元数据已写进文件，YouTube 直接认"
+              % " / ".join("a:%d=%s" % (j, LANG_INFO[l]["code"])
+                           for j, l in enumerate(LANGS)))
 
 
 def still():
@@ -2891,14 +3354,24 @@ def cover():
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
     # `preview` 和 `budget` 都必须在**没有图**的时候跑得起来 —— 那正是它们的位置。
+    arg = sys.argv[2] if len(sys.argv) > 2 else None
     if what in ("sync", "prep", "probe", "trace", "still", "measure", "cover",
                 "pick", "motion", "pixels", "mquality", "credits", "budget",
-                "srt", "preview", "gates"):
-        {"sync": sync, "prep": prep, "probe": probe, "trace": trace, "still": still,
-         "measure": measure, "cover": cover, "pick": pick_music_in,
-         "motion": motion, "pixels": pixels, "srt": make_srt,
-         "mquality": mquality, "credits": credits, "budget": budget,
-         "preview": preview, "gates": check_gates}[what]()
+                "srt", "preview", "gates", "langfit"):
+        if what == "langfit":
+            # 逐句把别的语言压进中文的槽。压不进去的会报出还得砍几个词。
+            sys.exit(0 if langfit(arg or "en") else 1)
+        if what == "preview":
+            preview(arg)                       # `preview en` 单听英文那条
+        elif what == "srt":
+            for l in LANGS:
+                make_srt(l)                    # 每种语言各一份
+        else:
+            {"sync": sync, "prep": prep, "probe": probe, "trace": trace, "still": still,
+             "measure": measure, "cover": cover, "pick": pick_music_in,
+             "motion": motion, "pixels": pixels,
+             "mquality": mquality, "credits": credits, "budget": budget,
+             "gates": check_gates}[what]()
         sys.exit(0)
     ok = check_timeline()
     if what == "check":

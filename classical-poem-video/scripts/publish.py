@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """发布文案：出模板 + 量截断位置。
 
-  python publish.py new  [片名]      # 打印一份 发布文案.md 的骨架
+  python publish.py new  [片名]      # 打印一份 发布文案.md 的骨架（中英两份）
   python publish.py check 发布文案.md # 量每个平台的标题会被切在哪儿
+  python publish.py check 发布文案.md --mono   # 只有中文的老片子用这个
   python publish.py limits           # 打印当前配置的各平台长度
 
 **这个脚本只做一件能量的事：标题在各平台被切在第几个字。**
@@ -11,6 +12,12 @@
 为什么这一条值得量：同一句话在小红书切在第 20 字、在抖音的 feed 里切在第 22 字、
 在 YouTube 能留到 100 字。一句在这里刚好的标题，换个平台会被切在最不该切的地方 ——
 而这件事你在自己电脑上看文案时**完全看不出来**，要发出去才发现。
+
+**双语**：片子做了中英双音轨，发布文案就得有英文那一份 —— 观众能切英文音轨，
+但标题简介还是中文，等于这条轨没人找得到。所以 `check` **默认要求**有
+`## YouTube (EN)` 这一块；只有中文的老片子加 `--mono`。
+英文那一块另外验两件中文块不验的：**标题里不能混中文**（写了一半忘了译，
+自己读的时候完全看不出来），以及**AI 生成声明也得有英文的**。
 """
 import io
 import os
@@ -29,22 +36,27 @@ except Exception:
 #   body  = 简介/正文上限
 #   tags  = 话题/标签个数上限
 PLATFORMS = [
-    # 名称        hard  feed  body   tags  备注
-    ("小红书",      20,   20,  1000,   10, "标题短得多，书名常常放不进去，就放正文第一行"),
-    ("抖音",        55,   22,   55,    None, "标题和话题共用一栏，话题也吃字数"),
-    ("B站",         80,   40,  2000,   10, "标签是独立字段，不占简介"),
-    ("YouTube",    100,   45,  5000,  None, "描述前 2~3 行会显示在播放器下方，其余要点开"),
+    # 名称           hard  feed  body   tags  备注                                    语言
+    ("小红书",         20,   20,  1000,   10, "标题短得多，书名常常放不进去，就放正文第一行", "zh"),
+    ("抖音",           55,   22,   55,    None, "标题和话题共用一栏，话题也吃字数", "zh"),
+    ("B站",            80,   40,  2000,   10, "标签是独立字段，不占简介", "zh"),
+    ("YouTube",       100,   45,  5000,  None, "描述前 2~3 行会显示在播放器下方，其余要点开", "zh"),
+    # YouTube 的多语言标题/简介：中英各填一份，观众切到英文音轨时看到的是这一份。
+    # hard 还是 100 个字符（平台按字符算，和语言无关），但 feed 里英文能显示得多些。
+    ("YouTube (EN)", 100,   70,  5000,  None, "英文标题，配英文音轨；hard 仍是 100 字符", "en"),
 ]
-UNVERIFIED = {"抖音"}          # 没在真机上比过的，报告里会标出来
+UNVERIFIED = {"抖音", "YouTube (EN)"}   # 没在真机上比过的，报告里会标出来
+CJK = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef]")
 
 
 def limits():
     print("")
     print("=== 各平台长度（配置值，**发之前核一次**）===")
-    print("  %-8s %6s %6s %7s %6s  %s" % ("平台", "上限", "feed切", "正文", "标签", "备注"))
-    for name, hard, feed, body, tags, note in PLATFORMS:
+    print("  %-13s %6s %6s %7s %6s  %s"
+          % ("平台", "上限", "feed切", "正文", "标签", "备注"))
+    for name, hard, feed, body, tags, note, _lang in PLATFORMS:
         mark = " *" if name in UNVERIFIED else ""
-        print("  %-8s %6d %6d %7d %6s  %s%s"
+        print("  %-13s %6d %6d %7d %6s  %s%s"
               % (name, hard, feed, body, tags if tags else "—", note, mark))
     print("")
     print("  * = 没在真机上比过，是按常见版式估的。核过之后把这行的星号去掉。")
@@ -57,17 +69,22 @@ def parse(path):
         ## <平台名>
         - 标题：xxx        （可以有多条）
         - 话题：#a #b #c
+
+    **平台名按整行认，不是按第一个空白之前那一段。** 原来用 `(\\S+)` 取到的是
+    "YouTube (EN)" 的 "YouTube" —— 于是英文那一块被并进中文块，两块的标题混在一起量，
+    而报告看上去一切正常。这类错的形状是"少量到一块"，不是"报错"。
     """
     out, cur = {}, None
     body_chars = 0
+    names = [p[0] for p in PLATFORMS]
     for raw in io.open(path, encoding="utf-8"):
         line = raw.rstrip("\n")
-        m = re.match(r"^##\s+(\S+)", line)
+        m = re.match(r"^##\s+(.+?)\s*$", line)
         if m:
             if cur:
                 out[cur]["body"] = body_chars
             name = m.group(1)
-            cur = name if any(name == p[0] for p in PLATFORMS) else None
+            cur = name if name in names else None
             body_chars = 0
             if cur:
                 out[cur] = {"titles": [], "tags": [], "body": 0}
@@ -93,22 +110,32 @@ def parse(path):
     return out
 
 
-def check(path):
+def check(path, bilingual=True):
+    """bilingual=False 时跳过英文那些块（只有中文的老片子）。
+
+    **默认要求双语**：从"每支片子都出中英双音轨"那天起，只有中文标题的
+    发布文案就是漏了一半 —— 而漏掉的那一半恰恰是给听英文轨的人看的。
+    """
     if not os.path.exists(path):
         sys.exit("!!! 找不到 %s" % path)
     data = parse(path)
     limit = {p[0]: p for p in PLATFORMS}
     bad, warn, counted = [], [], 0
+    plats = [p for p in PLATFORMS if bilingual or p[6] == "zh"]
 
     print("")
-    print("=== 标题会被切在哪儿 ===")
-    for name, _, _, _, _, _ in PLATFORMS:
+    print("=== 标题会被切在哪儿%s ===" % ("" if bilingual else "（--mono：只看中文块）"))
+    for name, _, _, _, _, _, lang in plats:
         d = data.get(name)
         if not d:
-            warn.append("%s：文档里没有这一块 —— 没量到，不算通过" % name)
+            (bad if lang == "en" else warn).append(
+                "%s：文档里没有这一块 —— 没量到，不算通过%s"
+                % (name, "。片子有英文音轨就必须有英文标题简介，"
+                         "否则听英文的人根本找不到这支片子" if lang == "en" else ""))
             continue
         if not d["titles"]:
-            warn.append("%s：这一块里一条『- 标题：』都没有 —— 没量到，不算通过" % name)
+            (bad if lang == "en" else warn).append(
+                "%s：这一块里一条『- 标题：』都没有 —— 没量到，不算通过" % name)
             continue
         hard, feed, body, tags, _ = limit[name][1:6]
         print("\n  【%s】上限 %d / feed 约切在 %d%s"
@@ -125,6 +152,12 @@ def check(path):
                             % (name, n, feed, tt[:feed]))
             else:
                 flag = "  ✓"
+            # 英文块里混着中文 = 有一句忘了译。自己读的时候完全看不出来，
+            # 因为两种语言你都读得懂 —— 只有量一遍才发现。
+            if lang == "en" and CJK.search(tt):
+                bad.append("%s 的标题里还有中文：『%s』—— 这一块是给英文观众看的"
+                           % (name, tt))
+                flag = "  << 还没译"
             print("    %2d 字  %s%s" % (n, tt, flag))
         if tags and len(d["tags"]) > tags:
             bad.append("%s 的话题 %d 个，超过上限 %d" % (name, len(d["tags"]), tags))
@@ -135,9 +168,13 @@ def check(path):
 
     # 全文必须出现的几项（荐书片/生成画面的片子）
     text = io.open(path, encoding="utf-8").read()
-    for key, why in (("AI", "画面是 AI 生成的，多个平台要求标注"),):
-        if not re.search(r"AI\s*生成|人工智能生成|AIGC", text):
-            bad.append("全文没有一句『画面为 AI 生成』—— %s" % why)
+    if not re.search(r"AI\s*生成|人工智能生成|AIGC", text):
+        bad.append("全文没有一句『画面为 AI 生成』—— 画面是 AI 生成的，多个平台要求标注")
+    # 声明也要有英文的：YouTube 的英文简介里没有，等于对英文观众没声明过。
+    if bilingual and not re.search(r"AI[- ]?generated|generated (?:by|with) AI|AIGC",
+                                   text, re.I):
+        bad.append("全文没有一句英文的 AI 生成声明（AI-generated …）—— "
+                   "英文简介里没有，就等于对英文观众没有声明过")
 
     print("")
     if counted == 0:
@@ -164,31 +201,33 @@ def selftest():
     p1 = os.path.join(d, "over.md")
     io.open(p1, "w", encoding="utf-8").write(
         "## 小红书\n- 标题：" + "字" * 40 + "\n- 话题：#a\n正文\nAI 生成\n")
-    r1 = check(p1)
+    r1 = check(p1, bilingual=False)   # 只验字数，用 --mono 把双语那几条隔开
     print("回归自测: 40 字标题塞进小红书(上限20) → %s" % ("报警了，对" if not r1 else "**检查失效了**"))
     ok = ok and (not r1)
 
     p2 = os.path.join(d, "empty.md")
     io.open(p2, "w", encoding="utf-8").write("# 空文档\n随便写点什么\nAI 生成\n")
-    r2 = check(p2)
+    r2 = check(p2, bilingual=False)
     print("回归自测: 空文档 → %s" % ("报『没量到』，对" if not r2 else "**静默放行了**"))
     ok = ok and (not r2)
 
+    FULL = ("## 小红书\n- 标题：十八个字刚好放得下的标题\n- 话题：#a #b\n正文\n"
+            "## 抖音\n- 标题：二十二字以内\n- 话题：#a\n"
+            "## B站\n- 标题：正常长度的标题\n- 话题：#a\n"
+            "## YouTube\n- 标题：一个正常长度的中文标题\n- 话题：#a\n"
+            "## YouTube (EN)\n- 标题：A normal English title\n- 话题：#a\n"
+            "片中画面为 AI 生成。Visuals are AI-generated.\n")
+
     p3 = os.path.join(d, "ok.md")
-    io.open(p3, "w", encoding="utf-8").write(
-        "## 小红书\n- 标题：十八个字刚好放得下的标题\n- 话题：#a #b\n正文\n"
-        "## 抖音\n- 标题：二十二字以内\n- 话题：#a\n"
-        "## B站\n- 标题：正常长度的标题\n- 话题：#a\n"
-        "## YouTube\n- 标题：A normal title\n- 话题：#a\n"
-        "片中画面为 AI 生成。\n")
+    io.open(p3, "w", encoding="utf-8").write(FULL)
     r3 = check(p3)
-    print("回归自测: 四个平台都在限内 → %s" % ("通过，对" if r3 else "**误报了**"))
+    print("回归自测: 五个块都在限内 → %s" % ("通过，对" if r3 else "**误报了**"))
     ok = ok and r3
 
     p4 = os.path.join(d, "noai.md")
     io.open(p4, "w", encoding="utf-8").write(
         "## 小红书\n- 标题：短标题\n- 话题：#a\n正文\n")
-    r4 = check(p4)
+    r4 = check(p4, bilingual=False)   # 验的是中文那句声明
     print("回归自测: 没写 AI 生成声明 → %s" % ("报警了，对" if not r4 else "**漏了**"))
     ok = ok and (not r4)
 
@@ -197,10 +236,44 @@ def selftest():
         "## 抖音\n- 标题：短标题 #a\n- 话题：#a\n"
         "- 推荐用第 1 条，因为：" + "理" * 80 + "\n"
         "片中画面为 AI 生成。\n")
-    r5 = check(p5)
+    r5 = check(p5, bilingual=False)   # 验的是"列表项不算正文"
     print("回归自测: 80 字的『推荐』注释（抖音正文上限 55）→ %s"
           % ("不算进正文，对" if r5 else "**又把注释当正文了**"))
     ok = ok and r5
+
+    # ---- 双语那几条 ----
+    p6 = os.path.join(d, "noen.md")
+    io.open(p6, "w", encoding="utf-8").write(
+        FULL.replace("## YouTube (EN)\n- 标题：A normal English title\n- 话题：#a\n", ""))
+    r6 = check(p6)
+    print("回归自测: 缺 YouTube (EN) 整块 → %s" % ("报警了，对" if not r6 else "**放行了**"))
+    ok = ok and (not r6)
+    r6b = check(p6, bilingual=False)
+    print("回归自测: 同一份文档加 --mono → %s" % ("通过，对" if r6b else "**--mono 没生效**"))
+    ok = ok and r6b
+
+    p7 = os.path.join(d, "notrans.md")
+    io.open(p7, "w", encoding="utf-8").write(
+        FULL.replace("- 标题：A normal English title", "- 标题：忘了译的中文标题"))
+    r7 = check(p7)
+    print("回归自测: 英文块里留着中文标题 → %s" % ("报警了，对" if not r7 else "**看不出来**"))
+    ok = ok and (not r7)
+
+    p8 = os.path.join(d, "noenai.md")
+    io.open(p8, "w", encoding="utf-8").write(
+        FULL.replace("Visuals are AI-generated.", ""))
+    r8 = check(p8)
+    print("回归自测: 只有中文的 AI 声明 → %s" % ("报警了，对" if not r8 else "**漏了**"))
+    ok = ok and (not r8)
+
+    p9 = os.path.join(d, "merged.md")
+    io.open(p9, "w", encoding="utf-8").write(
+        FULL.replace("- 标题：A normal English title", "- 标题：" + "A" * 130))
+    r9 = check(p9)
+    print("回归自测: 英文块 130 字符标题（上限 100）→ %s"
+          % ("报警了，对 —— 说明两个 YouTube 块没被并成一块"
+             if not r9 else "**被并进中文块了**"))
+    ok = ok and (not r9)
 
     print("\n回归自测总体: %s" % ("通过" if ok else "**有失效的检查**"))
     return ok
@@ -215,8 +288,11 @@ TEMPLATE = """# 《%s》发布文案
 
 - 书名 / 作者 / 出版年：
 - **片中画面为 AI 生成。**
+- **Visuals in this video are AI-generated.**（英文简介里也要有，不能只有中文）
 - 配乐来源（`MUSIC_MODE` 是 public_domain 时必填）：
 - 素材来源与授权（`IMG_SOURCE` 是 found 时贴 `credits` 导出的表）：
+- 音轨：中文 / English（`LANGS` 有两条时，简介里说一句怎么切音轨 ——
+  多数观众不知道 YouTube 有这个菜单）
 
 ## 小红书
 
@@ -249,11 +325,22 @@ TEMPLATE = """# 《%s》发布文案
 - 话题：#
 （描述，前 2~3 行会显示在播放器下方）
 
+## YouTube (EN)
+
+- 标题：
+- 标题：
+- 推荐用第 1 条，因为：
+- 话题：#
+（English description. 这一块整块都用英文，包括 AI-generated 声明。
+ **不是把中文标题直译** —— 中文标题的钩子常常靠成语和语序，直译过去是平的。
+ 同一个悬念用英文重写一遍。）
+
 ## 不要做的
 
 - 标题剧透第三幕的反转
 - 把片里明确标为「假说」的东西写成结论
 - 堆不相关的热词（推荐系统会把片子投给不看这类内容的人，完播率更差）
+- 英文那一块留着中文没译（`check` 会拦，但它只看得见标题行）
 """
 
 
@@ -265,8 +352,8 @@ if __name__ == "__main__":
         print(TEMPLATE % (sys.argv[2] if len(sys.argv) > 2 else "片名"))
     elif what == "check":
         if len(sys.argv) < 3:
-            sys.exit("用法: python publish.py check 发布文案.md")
-        sys.exit(0 if check(sys.argv[2]) else 1)
+            sys.exit("用法: python publish.py check 发布文案.md [--mono]")
+        sys.exit(0 if check(sys.argv[2], "--mono" not in sys.argv) else 1)
     elif what == "selftest":
         sys.exit(0 if selftest() else 1)
     else:
