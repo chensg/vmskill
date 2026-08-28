@@ -1,7 +1,7 @@
 interface:
-  display_name: "静帧短片制作（古诗词 / 历史小故事）"
-  short_description: "把一首古诗词、或一个历史小故事，做成带运镜、字幕、配乐、音效的竖版/横版短片，本地 ffmpeg 合成"
-  default_prompt: "Use $classical-poem-video to turn this into a vertical 1080x1920 short. For a 古诗词: one shot per line, Ken Burns moves, 楷体 vertical subtitles, an end-title poem page. For a 历史小故事/冷知识: TTS narration driving the timeline, horizontal bottom-left subtitles, music ducked under the voice, and a CLAIMS fact-grading table so no hypothesis gets narrated as fact. Either way: generated score and sound effects, a cover, and `check` (讲述模式先跑 `sync`) locked before touching any material."
+  display_name: "静帧短片制作（古诗词 / 讲述 / MV / 小说连载）"
+  short_description: "把一首古诗词、一个历史小故事或一本书、一条带演唱的成品歌、或一本公版小说，做成带运镜、字幕、配乐、音效的竖版/横版短片，本地 ffmpeg 合成"
+  default_prompt: "Use $classical-poem-video to make this into a video. 四种模式共用一条流水线：(1) 古诗词——一句一镜、Ken Burns、楷体竖排字幕、片尾诗文页；(2) 历史小故事/冷知识/荐书——TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、一张 CLAIMS 事实分级表防止把推断说成史实，出图前两道人工门禁（讲述稿、只有字幕+声音的检查片）；(3) 一条带演唱的成品歌 + 歌词——lyric_sync.py 打点吸附，片长锁死等于歌长；(4) 公版小说连载——书里一个角色第一人称自述，横版 1920x1080 + 外挂 SRT，一集 600s±60，分段渲染后 join.py 拼集。开工前先定死三条轴：MOTION（运镜还是静帧）、MUSIC_MODE（库/生成/公版/不要/成品歌）、IMG_SOURCE（生成还是自己找，找来的要登记授权）。素材动手之前先把 check（讲述模式先 vo_trim + sync）跑通。交付物还包括封面和一份发布文案。"
 
 policy:
   allow_implicit_invocation: true
