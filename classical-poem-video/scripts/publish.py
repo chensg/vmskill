@@ -122,17 +122,36 @@ def parse(path):
     return out
 
 
-def parse_keywords(path):
-    """读 `- 标签：a, b, c` 那一行（可以有多行，合并）。
+def _split_tags(s):
+    return [x.strip().lstrip("#") for x in re.split(r"[,，、]", s) if x.strip()]
 
-    **和 `- 话题：` 分开认**：话题是写进描述里的 #hashtag，标签是后台那一栏。
-    两者内容可以重叠，但字数上限和作用完全不同，混在一起量就两边都量不准。
+
+def parse_keywords(path):
+    """读 `- 标签：a, b, c`，**带续行**。
+
+    和 `- 话题：` 分开认：话题是写进描述里的 #hashtag，标签是后台那一栏，
+    两者的上限和作用都不同，混在一起量就两边都量不准。
+
+    **续行必须认。** 上限 500 字符的一行在任何编辑器里都会折。只认第一行的话，
+    你写 22 个、它数 6 个、然后**报「自检通过」** —— 不报错、不崩，
+    只是发出去少了十六个词。这一条在《四十二年》上真发生过。
+
+    续行的判据：有缩进、非空、且不是新的列表项 / 标题 / 括注。
     """
-    out = []
+    out, in_block = [], False
     for raw in io.open(path, encoding="utf-8"):
-        m = re.match(r"^[-*]\s*标签[：:]\s*(.+?)\s*$", raw.rstrip("\n"))
+        line = raw.rstrip("\n")
+        m = re.match(r"^[-*]\s*标签[：:]\s*(.*?)\s*$", line)
         if m:
-            out += [x.strip().lstrip("#") for x in re.split(r"[,，、]", m.group(1)) if x.strip()]
+            in_block = True
+            out += _split_tags(m.group(1))
+            continue
+        if in_block:
+            if (not line.strip()) or (not line[:1].isspace()) \
+                    or re.match(r"^\s*[-*#（(]", line):
+                in_block = False
+                continue
+            out += _split_tags(line)
     return out
 
 
@@ -343,6 +362,14 @@ def selftest():
     print("回归自测: 关键词拼起来超 %d 字符 → %s"
           % (YT_KEYWORDS_MAX, "报警了，对" if not r11 else "**没量总长**"))
     ok = ok and (not r11)
+
+    p13 = os.path.join(d, "kwwrap.md")
+    io.open(p13, "w", encoding="utf-8").write(FULL.replace(
+        KW, "- 标签：a1, b2, c3, d4,\n  e5, f6, g7, h8, i9\n\n（括注不该被吃进去）\n"))
+    got = len(parse_keywords(p13))
+    print("回归自测: 标签行折成两行 → 数到 %d 个 —— %s"
+          % (got, "对，续行认了" if got == 9 else "**只认第一行，静默漏掉后面的**"))
+    ok = ok and got == 9
 
     p12 = os.path.join(d, "kwwide.md")
     io.open(p12, "w", encoding="utf-8").write(
