@@ -13,6 +13,10 @@
 在 YouTube 能留到 100 字。一句在这里刚好的标题，换个平台会被切在最不该切的地方 ——
 而这件事你在自己电脑上看文案时**完全看不出来**，要发出去才发现。
 
+**关键词（tags）**：YouTube 后台有一栏 tags，**和描述里的 #hashtag 是两回事**。
+它是检索入口，全片一份、不分语言，上限 500 字符。`check` 默认要求有 `- 标签：` 那一行。
+留空不会报错、不会少发一个字，只是这支片子在搜索里少了一整个入口 —— 典型的静默损失。
+
 **双语**：片子做了中英双音轨，发布文案就得有英文那一份 —— 观众能切英文音轨，
 但标题简介还是中文，等于这条轨没人找得到。所以 `check` **默认要求**有
 `## YouTube (EN)` 这一块；只有中文的老片子加 `--mono`。
@@ -46,6 +50,14 @@ PLATFORMS = [
     ("YouTube (EN)", 100,   70,  5000,  None, "英文标题，配英文音轨；hard 仍是 100 字符", "en"),
 ]
 UNVERIFIED = {"抖音", "YouTube (EN)"}   # 没在真机上比过的，报告里会标出来
+
+# YouTube 的 tags（关键词）字段。**不是描述里的 #hashtag。**
+#   - 总长按 `a, b, c` 拼起来算，上限 500 字符。**超了是整条丢掉，不是截断**
+#   - 单个词太长检索不到；30 字符是个保守的上限
+#   - 全片一份，不分语言 —— YouTube 的 tags 不做本地化，中英文可以混着放
+YT_KEYWORDS_MAX = 500
+YT_KEYWORD_MAX = 30
+YT_KEYWORDS_MIN = 8        # 少于这个数只提示，不拦
 CJK = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef]")
 
 
@@ -110,6 +122,20 @@ def parse(path):
     return out
 
 
+def parse_keywords(path):
+    """读 `- 标签：a, b, c` 那一行（可以有多行，合并）。
+
+    **和 `- 话题：` 分开认**：话题是写进描述里的 #hashtag，标签是后台那一栏。
+    两者内容可以重叠，但字数上限和作用完全不同，混在一起量就两边都量不准。
+    """
+    out = []
+    for raw in io.open(path, encoding="utf-8"):
+        m = re.match(r"^[-*]\s*标签[：:]\s*(.+?)\s*$", raw.rstrip("\n"))
+        if m:
+            out += [x.strip().lstrip("#") for x in re.split(r"[,，、]", m.group(1)) if x.strip()]
+    return out
+
+
 def check(path, bilingual=True):
     """bilingual=False 时跳过英文那些块（只有中文的老片子）。
 
@@ -166,6 +192,30 @@ def check(path, bilingual=True):
         print("    话题 %d 个%s，正文约 %d 字（上限 %d）"
               % (len(d["tags"]), "" if not tags else "/%d" % tags, d["body"], body))
 
+    # ---- YouTube 关键词（独立字段）----
+    kw = parse_keywords(path)
+    print("")
+    print("=== YouTube 关键词（后台独立字段，不是描述里的 #hashtag）===")
+    if not kw:
+        bad.append("文档里没有『- 标签：』那一行 —— YouTube 的 tags 是独立于描述的一栏，"
+                   "留空不报错也不少发字，只是白丢一个检索入口")
+        print("  没有。**不算通过。**")
+    else:
+        joined = ", ".join(kw)
+        print("  %d 个，拼起来 %d 字符（上限 %d）"
+              % (len(kw), len(joined), YT_KEYWORDS_MAX))
+        print("  " + joined[:200] + ("…" if len(joined) > 200 else ""))
+        if len(joined) > YT_KEYWORDS_MAX:
+            bad.append("关键词拼起来 %d 字符，超过上限 %d —— **超出的部分是整条丢掉，不是截断**"
+                       % (len(joined), YT_KEYWORDS_MAX))
+        for k in kw:
+            if len(k) > YT_KEYWORD_MAX:
+                bad.append("关键词『%s』%d 字符，单个超过 %d —— 太长的词没人会搜"
+                           % (k, len(k), YT_KEYWORD_MAX))
+        if len(kw) < YT_KEYWORDS_MIN:
+            warn.append("关键词只有 %d 个，建议 %d 个以上（这一栏不占描述字数，写满没有代价）"
+                        % (len(kw), YT_KEYWORDS_MIN))
+
     # 全文必须出现的几项（荐书片/生成画面的片子）
     text = io.open(path, encoding="utf-8").read()
     if not re.search(r"AI\s*生成|人工智能生成|AIGC", text):
@@ -197,10 +247,13 @@ def selftest():
     import tempfile
     ok = True
     d = tempfile.mkdtemp()
+    # 每个用例只该验它自己那一件事。少了这一行，新加的关键词检查会把下面几条
+    # **为别的理由**弄错的用例一起带响 —— 看着还是「报警了」，验的却已不是原来那件事。
+    KW = "- 标签：a1, b2, c3, d4, e5, f6, g7, h8\n"
 
     p1 = os.path.join(d, "over.md")
     io.open(p1, "w", encoding="utf-8").write(
-        "## 小红书\n- 标题：" + "字" * 40 + "\n- 话题：#a\n正文\nAI 生成\n")
+        KW + "## 小红书\n- 标题：" + "字" * 40 + "\n- 话题：#a\n正文\nAI 生成\n")
     r1 = check(p1, bilingual=False)   # 只验字数，用 --mono 把双语那几条隔开
     print("回归自测: 40 字标题塞进小红书(上限20) → %s" % ("报警了，对" if not r1 else "**检查失效了**"))
     ok = ok and (not r1)
@@ -211,7 +264,8 @@ def selftest():
     print("回归自测: 空文档 → %s" % ("报『没量到』，对" if not r2 else "**静默放行了**"))
     ok = ok and (not r2)
 
-    FULL = ("## 小红书\n- 标题：十八个字刚好放得下的标题\n- 话题：#a #b\n正文\n"
+    FULL = (KW
+            + "## 小红书\n- 标题：十八个字刚好放得下的标题\n- 话题：#a #b\n正文\n"
             "## 抖音\n- 标题：二十二字以内\n- 话题：#a\n"
             "## B站\n- 标题：正常长度的标题\n- 话题：#a\n"
             "## YouTube\n- 标题：一个正常长度的中文标题\n- 话题：#a\n"
@@ -226,14 +280,14 @@ def selftest():
 
     p4 = os.path.join(d, "noai.md")
     io.open(p4, "w", encoding="utf-8").write(
-        "## 小红书\n- 标题：短标题\n- 话题：#a\n正文\n")
+        KW + "## 小红书\n- 标题：短标题\n- 话题：#a\n正文\n")
     r4 = check(p4, bilingual=False)   # 验的是中文那句声明
     print("回归自测: 没写 AI 生成声明 → %s" % ("报警了，对" if not r4 else "**漏了**"))
     ok = ok and (not r4)
 
     p5 = os.path.join(d, "note.md")
     io.open(p5, "w", encoding="utf-8").write(
-        "## 抖音\n- 标题：短标题 #a\n- 话题：#a\n"
+        KW + "## 抖音\n- 标题：短标题 #a\n- 话题：#a\n"
         "- 推荐用第 1 条，因为：" + "理" * 80 + "\n"
         "片中画面为 AI 生成。\n")
     r5 = check(p5, bilingual=False)   # 验的是"列表项不算正文"
@@ -274,6 +328,29 @@ def selftest():
           % ("报警了，对 —— 说明两个 YouTube 块没被并成一块"
              if not r9 else "**被并进中文块了**"))
     ok = ok and (not r9)
+
+    # ---- 关键词那几条 ----
+    p10 = os.path.join(d, "nokw.md")
+    io.open(p10, "w", encoding="utf-8").write(FULL.replace(KW, ""))
+    r10 = check(p10)
+    print("回归自测: 没有『- 标签：』那一行 → %s" % ("报警了，对" if not r10 else "**放行了**"))
+    ok = ok and (not r10)
+
+    p11 = os.path.join(d, "kwlong.md")
+    io.open(p11, "w", encoding="utf-8").write(
+        FULL.replace(KW, "- 标签：" + ", ".join("kw%02d" % i for i in range(120)) + "\n"))
+    r11 = check(p11)
+    print("回归自测: 关键词拼起来超 %d 字符 → %s"
+          % (YT_KEYWORDS_MAX, "报警了，对" if not r11 else "**没量总长**"))
+    ok = ok and (not r11)
+
+    p12 = os.path.join(d, "kwwide.md")
+    io.open(p12, "w", encoding="utf-8").write(
+        FULL.replace(KW, "- 标签：ok1, " + "x" * (YT_KEYWORD_MAX + 5) + ", ok2\n"))
+    r12 = check(p12)
+    print("回归自测: 单个关键词超 %d 字符 → %s"
+          % (YT_KEYWORD_MAX, "报警了，对" if not r12 else "**只量了总长没量单个**"))
+    ok = ok and (not r12)
 
     print("\n回归自测总体: %s" % ("通过" if ok else "**有失效的检查**"))
     return ok
@@ -334,6 +411,15 @@ TEMPLATE = """# 《%s》发布文案
 （English description. 这一块整块都用英文，包括 AI-generated 声明。
  **不是把中文标题直译** —— 中文标题的钩子常常靠成语和语序，直译过去是平的。
  同一个悬念用英文重写一遍。）
+
+## 标签（YouTube 关键词，全片一份，不分语言）
+
+- 标签：
+
+（这一栏在 YouTube 后台是**独立字段**，不是描述里的 #hashtag。
+ 上限 500 字符，按 `a, b, c` 拼起来算；单个词别超过 30 字符。
+ 中英文可以混着放——它服务的是检索，不是阅读。
+ 写满没有代价：它不占描述的字数。）
 
 ## 不要做的
 
