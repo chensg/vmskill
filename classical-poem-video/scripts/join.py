@@ -25,7 +25,18 @@
 4. **各段 SRT 的时间码都从 0 起。** 合并时必须按**实际拼接后的段起点**累加偏移，
    不能用预算值 —— 差几十毫秒，到第五段就是明显错位。
 
-5. **多音轨的段用文件，concat 默认只会留下一条音轨。** ffmpeg 不给 -map 时按
+5. **多音轨的成片不能直接当上传件。**
+   YouTube 的多语言音轨**不是**从上传文件里读第二条轨的 —— 上传的 MP4 里多余的音轨
+   会被忽略，附加语言要在 Studio 里作为**独立音频文件**单独添加。
+   （这一条 2026-08-31 由用户指出；此前整套双语实现建在"一条视频 + N 条音轨"
+   这个错前提上。音频本身没问题，错的是交付形态。）
+   所以 join 拼完之后**自动拆成三样**：
+     - `全片.mp4`      视频 + **默认语言**一条音轨 —— 这个才是上传件
+     - `全片_音轨_<code>.m4a`  每种附加语言一个独立音频，长度与画面严格一致
+     - `全片_多音轨.mp4`      两条轨都在，留档 / 给支持多轨的场合
+   三样全部由**流拷贝**得到，不多一代编码。
+
+6. **多音轨的段用文件，concat 默认只会留下一条音轨。** ffmpeg 不给 -map 时按
    "每种类型挑最好的一条"选流，两条音轨的片子拼完只剩一条，**而且不报错**：
    出来的全片能播、时长对、中文轨也对，只有英文轨没了。所以这里显式 `-map 0`。
    归一同理 —— 每条轨**各自量、各自归**到同一个目标，拿中文的测量值去归英文，
@@ -55,7 +66,9 @@ FPS = 30
 SEAM_LOUD_STEP = 3.0      # 接缝两侧响度差超过这么多就报警（dB）
 SEAM_WIN = 4.0            # 接缝两侧各取多长来量响度
 BLACK_MEAN = 8.0          # 平均亮度低于这个算黑场
-OUT_NAME = "全片.mp4"
+OUT_NAME = "全片.mp4"                 # 上传件：视频 + 默认语言一条轨
+OUT_MULTI = "全片_多音轨.mp4"          # 留档：所有语言都在一个文件里
+OUT_AUDIO = "全片_音轨_%s.m4a"         # 每种附加语言一个独立音频，%s 是语言码
 OUT_SRT = "全片%s.srt"      # %s 是语言后缀：中文是空串，英文是 ".en"
 
 
@@ -372,6 +385,33 @@ def normalize(raw, out, tracks):
         % (TARGET_I, len(tracks), out))
 
 
+def split_tracks(multi, work, tracks):
+    """把多音轨成片拆成可上传的形态。全部流拷贝，不重编码。
+
+    **为什么不能直接传多音轨文件**：YouTube 只认上传件里的第一条/默认音轨，
+    其余的会被丢掉；附加语言必须在 Studio 里作为独立音频文件添加。
+    不拆的话，上传上去的样子是"英文轨没了"，而文件本身完全正常 ——
+    又一个不报错的失败。
+
+    返回 (上传件, [(语言码, 音频文件), ...])。
+    """
+    if len(tracks) <= 1:
+        return multi, []
+    upload = os.path.join(work, OUT_NAME)
+    run(["ffmpeg", "-y", "-v", "error", "-i", multi,
+         "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
+         "-movflags", "+faststart", upload],
+        "上传件：视频 + %s 一条音轨（流拷贝）-> %s" % (tracks[0], upload))
+    auds = []
+    for j, code in enumerate(tracks[1:], start=1):
+        out = os.path.join(work, OUT_AUDIO % code)
+        run(["ffmpeg", "-y", "-v", "error", "-i", multi,
+             "-map", "0:a:%d" % j, "-c:a", "copy", out],
+            "独立音频（%s）-> %s" % (code, out))
+        auds.append((code, out))
+    return upload, auds
+
+
 def selftest():
     """造两段故意出错的片子：第二段自己压了 8dB（响度台阶）且带黑场淡入。
     两个检查都必须报警 —— 一个永远不报警的检查比没有检查更糟。"""
@@ -473,13 +513,35 @@ def selftest_tracks():
           % (len(kept), kept, "对，留住了" if kept == ["zho", "eng"] else "**丢轨了**"))
     ok = ok and kept == ["zho", "eng"]
 
-    out = os.path.join(work, OUT_NAME)
+    # 和 main() 走同一条路：双轨时归一写的是**留档件**，
+    # 拆分再从它派生上传件。写成 OUT_NAME 会让 split_tracks 读写同一个文件。
+    out = os.path.join(work, OUT_MULTI)
     normalize(raw, out, segs[0]["tracks"])
     after = audio_tracks(out)
     print("归一之后           —— %d 条音轨 %s，%s"
           % (len(after), after,
              "对，语言元数据还在" if after == ["zho", "eng"] else "**丢了**"))
     ok = ok and after == ["zho", "eng"]
+
+    # ---- 拆成可上传的形态 ----
+    upload, auds = split_tracks(out, work, ["zho", "eng"])
+    up_tracks = audio_tracks(upload)
+    hit = up_tracks == ["zho"]
+    print("上传件               —— %d 条音轨 %s，%s"
+          % (len(up_tracks), up_tracks,
+             "对，只剩默认那条" if hit else "**没拆干净**"))
+    ok = ok and hit
+
+    vdur = duration(upload)
+    for code, f in auds:
+        a_t = audio_tracks(f)
+        adur = duration(f)
+        good = a_t == [code] and abs(adur - vdur) <= 0.05
+        print("独立音频 %-5s        —— %s  %.3fs（画面 %.3fs），%s"
+              % (code, a_t, adur, vdur,
+                 "对，等长且语言码对" if good else "**对不上**"))
+        ok = ok and good
+    ok = ok and len(auds) == 1
 
     merge_srt(segs, work)
     got = []
@@ -513,8 +575,9 @@ def main():
     work = os.path.dirname(os.path.abspath(args[0])) or "."
     raw, lst = concat_video(segs, work)
     bad += check_seams(raw, segs)
-    out = os.path.join(work, OUT_NAME)
-    normalize(raw, out, segs[0]["tracks"])
+    tracks = segs[0]["tracks"]
+    out = os.path.join(work, OUT_MULTI if len(tracks) > 1 else OUT_NAME)
+    normalize(raw, out, tracks)
     print("")
     merge_srt(segs, work)
     total = duration(out)
@@ -528,9 +591,30 @@ def main():
           % (len(got), " / ".join("a:%d=%s" % (j, c) for j, c in enumerate(got)),
              "" if got == segs[0]["tracks"]
              else "  << **和段用文件对不上**（%s）" % "/".join(segs[0]["tracks"])))
-    if got != segs[0]["tracks"]:
+    if got != tracks:
         bad.append("全片的音轨 %s 和段用文件的 %s 不一致 —— concat 或归一把轨弄丢了"
-                   % ("/".join(got), "/".join(segs[0]["tracks"])))
+                   % ("/".join(got), "/".join(tracks)))
+
+    upload, auds = split_tracks(out, work, tracks)
+    if auds:
+        vdur = duration(upload)
+        print("\n=== 可上传的形态 ===")
+        print("  上传件  %s   视频 + %s" % (upload, tracks[0]))
+        for code, f in auds:
+            adur = duration(f)
+            off = abs(adur - vdur)
+            print("  独立音频 %s   %s  %.3fs（画面 %.3fs，差 %.3fs）%s"
+                  % (f, code, adur, vdur, off,
+                     "" if off <= 0.05 else "  << **和画面对不上**"))
+            # 独立音频和画面差一点点就会整条错位，而它在文件里看不出来
+            if off > 0.05:
+                bad.append("独立音频 %s 比画面差 %.3fs —— 上传上去整条会错位" % (f, off))
+            if audio_tracks(f) != [code]:
+                bad.append("独立音频 %s 的语言码是 %s，应该是 %s"
+                           % (f, "/".join(audio_tracks(f)) or "无", code))
+        print("  留档    %s   %d 条轨都在" % (out, len(tracks)))
+        print("\n  **上传 YouTube 时传上传件，再在 Studio 里逐个添加独立音频。**")
+        print("  多音轨那个文件传上去只会保留第一条轨，其余的会被丢掉。")
     for p in (raw, lst):
         try:
             os.remove(p)
