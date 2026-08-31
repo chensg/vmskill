@@ -129,7 +129,7 @@ python join.py 段一 段二 段三 段四 段五   # 拼接 + 一次全局归�
 python join.py --selftest                # 回归自测（含多音轨那几条）
 ```
 
-### 双语音轨（YouTube 多语言音轨，只有横版这一路做）
+### 双语音轨（YouTube 多语言音轨，横版和竖版都做）
 
 在上面的序列里插两步。`LANGS = ["zh"]` 时这些一步都不发生。
 
@@ -141,6 +141,17 @@ python make_story_h.py check        # 多一段「英文轨逐句对槽」，从
 python make_story_h.py c            # 一条画面 + 两条音轨 + 两份 SRT
 python join.py 段一 段二 ...        # 两条轨各自归一，两份 SRT 各自合并
 python publish.py check 发布文案.md  # **默认要求**有 ## YouTube (EN) 那一块
+```
+
+竖版（`make_story_v.py`）多两条讲究，其余一模一样：
+
+```bash
+# **先把字幕改成外挂**：SUB_MODE = "srt"（烧录字幕和多语言不能共存，check_mode 会拦）
+python make_story_v.py vofit        # 有硬线时**先定死中文**：它会把所有的槽改短
+python make_story_v.py langfit      # 再压英文。顺序反了，langfit 的结果会被作废且不报错
+python make_story_v.py check        # 多两段：check_mode + 英文轨逐句对槽
+python make_story_v.py c            # 一次出四样：上传件 / 独立英文音频 / 两份 SRT / 留档
+python make_story_v.py srt          # 只改了文案时跑它，不用重渲
 ```
 
 `langfit` 退出码 1 = 有句子压不进去。**不要绕过它去渲** ——

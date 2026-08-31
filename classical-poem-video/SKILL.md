@@ -1,6 +1,6 @@
 ---
 name: classical-poem-video
-description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐音效，本地 ffmpeg 合成竖版 1080x1920 或横版 1920x1080 短片。四种模式共用一条流水线。(1) 诗词模式：一句一镜、楷体竖排字幕、片尾诗文页——《登高》《水调歌头》《雨霖铃》《清平调》 or any 古诗词/宋词/唐诗。(2) 讲述模式：历史小故事 / 冷知识 / 科普 / **荐书（书评、介绍一本书）**，TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、外加一张事实分级表防止把推断说成史实——《没有夏天的那一年》(1816 无夏之年 → 自行车) 那一类；荐书是它的一个子型（三幕、165~185s、第三幕问「这本书自己在问什么」），见 `references/storytelling.md` 第七节。三条开工前定死的轴：运镜还是**一镜一张静态图**（MOTION，可逐镜覆盖）、配乐是生成/公版/**不要背景音乐**（MUSIC_MODE）、图是按任务书生成还是**自己去找公版或图库**（IMG_SOURCE，找来的必须登记来源与授权）。(3) MV 模式：用户给一条**带演唱的成品歌**（自己写的 / suno、mureka 生成的 / 买了授权的）加一份歌词，要一支**字幕跟着唱腔走**的片子——`lyric_sync.py` 打点吸附 + `MUSIC_MODE="song"`，片长锁死等于歌长、换镜只能落在句间空档。(4) **小说第一人称模式**：把一本**公版小说**做成连载 —— 让书里的一个角色（不一定是主角）对着观众把他自己那段经历讲一遍，**一集 600s±60（10 分钟）、一集一个完整的故事、一本书分多集**。横版 1920×1080 + 外挂 SRT + 一幕一段用 `join.py` 拼集（走《经度》那条长片路子），`MOTION` 默认 `static`（记忆是静止的），**TTS 不能照抄讲述模式**（讲述者的声音 ≠ 角色的声音），多两张表：人称合约与忠实度分级。见 `references/storytelling.md` 第九节。Use when Codex is asked to turn a poem, a 历史小故事, or **一本书（荐书 / 书评 / 介绍一本书 / 读书视频）** into a short, add an episode to such a series, re-cut one in another style (水墨 / 工笔重彩 / 英式水彩 / 电影写实) or another aspect ratio, or asks about 讲述稿 / 分镜 / 运镜 / 静帧 / 不要运镜 / 字幕 / 旁白 / 配乐 / 公版音乐 / 无背景音乐 / 音效 / 诗文页 / 封面 / 素材来源 / 授权署名. Also use when asked to turn **一本小说 / 名著 / 公版小说** into a **第一人称讲述 / 角色自述 / 有声故事连载**, to add 下一集 to such a 连载, or asks about 人称合约 / 视角 / 我是谁在讲 / 忠实度 / 改编尺度 / 切集 / 每集自足 / 角色配音 / 声音试听 / 全集总谱 / 中译本能不能抄 / 名著角色形象的版权. Also use when handed **一个带音乐带演唱的 MP3** and asked to make an MV / 音乐视频 / 歌词字幕, or asked about 唱腔同步 / 对轴 / 打点 / LRC / 歌词时间戳 / 卡拉OK字幕 / 逐字字幕, or why lyric subtitles drift out of sync with the singing. Also use when asked for a **中英双语 / 双音轨 / 多音轨 / YouTube 多语言音轨 / 英文配音 / 英文字幕** version of a 横版讲述长片 or 小说连载, to add an English audio track to an existing one, or asks about 对轴 / 逐句压 / langfit / 英文稿怎么写才塞得进 / 两份 SRT / 发布文案的英文版 / 为什么拼完只剩一条音轨. Also use when handed a folder of images to assemble, or asked why subtitles are illegible or collide with the platform action rail, why a camera move looks static, why generated music starts on silence, why rain drifts upward, or how long each shot should be.
+description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐音效，本地 ffmpeg 合成竖版 1080x1920 或横版 1920x1080 短片。四种模式共用一条流水线。(1) 诗词模式：一句一镜、楷体竖排字幕、片尾诗文页——《登高》《水调歌头》《雨霖铃》《清平调》 or any 古诗词/宋词/唐诗。(2) 讲述模式：历史小故事 / 冷知识 / 科普 / **荐书（书评、介绍一本书）**，TTS 旁白驱动时间轴、横排左下字幕、音乐侧链躲闪、外加一张事实分级表防止把推断说成史实——《没有夏天的那一年》(1816 无夏之年 → 自行车) 那一类；荐书是它的一个子型（三幕、165~185s、第三幕问「这本书自己在问什么」），见 `references/storytelling.md` 第七节。三条开工前定死的轴：运镜还是**一镜一张静态图**（MOTION，可逐镜覆盖）、配乐是生成/公版/**不要背景音乐**（MUSIC_MODE）、图是按任务书生成还是**自己去找公版或图库**（IMG_SOURCE，找来的必须登记来源与授权）。(3) MV 模式：用户给一条**带演唱的成品歌**（自己写的 / suno、mureka 生成的 / 买了授权的）加一份歌词，要一支**字幕跟着唱腔走**的片子——`lyric_sync.py` 打点吸附 + `MUSIC_MODE="song"`，片长锁死等于歌长、换镜只能落在句间空档。(4) **小说第一人称模式**：把一本**公版小说**做成连载 —— 让书里的一个角色（不一定是主角）对着观众把他自己那段经历讲一遍，**一集 600s±60（10 分钟）、一集一个完整的故事、一本书分多集**。横版 1920×1080 + 外挂 SRT + 一幕一段用 `join.py` 拼集（走《经度》那条长片路子），`MOTION` 默认 `static`（记忆是静止的），**TTS 不能照抄讲述模式**（讲述者的声音 ≠ 角色的声音），多两张表：人称合约与忠实度分级。见 `references/storytelling.md` 第九节。Use when Codex is asked to turn a poem, a 历史小故事, or **一本书（荐书 / 书评 / 介绍一本书 / 读书视频）** into a short, add an episode to such a series, re-cut one in another style (水墨 / 工笔重彩 / 英式水彩 / 电影写实) or another aspect ratio, or asks about 讲述稿 / 分镜 / 运镜 / 静帧 / 不要运镜 / 字幕 / 旁白 / 配乐 / 公版音乐 / 无背景音乐 / 音效 / 诗文页 / 封面 / 素材来源 / 授权署名. Also use when asked to turn **一本小说 / 名著 / 公版小说** into a **第一人称讲述 / 角色自述 / 有声故事连载**, to add 下一集 to such a 连载, or asks about 人称合约 / 视角 / 我是谁在讲 / 忠实度 / 改编尺度 / 切集 / 每集自足 / 角色配音 / 声音试听 / 全集总谱 / 中译本能不能抄 / 名著角色形象的版权. Also use when handed **一个带音乐带演唱的 MP3** and asked to make an MV / 音乐视频 / 歌词字幕, or asked about 唱腔同步 / 对轴 / 打点 / LRC / 歌词时间戳 / 卡拉OK字幕 / 逐字字幕, or why lyric subtitles drift out of sync with the singing. Also use when asked for a **中英双语 / 双音轨 / 多音轨 / YouTube 多语言音轨 / 英文配音 / 英文字幕 / 双语外挂字幕** version of any 讲述片 —— 横版长片、小说连载，**也包括竖版**（竖版要先把 `SUB_MODE` 切成 `"srt"`：烧录字幕和多语言音轨不能共存）—— to add an English audio track to an existing one, or asks about 烧字还是外挂 / SUB_MODE / 对轴 / 逐句压 / langfit / 英文稿怎么写才塞得进 / 两份 SRT / 发布文案的英文版 / 为什么传上去只剩一条音轨. Also use when handed a folder of images to assemble, or asked why subtitles are illegible or collide with the platform action rail, why a camera move looks static, why generated music starts on silence, why rain drifts upward, or how long each shot should be.
 ---
 
 # 静帧短片流水线
@@ -20,7 +20,7 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 |---|---|---|
 | 做什么 | 一首诗，一句一镜，片尾竖排诗文页 | 一个历史小故事 / 冷知识，有旁白 |
 | 时间轴由什么定 | 字数 × 0.45 + 1.8 的可读下限 | **旁白实测时长**（`sync` 量完自动推） |
-| 字幕 | 竖排、右侧、楷体 | 横排、左下、黑体 |
+| 字幕 | 竖排、右侧、楷体 | 横排、左下、黑体；`SUB_MODE` 定烧录还是外挂 SRT |
 | 每镜停留 | 10~13s | 3~8s，12~16 镜 |
 | 音频 | 音乐 + 音效 | 旁白 + 音乐**侧链躲闪** + 音效 |
 | 最大的风险 | 字看不清 | **把推断说成史实** |
@@ -1133,11 +1133,22 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
 
 ## 双语音轨：一条画面，两条音轨
 
-**只在横版这一路做**（`make_story_h.py` + `join.py`）：讲述长片、小说第一人称连载。
+横版（`make_story_h.py` + `join.py`）和**竖版**（`make_story_v.py`）都做。
 `LANGS = ["zh", "en"]` 打开，出**一条画面 + 中英两条音轨 + 两份 SRT**。
 
-竖版（`make_story_v.py`）**不做**：抖音小红书没有外挂字幕这回事，那一路必须烧字，
-而烧进画面的中文字幕会跟着英文轨一起播。竖版要英文版是另渲一支片子，不是加一条轨。
+**竖版要先把字幕改成外挂**（`SUB_MODE = "srt"`）—— 这是竖版比横版多的一步。
+烧录字幕 + 多语言是自相矛盾的配置：烧进画面的中文字会跟着英文轨一起播，
+而你手上放的是中文版，永远发现不了。`check_mode()` 直接拦下这个组合。
+换句话说竖版有两种发法，**画面同一份、只有 `c` 那一步不同**：
+
+| | `SUB_MODE` | `LANGS` | 发哪儿 |
+|---|---|---|---|
+| 烧字版 | `"burn"` | `["zh"]` | 抖音 / 小红书 / 视频号（没有外挂字幕这回事） |
+| 外挂版 | `"srt"` | `["zh","en"]` | **YouTube Shorts**（外挂字幕 + 多语言音轨都支持） |
+
+两版共用 `master.mp4`，改常数重跑 `c` 就行，不用重出图、不用重新对轴。
+竖版独有的一条顺序：**先 `vofit` 定死中文，再 `langfit` 压英文** ——
+vofit 会把所有的槽改短，反过来做，langfit 的结果会被作废而且不报错。
 
 一句话推出全部设计：**YouTube 的多语言音轨是一条视频 + N 条音轨，画面只有一份。**
 
@@ -1164,7 +1175,9 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
 ## 交付
 
 成片规格：H.264 + AAC 48k 立体声，响度归一到 **−15 LUFS**（平台标准 −14~−16）。
-双语片是**一个 mp4 里两条音轨**（语言元数据 `zho` / `eng` 写进文件，YouTube 直接认），
+双语片的**上传件是单音轨**（视频 + 中文）+ 每种附加语言一个独立音频
+（`*_音轨_eng.m4a`，在 Studio 里添加）+ 一个两条轨都在的留档件 ——
+**多音轨文件直接传上去，英文轨会被静默丢掉**（横版由 `join.py` 拆，竖版由 `c` 拆）。
 字幕中英各一份外挂 SRT，发布文案多一块 `## YouTube (EN)`。
 封面单独出一张，同时用 `-disposition:v:1 attached_pic` 嵌进 mp4 做封面帧
 （脚本没做这一步，`c` 跑完之后手动 remux 一次，`-c copy` 不重编码）。
@@ -1220,7 +1233,10 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
 - `scripts/make_h.py` — 诗词模式 横版 1920×1080，**还是旧模板**，缺上面列的几样检查
 - `scripts/make_story_v.py` — **讲述模式** 竖版 1080×1920，内含《没有夏天的那一年》
   那一支的完整真实配置（已交付）。多 `sync`（量旁白）和 `motion`（验运镜）两个命令；
-  `SHOTS` 不写 `dur`，时间轴由旁白实测推出来
+  `SHOTS` 不写 `dur`，时间轴由旁白实测推出来。
+  `SUB_MODE` 决定字幕**烧进画面**（抖音/小红书）还是**外挂 SRT**（YouTube Shorts）——
+  外挂那一档才能开 `LANGS = ["zh","en"]`，`c` 一次出上传件 / 独立英文音频 /
+  两份 SRT / 留档件四样
 - `references/storytelling.md` — 讲述模式独有的那些事：**出图前的两道门禁**（第〇节）、
   事实分级（史实/概数/假说）、旁白气口与语速判据、横排字幕怎么避开操作栏、
   转场当叙事标点、侧链躲闪的数值、**旁白 TTS 的完整配置与去 AI 味的提示词**（第八节）、
@@ -1229,8 +1245,8 @@ AI 生成时**务必显式指定尺寸**——很多工具默认出 1K，9:16 �
 - `scripts/make_story_h.py` — **讲述模式 横版 1920×1080 的"一段"**，字幕外挂不烧录，
   内含《经度》段一的完整真实配置（已交付 706s 全片）。长片和**小说第一人称连载**
   都走它 + `join.py`：一幕一个段目录，段内不归一、只有首尾段有淡场、段长吸到整帧。
-  **双语音轨也只在这一路**（`LANGS = ["zh", "en"]`）：一条画面 + 两条音轨 + 两份 SRT，
-  多一个 `langfit` 命令把英文逐句压进中文定的槽
+  **双语音轨**（`LANGS = ["zh", "en"]`）：一条画面 + 两条音轨 + 两份 SRT，
+  多一个 `langfit` 命令把英文逐句压进中文定的槽（竖版同样支持，见下一条）
 - `scripts/join.py` — 把分段渲好的片子拼成全片：concat + **一次**全局响度归一 +
   按实际段起点合并 SRT + 接缝校验。分段制作的坑全在接缝上，且大半不报警。
   多音轨时**每条轨各自归一**、接缝逐条判台阶，concat 显式 `-map 0`
