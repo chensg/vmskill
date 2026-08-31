@@ -1014,7 +1014,19 @@ def lang_slots():
         grp = per[n["shot"] - 1]
         pos = grp.index(k)
         if pos == len(grp) - 1:
-            borrow = 0.0
+            # **镜末可以借到「转场开始之前」为止，不是一点都不能借。**
+            # 原来写死 0.0，理由是"镜末的静默正中骑着转场"。那个理由只对了一半：
+            # 转场骑在镜界正中、宽 xf，所以它是从 post 段里 (post - xf/2) 处才开始的，
+            # 在那之前的静默是干净的。而且音频是一条**连续混音**，并不在镜界切开 ——
+            # 说到转场底下去是编辑上的忌讳，不是技术上的错。
+            # 借到转场起点为止，等于"话说完，画面才开始溶解"，这正是想要的。
+            #
+            # 这一条按**实际转场宽度**算，不是给一个固定的宽限：
+            # 转场长的镜（比如时间跳跃用的 1.4s 长溶解）算出来仍然是 0，
+            # 2026-08-31《四十二年》镜59→60 就是这种情况，实测 borrow=0.00。
+            i = n["shot"] - 1
+            half = (xf(i) / 2.0) if i < len(SHOTS) - 1 else 0.0
+            borrow = max(0.0, min(LANG_BORROW, post - half - 0.02))
         else:
             gap = post + pads(grp[pos + 1], per)[0]
             borrow = min(LANG_BORROW, gap / 2.0)
@@ -1248,7 +1260,15 @@ def check_langs(quiet=False):
                        "压不进去的那几句它会报出还得砍几个词"
                        % (info["name"], len(over), worst[0], worst[1], lang))
         for x in NARR:
-            for p in sub_lines(x.get(lang) or ""):
+            parts = sub_lines(x.get(lang) or "")
+            # **行数也要验。** 原来只验行长，于是「一条断成三行」整个溜过去 ——
+            # 中文那一路 check_subs 一直验着这一条，非默认语言这边漏了。
+            # 2026-08-31《四十二年》：英文 VO_08 写了两个 ｜＝三行字幕，check 照样通过。
+            # 一屏两行是硬约束（`SUB_MAX_CHARS_EN` 是按两行算的），三行会被播放器截掉或压扁。
+            if len(parts) > 2:
+                bad.append("%s 字幕『%s』断成了 %d 行，一屏最多两行 —— 一条里只能有一个 %s"
+                           % (info["name"], (x.get(lang) or "")[:30], len(parts), SUB_SEP))
+            for p in parts:
                 if len(p) > SUB_MAX_CHARS_EN:
                     bad.append("%s 字幕行『%s』%d 字，超过一行上限 %d —— 用 %s 手工断行"
                                % (info["name"], p[:34], len(p), SUB_MAX_CHARS_EN, SUB_SEP))
@@ -1288,6 +1308,9 @@ def selftest_langs():
         ("有一条没写英文", [base[0], base[1], dict(base[2], en="")], fit),
         ("镜末那条英文超槽", base, dict(fit, T3=4.2)),
         ("英文字幕一行超长", [dict(base[0], en="x" * (SUB_MAX_CHARS_EN + 5))] + base[1:], fit),
+        # 断成三行：每行都不超长，只有**行数**不对 —— 原来这一条整个溜过去
+        ("英文字幕断成三行",
+         [dict(base[0], en="aa%sbb%scc" % (SUB_SEP, SUB_SEP))] + base[1:], fit),
     ]
     ok = True
     results = [(name, count(narr, em)) for name, narr, em in cases]
@@ -1297,7 +1320,8 @@ def selftest_langs():
         print("回归自测: %s → 报警 %d 条 —— %s"
               % (name, c, "对" if c else "**检查失效了**"))
         ok = ok and c > 0
-    print("          三条都合规 报警 %d 条 —— %s" % (now, "对" if now == 0 else "**误报**"))
+    print("          %d 条都合规 报警 %d 条 —— %s"
+          % (len(cases), now, "对" if now == 0 else "**误报**"))
     return ok and now == 0
 
 
