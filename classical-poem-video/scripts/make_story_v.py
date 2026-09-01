@@ -20,7 +20,8 @@
   python make_story_v.py still   # 烧预览并抽静帧，用眼睛验字幕
   python make_story_v.py measure # 从无字 master 量字幕底亮度
   python make_story_v.py credits # 导出素材来源表（用公版/档案素材时是交付物）
-  python make_story_v.py cover   # 封面
+  python make_story_v.py cover   # 封面。**双语片每种语言各一张**：再跑一次 `cover en`
+                                 # 跑完会自己量文字底下的对比度，不够会报出来
 
 和诗片模板 make_v.py 最大的三处不同（详见 references/storytelling.md）：
   1. SHOTS **不写 dur** —— 每镜时长由属于它的旁白实测时长算出来
@@ -3149,25 +3150,104 @@ def measure():
     print("  这只是数字，还要跑 still 用眼睛看：数值够但压在主体上是量不出来的。")
 
 
-def cover():
+# ================= 封面文案：**双语片每种语言各一张** =================
+# 2026-09-01 用户定的规矩：以后双语片都要单独的封面。
+# 理由和"简介只写中文"是同一个：观众能切英文音轨，推荐流里看到的却是一张看不懂的图。
+#
+# 两张用**同一张图版**（COVER_FROM 那一镜），只换文字 —— 换图就成了两支片子的封面。
+#
+# `lines` 是**逐行**写的，不靠自动换行：英文标题一行常常排不开（30+ 字符在 1080 宽里
+# 放不下），断在哪儿是设计决定，交给自动换行会断在最难看的地方。
+# 每行写 (文字, 字号, y)；`sub` 同样。
+COVER_TEXT = {
+    "zh": dict(lines=[(TITLE, 150, 700)], sub=(SUBTITLE, 60, 860)),
+    # 英文这一行是占位，按自己的标题改。**字号和位置要量，不要靠眼睛挪** ——
+    # cover 跑完会自己量（见 check_cover_text），不够会报出来。
+    "en": dict(lines=[("English Title", 92, 640), ("Second Line", 92, 760)],
+               sub=("Subtitle · Year", 48, 880)),
+}
+
+
+def check_cover_text(shot_png, bare_png):
+    """量封面文字**笔画底下**的底够不够暗/够不够亮。
+
+    ==== 为什么要有这一条 ====
+    封面是全片唯一一处"文字压在没有为它留白的画面上"的地方：正文字幕有 SUB_* 那套
+    坐标和 measure 兜着，封面没有。而它恰恰是观众第一眼看到的东西。
+
+    ==== 量法：文字掩膜，不是框一个矩形 ====
+    拿**有字**和**无字**两张图逐像素比，差得多的就是文字覆盖的像素，再回到无字那张
+    量这些位置的底。框矩形去量会被大片浅色稀释 —— 实测同一处矩形量出 94、掩膜量出 84，
+    而真正决定看不看得清的是笔画底下那些像素。（《给蛾子盖的礼堂》英文封面上踩的）
+
+    判据和正文字幕同一条：**离字色至少 50 级**，用 1%/99% 分位不用绝对极值。
+    """
+    def gray(p):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", p, "-vf", "format=gray",
+                               "-frames:v", "1", "-f", "rawvideo", "-"],
+                              capture_output=True).stdout
+    a, b = gray(bare_png), gray(shot_png)
+    if len(a) < W * H or len(b) < W * H:
+        print("   (读不出帧，跳过封面对比度检查)"); return True
+    dark_ink = TITLE_POLARITY == "dark_on_light"
+    ink = 40 if dark_ink else 242
+    under = sorted(a[i] for i in range(W * H) if abs(a[i] - b[i]) > 30)
+    if len(under) < 200:
+        print("   (几乎没量到文字像素，跳过)"); return True
+    v = under[max(0, int(len(under) * 0.01))] if dark_ink \
+        else under[min(len(under) - 1, int(len(under) * 0.99))]
+    gap = abs(v - ink)
+    print("   文字覆盖 %d 像素，底的%s分位 %d，离字色 %d 级 —— %s"
+          % (len(under), "1%" if dark_ink else "99%", v, gap,
+             "够用" if gap >= 50 else "**不够，换位置或收字号**"))
+    if gap < 50:
+        print("   注意：**先扫一遍再挪**。不够常常不是高度不对而是宽度太宽 ——")
+        print("   一行字横出去两端压在暗处，中间那段其实是干净的。收字号比挪位置对。")
+    return gap >= 50
+
+
+def cover(lang=None):
+    """封面。`cover en` 出英文那张（文件名后缀 _en）。
+
+    双语片**每种语言各一张**，见 COVER_TEXT 上面那段。
+    """
+    lang = lang or DEFAULT_LANG
+    if lang not in COVER_TEXT:
+        sys.exit("!!! COVER_TEXT 里没有 %r —— 双语片每种语言都要写一份封面文案" % lang)
+    t = COVER_TEXT[lang]
+    ev = []
+    for txt, fs, y in t["lines"]:
+        ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,T,,0,0,0,,"
+                  "{\\pos(%d,%d)\\fs%d}%s" % (W // 2, y, fs, txt))
+    stxt, sfs, sy = t["sub"]
+    ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,TS,,0,0,0,,"
+              "{\\pos(%d,%d)\\fs%d}%s" % (W // 2, sy, sfs, stxt))
     with open("cover.ass", "w", encoding="utf-8-sig") as f:
         f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
                 "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n" % (W, H)
                 + styles_block() + "\n[Events]\nFormat: Layer,Start,End,Style,Name,"
-                "MarginL,MarginR,MarginV,Effect,Text\n"
-                + "Dialogue: 0,0:00:00.00,0:00:10.00,T,,0,0,0,,"
-                  "{\\pos(540,700)\\fs150}%s\n" % TITLE
-                + "Dialogue: 0,0:00:00.00,0:00:10.00,TS,,0,0,0,,"
-                  "{\\pos(540,860)\\fs60}%s\n" % SUBTITLE)
+                "MarginL,MarginR,MarginV,Effect,Text\n" + "\n".join(ev) + "\n")
     src = "img%02d.png" % COVER_FROM
     if not os.path.exists(src):
         sys.exit("!!! 缺 " + src + "，先跑 prep")
-    out = os.path.join("..", COVER_NAME)
+    out = os.path.join("..", COVER_NAME if lang == DEFAULT_LANG
+                       else COVER_NAME.replace(".png", "_%s.png" % lang))
+    base = "scale=%d:%d:flags=lanczos%s" % (W, H, "," + VIGNETTE if VIGNETTE else "")
     run(["ffmpeg", "-y", "-v", "error", "-i", src,
-         "-vf", "scale=%d:%d:flags=lanczos,%ssubtitles=cover.ass:fontsdir=%s"
-                % (W, H, VIGNETTE + "," if VIGNETTE else "", FONTS.replace("\\", "/")),
-         "-frames:v", "1", out], "封面 -> " + out)
-    print("封面出好后打开看一眼：标题很容易压在人脸或主体上。")
+         "-vf", base + ",subtitles=cover.ass:fontsdir=%s" % FONTS.replace("\\", "/"),
+         "-frames:v", "1", out], "封面(%s) -> %s" % (LANG_INFO[lang]["name"], out))
+    # 无字的那张只为量底，量完就删
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", base,
+                    "-frames:v", "1", "_cover_bare.png"], capture_output=True)
+    check_cover_text(out, "_cover_bare.png")
+    if os.path.exists("_cover_bare.png"):
+        os.remove("_cover_bare.png")
+    print("   数值够了还要打开看一眼：标题很容易压在人脸或主体上，那是量不出来的。")
+    if len(LANGS) > 1 and lang == DEFAULT_LANG:
+        print("   **双语片记得再跑一次** `cover %s`。"
+              % [l for l in LANGS if l != DEFAULT_LANG][0])
+        print("   注意 YouTube 的多语言**不覆盖缩略图**（只有标题/简介/音轨/字幕），")
+        print("   一个视频只有一张封面 —— 另一张是给别处用的（分享图、社媒）。")
 
 
 if __name__ == "__main__":
@@ -3183,7 +3263,9 @@ if __name__ == "__main__":
         if what == "langfit":
             # 逐句把别的语言压进中文的槽。压不进去的会报出还得砍几个词。
             sys.exit(0 if langfit(arg or "en") else 1)
-        if what == "preview":
+        if what == "cover":
+            cover(arg)                         # `cover en` 出英文封面（双语片两张都要）
+        elif what == "preview":
             preview(arg)                       # `preview en` 单听英文那条
         elif what == "srt":
             if SUB_MODE == "burn":
@@ -3193,7 +3275,7 @@ if __name__ == "__main__":
                 make_srt(l)                    # 每种语言各一份
         else:
             {"sync": sync, "prep": prep, "probe": probe, "trace": trace, "still": still,
-             "measure": measure, "cover": cover, "pick": pick_music_in,
+             "measure": measure, "pick": pick_music_in,
              "motion": motion, "pixels": pixels, "gates": check_gates,
              "mquality": mquality, "credits": credits, "budget": budget}[what]()
         sys.exit(0)
