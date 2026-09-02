@@ -234,6 +234,28 @@ FADE_COLOR = "black"
 PREVIEW_FADE_OUT = 1.5
 VIGNETTE = "vignette=PI/5"  # 暗调实拍可以加；纸质画面一律不加。trace 会自动建模它
 
+# **这一块必须留在项目配置导入之前。** 原来它在文件末尾（check_cover_text 上面），
+# 于是 segment_config 里写的 COVER_TEXT 被模板的占位符反向覆盖，
+# 封面渲出来是 'English Title / Second Line' —— 而且不报错。
+# ================= 封面文案：**双语片每种语言各一张** =================
+# 2026-09-01 用户定的规矩：以后双语片都要单独的封面。
+# 理由和"简介只写中文"是同一个：观众能切英文音轨，推荐流里看到的却是一张看不懂的图。
+#
+# 两张用**同一张图版**（COVER_FROM 那一镜），只换文字 —— 换图就成了两支片子的封面。
+#
+# `lines` 是**逐行**写的，不靠自动换行：英文标题一行常常排不开，断在哪儿是设计决定，
+# 交给自动换行会断在最难看的地方。每行写 (文字, 字号, y)；`sub` 同样。
+COVER_TEXT = {
+    "zh": dict(lines=[(TITLE, 120, int(H * 0.44))], sub=(SUBTITLE, 54, int(H * 0.56))),
+    # 英文这一行是占位，按自己的标题改。**字号和位置要量，不要靠眼睛挪** ——
+    # cover 跑完会自己量（见 check_cover_text），不够会报出来。
+    "en": dict(lines=[("English Title", 96, int(H * 0.40)),
+                      ("Second Line", 96, int(H * 0.52))],
+               sub=("Subtitle · Year", 46, int(H * 0.64))),
+}
+
+
+
 SRC = os.path.join("..", "素材")
 FONTS = os.path.join("..", "fonts")
 SUB_FONT = "Microsoft YaHei"        # 讲述是现代口吻，用黑体不用楷体
@@ -3402,24 +3424,6 @@ def measure():
           % (worst, PROBE_TOL, nbad,
              "运镜走在预期位置上" if nbad == 0 else "**对不上，先查滤镜建模再查运镜**"))
     print("  这只是数字，还要跑 still 用眼睛看：数值对但落幅停在人脸上是量不出来的。")
-
-
-# ================= 封面文案：**双语片每种语言各一张** =================
-# 2026-09-01 用户定的规矩：以后双语片都要单独的封面。
-# 理由和"简介只写中文"是同一个：观众能切英文音轨，推荐流里看到的却是一张看不懂的图。
-#
-# 两张用**同一张图版**（COVER_FROM 那一镜），只换文字 —— 换图就成了两支片子的封面。
-#
-# `lines` 是**逐行**写的，不靠自动换行：英文标题一行常常排不开，断在哪儿是设计决定，
-# 交给自动换行会断在最难看的地方。每行写 (文字, 字号, y)；`sub` 同样。
-COVER_TEXT = {
-    "zh": dict(lines=[(TITLE, 120, int(H * 0.44))], sub=(SUBTITLE, 54, int(H * 0.56))),
-    # 英文这一行是占位，按自己的标题改。**字号和位置要量，不要靠眼睛挪** ——
-    # cover 跑完会自己量（见 check_cover_text），不够会报出来。
-    "en": dict(lines=[("English Title", 96, int(H * 0.40)),
-                      ("Second Line", 96, int(H * 0.52))],
-               sub=("Subtitle · Year", 46, int(H * 0.64))),
-}
 
 
 def check_cover_text(shot_png, bare_png):
