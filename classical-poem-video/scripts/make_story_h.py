@@ -2914,6 +2914,9 @@ def measure_loudness(path):
 
 # ================= 字幕 =================
 def _style(name, size, pol, spacing=0, align=5):
+    # **第 4 个位置参数是字距，第 5 个才是对齐。**
+    # 传 _style(..., 3) 想要右下对齐，实际设的是字距 3、对齐仍是默认的 5（居中），
+    # 于是 \pos 变成以该点为中心，一半文字跑出画面 —— 而且渲得出来，不报错。
     if pol == "dark_on_light":
         pri, out, ol, sh = "&H00262A2D", "&H00EAF3F6", 3, 0
     else:
@@ -2930,7 +2933,7 @@ def styles_block():
            + "\n".join([_style("T", 88, TITLE_POLARITY, 6),
                         _style("TS", 44, TITLE_POLARITY, 8),
                         _style("M", SUB_FS, POLARITY, 2),
-                        _style("L", 26, POLARITY, 3)]) + "\n"
+                        _style("L", 26, POLARITY, 0, 3)]) + "\n"
 
 
 def ts(t):
@@ -3117,7 +3120,7 @@ def make_ass():
         if _b - _a < 0.8:
             print("   角标跳过镜 %d：在屏不足 0.8s" % _sn)
             continue
-        ev.append("Dialogue: 0,%s,%s,L,,0,0,0,,{\\pos(%d,%d)}{\\fad(400,400)}%s"
+        ev.append("Dialogue: 0,%s,%s,L,,0,0,0,,{\\an3\\pos(%d,%d)}{\\fad(400,400)}%s"
                   % (ts(_a), ts(_b), W - 40, H - 44, _tx))
     if ENDCARD:
         t0 = starts[-1] + ENDCARD["t0"]
