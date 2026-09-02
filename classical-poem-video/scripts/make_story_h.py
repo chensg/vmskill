@@ -199,6 +199,10 @@ NARR = [
 # **段一没有尾板** —— 它是长片的第一段，结尾是钩子不是收束。
 # 尾板只属于 SEG_LAST。开场标题字卡另说（TITLE_CARD）。
 ENDCARD = None
+# 逐镜角标：{镜号: 文字}。给别人的复原模型/影像打「这是模型」和 CC BY 署名用。
+# **不是装饰**：展示他人复原方案时不标注，观众会以为看到的是原件；
+# 而 CC BY 素材的署名是强制的，打在画面上比只写进简介稳。
+SHOT_LABELS = {}
 
 # ---- 开场标题字卡 ----（只有第一段有；烧进画面，不走 SRT）
 # 段一镜 1 前六七秒只有标题在走，一个字幕都没有 —— 这一段是让出来的。
@@ -661,6 +665,15 @@ CREDITS = {}        # {"01_xxx.png": dict(title=, holder=, source=, license=, ur
 PP_STATIC, PP_KENBURNS, PP_DETAIL = 1.00, 1.20, 1.30
 # DETAIL_SHOTS 在上面的内容块里定义（跟着 SHOTS 一起看才有意义）。这里不要再赋值，
 # 否则会把上面那份覆盖成空集 —— 所有细节镜的尺寸要求会静默降档，而 budget 照样打印得很好看。
+
+
+# 项目内容由同目录 segment_config.py 覆盖；上面的模板块只是缺省值。
+# **必须放在模板块之后、流水线之前** —— 放前面会被模板反过来覆盖，
+# 而且不报错：素材列表、音效列表会静默变回模板的，旁白却是项目的。
+import os as _os
+if _os.path.exists(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                 "segment_config.py")):
+    from segment_config import *          # noqa: F401,F403
 
 
 # ================= 以下一般不用改 =================
@@ -1136,12 +1149,24 @@ def check_claims():
         # "证明不了/说明不了" 和 "是主流推断" 一样是标准的自拆句式，原表里漏了。
         hit = any(w in tail for w in ("推断", "假说", "存疑", "并没有", "没有这么", "不是",
                                       "证明不了", "说明不了"))
-        if not hit:
-            bad.append("CLAIMS 里有 %d 条『假说』(%s)，但尾板那一段旁白里没有自我拆解。"
-                       "假说必须**在片内**说出来 —— 看简介的人不到十分之一"
-                       % (len(hyp), "/".join(c[0] for c in hyp)))
-        else:
+        # 第二条路：**画面角标**。这个检查的理由是"看简介的人不到十分之一"，
+        # 而烧在画面上、跟着那几镜一直在的角标，比一句旁白更满足这个理由
+        # （旁白只说一次，角标在整段展示期间都在）。
+        # 但只认带披露词的角标，纯署名（"NASA/GSFC"）不算自拆。
+        vis = [(sn, tx) for sn, tx in sorted(SHOT_LABELS.items())
+               if any(w in tx for w in ("Reconstruction", "reconstruction",
+                                        "Model", "model", "复原", "模型"))]
+        if not hit and vis:
+            hit = True
+            print("  -> %d 条假说，靠画面角标披露：镜 %s"
+                  % (len(hyp), "/".join(str(sn) for sn, _ in vis)))
+        elif hit:
             print("  -> %d 条假说，结尾已自我拆解" % len(hyp))
+        if not hit:
+            bad.append("CLAIMS 里有 %d 条『假说』(%s)，尾板旁白里没有自我拆解，"
+                       "画面上也没有带披露词的角标（SHOT_LABELS）。"
+                       "假说必须**在片内**说出来或标出来 —— 看简介的人不到十分之一"
+                       % (len(hyp), "/".join(c[0] for c in hyp)))
     return bad
 
 
@@ -1938,8 +1963,17 @@ def prep():
         crop = ("crop=w='min(iw,ih/%.6f*16/9)':h='min(ih/%.6f,iw*9/16)':"
                 "x='clip(%.6f*iw-out_w/2,0,iw-out_w)':"
                 "y='clip(%.6f*ih-out_h/2,0,ih-out_h)'" % (z, z, cx, cy))
-        vf = crop + "," + GRADE + ("," + c["tweak"] if c["tweak"] else "")
-        vf += ",scale=%d:%d:flags=lanczos,setsar=1" % PREP
+        # **空段要跳过**。GRADE="" 是合法状态（还没量直方图定调色，或这一支不需要），
+        # 直接字符串拼接会拼出 "crop,,scale=" —— ffmpeg 报 `No such filter: ''`，
+        # 而报错信息里完全看不出是哪个常数为空。
+        _parts = [crop]
+        if str(GRADE).strip():
+            _parts.append(GRADE)
+        if c["tweak"]:
+            _parts.append(c["tweak"])
+        _parts.append("scale=%d:%d:flags=lanczos" % PREP)
+        _parts.append("setsar=1")
+        vf = ",".join(_parts)
         run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", vf,
              "-frames:v", "1", "img%02d.png" % i],
             "prep %d/%d  %s" % (i, len(CLIPS), c["src"]))
@@ -2895,7 +2929,8 @@ def styles_block():
            "Alignment,MarginL,MarginR,MarginV,Encoding\n" \
            + "\n".join([_style("T", 88, TITLE_POLARITY, 6),
                         _style("TS", 44, TITLE_POLARITY, 8),
-                        _style("M", SUB_FS, POLARITY, 2)]) + "\n"
+                        _style("M", SUB_FS, POLARITY, 2),
+                        _style("L", 26, POLARITY, 3)]) + "\n"
 
 
 def ts(t):
@@ -3073,6 +3108,17 @@ def make_ass():
         ev.append("Dialogue: 0,%s,%s,TS,,0,0,0,,{\\pos(%d,%d)}{\\fad(900,900)}%s"
                   % (ts(TITLE_CARD["t0"] + 0.6), ts(TITLE_CARD["t1"]),
                      W // 2, TITLE_CARD["y"] + 92, TITLE_CARD["sub"]))
+    for _sn, _tx in sorted(SHOT_LABELS.items()):
+        _i = _sn - 1
+        if not (0 <= _i < len(starts)):
+            sys.exit("!!! SHOT_LABELS 里的镜 %d 不存在" % _sn)
+        _a = starts[_i] + 0.5
+        _b = (starts[_i + 1] if _i + 1 < len(starts) else total_len()) - 0.3
+        if _b - _a < 0.8:
+            print("   角标跳过镜 %d：在屏不足 0.8s" % _sn)
+            continue
+        ev.append("Dialogue: 0,%s,%s,L,,0,0,0,,{\\pos(%d,%d)}{\\fad(400,400)}%s"
+                  % (ts(_a), ts(_b), W - 40, H - 44, _tx))
     if ENDCARD:
         t0 = starts[-1] + ENDCARD["t0"]
         t1 = min(starts[-1] + ENDCARD["t1"], total_len())
