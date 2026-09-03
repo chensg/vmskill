@@ -104,19 +104,28 @@ def audio_tracks(path):
 
 
 def srt_suffixes(d, name):
-    """这一段目录里有哪几份字幕：{后缀: 路径}。中文是 ""，英文是 ".en"。
+    """这一段有哪几份字幕：{后缀: 路径}。中文是 ""，英文是 ".en"。
+
+    **两个地方都找：段目录，和它的上一级。**
+    `make_story_h.py` 的 `c` 把 srt 和段用 mp4 写在**项目根**
+    （`os.path.join("..", srt_name(lang))`），而这里原来只在段目录里找 ——
+    两个脚本对不上。找不到的后果不是报错，是**合并出 0 条、再拿空文件
+    盖掉好的那份**（2026-09-03 踩过：`全片.srt` 从 11671 字节变成 3 字节）。
 
     **后缀是从磁盘上读出来的，不是按语言码查表算的。** 查表要在这里和
     make_story_h.py 的 LANG_INFO 各写一份，迟早分叉；读文件不会。
     """
     out = {}
-    try:
-        names = os.listdir(d)
-    except OSError:
-        return out
-    for fn in names:
-        if fn.startswith(name) and fn.lower().endswith(".srt"):
-            out[fn[len(name):-4]] = os.path.join(d, fn)
+    for base in (d, os.path.dirname(os.path.abspath(d))):
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue
+        for fn in names:
+            if fn.startswith(name) and fn.lower().endswith(".srt"):
+                out.setdefault(fn[len(name):-4], os.path.join(base, fn))
+        if out:
+            break
     return out
 
 
@@ -190,10 +199,16 @@ def collect(seg_dirs):
             bad.append("目录不存在: " + d)
             continue
         name = os.path.basename(os.path.normpath(d))
+        # 段目录里找不到就回退到上一级 —— `c` 写的是 `../<段名>_段用.mp4`
         mp4 = os.path.join(d, "%s_段用.mp4" % name)
         if not os.path.exists(mp4):
-            bad.append("缺段用文件: " + mp4)
-            continue
+            alt = os.path.join(os.path.dirname(os.path.abspath(d)),
+                               "%s_段用.mp4" % name)
+            if os.path.exists(alt):
+                mp4 = alt
+            else:
+                bad.append("缺段用文件（段目录和上一级都没有）: " + mp4)
+                continue
         srts = srt_suffixes(d, name)
         if not srts:
             print("   提示: %s 没有 srt，这一段不会有字幕" % name)
@@ -350,6 +365,20 @@ def merge_srt(segs, work):
                               % (n, srt_ts(st + off), srt_ts(en + off), body))
             off += s["dur"]
         out_path = os.path.join(work, OUT_SRT % suffix)
+        # **0 条是错，不是「这一支没有字幕」。**
+        # 原来照样把空文件写出去，于是一份好好的 srt 被 3 字节的空文件盖掉，
+        # 而屏幕上只有一行「合并字幕 0 条」，看着像正常输出。
+        # （2026-09-03《四大美女》踩过：全片.srt 从 11671 字节变成 3 字节。）
+        if n == 0:
+            sys.exit(
+                "!!! 合并字幕 0 条 —— 不写 %s，免得盖掉已有的那份。\n"
+                "    各段找到的 srt：%s\n"
+                "    段用 mp4 和 srt 都是 `make_story_h.py c` 写的，而它写在"
+                "**项目根**不是段目录；这里两处都会找，都没有就是真没生成 ——"
+                "去段目录里跑一次 `python make_story_h.py srt`。"
+                % (out_path,
+                   "；".join("%s=%s" % (s2["name"], sorted(s2["srts"]) or "无")
+                             for s2 in segs)))
         with open(out_path, "w", encoding="utf-8-sig") as f:
             f.write("\n".join(ev))
         print("合并字幕 %d 条 -> %s" % (n, out_path))
