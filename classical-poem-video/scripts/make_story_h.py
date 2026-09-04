@@ -705,8 +705,92 @@ def run(args, desc):
         sys.exit("!!! 失败: " + desc)
 
 
+VIDEO_FIT = "pillarbox"      # 视频镜怎么填满画框："pillarbox" 加黑边（默认）/ "crop" 裁掉
+# 加黑边是默认，因为**裁掉画面会和"还剩多少"这类题材自相矛盾**，而且档案影像
+# 本来就该看着像档案。要裁的片子逐镜写 fit="crop"。
+
+
+def clip_key(c):
+    """CLIPS 一条用的素材文件名。视频镜写 video=，静帧/运镜镜写 src=。
+
+    登记来源、查重、报错都要用它 —— 直接写 c["src"] 的地方一旦遇到视频镜就 KeyError，
+    而且是在跑到一半才炸。"""
+    return c.get("video") or c.get("src") or ""
+
+
+def is_video(n):
+    """镜 n(1 起) 是不是视频镜。**判据放在 CLIPS 上，不放在 SHOTS 上** ——
+    素材是什么由素材那一侧说了算，SHOTS 只管时间和运动。"""
+    return bool(CLIPS[n - 1].get("video")) if 0 < n <= len(CLIPS) else False
+
+
+def tc(v):
+    """时间码 -> 秒。接受 12.5 / "20:10" / "20:10.5" / "1:02:03"。
+
+    分镜表上写的是 20:10 这种给人读的形式，直接当浮点数用会得到 20.0 ——
+    **不报错，只是取错了地方**，所以入口统一从这里过。"""
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if not s:
+        return 0.0
+    parts = s.split(":")
+    if len(parts) > 3:
+        sys.exit("!!! 时间码 %r 认不出来" % v)
+    sec = 0.0
+    for x in parts:
+        sec = sec * 60 + float(x)
+    return sec
+
+
+def probe_video(path):
+    """(宽, 高, 时长秒, fps)。拿不到就返回 None —— 让调用处自己决定是拦还是跳过。"""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height,r_frame_rate",
+                        "-show_entries", "format=duration",
+                        "-of", "default=nw=1:nk=1", path],
+                       capture_output=True, text=True)
+    vals = [x.strip() for x in r.stdout.split() if x.strip()]
+    if len(vals) < 4:
+        return None
+    try:
+        w, h = int(vals[0]), int(vals[1])
+        num, den = (vals[2].split("/") + ["1"])[:2]
+        fps = float(num) / float(den or 1)
+        dur = float(vals[3])
+    except (ValueError, ZeroDivisionError):
+        return None
+    return (w, h, dur, fps)
+
+
+def video_seg(n):
+    """视频镜 n 声明的 (入点秒, 出点秒, 段长秒)。"""
+    c = CLIPS[n - 1]
+    a = tc(c.get("ss", 0))
+    b = tc(c.get("to", 0))
+    return a, b, max(0.0, b - a)
+
+
+def video_fit_vf():
+    """把源画幅装进成片画框的滤镜段。
+
+    **黑边是加在 prep 这一层的，不是渲染时才补。** 放在这里的好处是
+    `vidNN.mp4` 出来就已经是成片尺寸，pass_a 只管切时长，转场、字幕、调色
+    全都和静帧镜走同一条路 —— 视频镜因此是"第三种镜"，不是一个图层。"""
+    if VIDEO_FIT == "crop":
+        return ("scale=%d:%d:force_original_aspect_ratio=increase:flags=lanczos,"
+                "crop=%d:%d" % (W, H, W, H))
+    return ("scale=%d:%d:force_original_aspect_ratio=decrease:flags=lanczos,"
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black" % (W, H, W, H))
+
+
 def motion_of(n):
-    """镜 n(1 起) 是运镜还是静帧。逐镜的 motion= 覆盖全局 MOTION。"""
+    """镜 n(1 起) 是运镜、静帧还是视频。逐镜的 motion= 覆盖全局 MOTION。
+
+    **视频镜由 CLIPS 决定，不看 SHOTS 的 motion=** —— 素材是一段影片这件事
+    不该靠两处配置对上口径才成立。"""
+    if is_video(n):
+        return "video"
     return SHOTS[n - 1].get("motion", MOTION)
 
 
@@ -779,6 +863,8 @@ def budget():
     print("")
     rows, capped, tiers = [], [], {}
     for n, s in enumerate(SHOTS, 1):
+        if is_video(n):        # 视频镜不出图，别让它进出图任务书的分档表
+            continue
         need, over = required_native(n)
         z = s["z"][0] if is_static(n) else max(s["z"])
         zoom = CLIPS[n - 1]["zoom"] if n <= len(CLIPS) else 1.0
@@ -1500,7 +1586,11 @@ def check_reuse():
     """
     bad, warn_reuse = [], []
     for i in range(len(SHOTS) - 1):
-        if i + 1 >= len(CLIPS) or CLIPS[i]["src"] != CLIPS[i + 1]["src"]:
+        if i + 1 >= len(CLIPS) or clip_key(CLIPS[i]) != clip_key(CLIPS[i + 1]):
+            continue
+        # 相邻两镜取同一段影片的**不同时间段**，本来就是两镜，不是一图两镜。
+        # 分不分得开由 ss/to 决定，check_video 去管。
+        if is_video(i + 1) or is_video(i + 2):
             continue
         a, b = _win(SHOTS[i], 1.0, CLIPS[i]), _win(SHOTS[i + 1], 0.0, CLIPS[i + 1])
         tighten = b[4] / a[4]
@@ -1511,7 +1601,7 @@ def check_reuse():
                        "镜 %d/%d 共用 %s，但取景没分开："
                        "镜%d 落幅占画面 %.1f%%、镜%d 起幅 %.1f%%（%s），窗心只移了 %.3f。"
                        "读作跳接，不是两镜 —— 收紧镜%d 的 z，或让它切到画面另一块去"
-                       % (i + 1, i + 2, CLIPS[i]["src"], i + 1, a[4] * 100,
+                       % (i + 1, i + 2, clip_key(CLIPS[i]), i + 1, a[4] * 100,
                           i + 2, b[4] * 100,
                           "反而更宽" if tighten > 1 else "只收到 %.0f%%" % (tighten * 100),
                           shift, i + 2))
@@ -1527,7 +1617,9 @@ def check_reuse():
 
 def selftest_reuse():
     """回归：造一个"两镜共用一张图但取景几乎相同"的配置，检查必须报警。"""
-    if not any(CLIPS[i]["src"] == CLIPS[i + 1]["src"] for i in range(len(CLIPS) - 1)):
+    if not any(clip_key(CLIPS[i]) == clip_key(CLIPS[i + 1])
+               and not (is_video(i + 1) or is_video(i + 2))
+               for i in range(len(CLIPS) - 1)):
         print("回归自测: 本段没有相邻共用图，check_reuse 不适用")
         return True
     # **自测必须绕过 REUSE_ACCEPT_REASON。** 填了理由之后 check_reuse 走降级路径、
@@ -1565,9 +1657,102 @@ def check_xfades():
     return bad
 
 
+VIDEO_HEADROOM = 0.5        # 素材段至少要比旁白算出来的镜长再多这么多秒
+
+
+def check_video():
+    """视频镜自己的判据。**静图那套判据一条都套不上它，所以要单独一张。**
+
+    查五件事，前三件都是"不查就会在成片上静默出错"的那一类：
+
+    1. **段够不够长。** 镜长由旁白算出来，素材段由 ss/to 声明，两者没有任何
+       约束关系。段短了 pass_a 会冻结末帧补足 —— 画面会僵在那里好几秒，
+       而 ffmpeg 退出码是 0、check 全绿、只有真的看片子才发现。
+    2. **入点出点在源片里。** ss 写超过源片时长，ffmpeg 输出一段空的，也不报错。
+    3. **同一份素材的相邻两镜段不能重叠。** 重叠就是同一段放了两遍，
+       观众读作卡带。这是视频版的 check_reuse。
+    4. 声明了 to 没有 —— 不声明出点，prep 会一路读到片尾，出一个几百兆的中间件。
+    5. 时间码写成 20.10 这种（想写 20:10）—— 值合法、位置错，量不出来。
+    """
+    bad = []
+    vids = [i for i in range(1, len(CLIPS) + 1) if is_video(i)]
+    if not vids:
+        return bad
+    durs = timeline()[1]
+    info_cache = {}
+    for i in vids:
+        c = CLIPS[i - 1]
+        name = c["video"]
+        if not c.get("to"):
+            bad.append("镜 %d 是视频镜但没写 to= —— 出点不声明，prep 会一路读到片尾" % i)
+            continue
+        a, b, seg = video_seg(i)
+        if seg <= 0:
+            bad.append("镜 %d 的 ss=%r / to=%r 反了或相等" % (i, c.get("ss"), c.get("to")))
+            continue
+        path = os.path.join(SRC, name)
+        if name not in info_cache:
+            info_cache[name] = probe_video(path) if os.path.exists(path) else None
+        info = info_cache[name]
+        if info is None:
+            continue                      # 缺素材由 check_timeline 的「缺素材」那条管
+        src_dur = info[2]
+        if b > src_dur + 1e-3:
+            bad.append("镜 %d 的 to=%s（%.1fs）超出 %s 的时长 %.1fs —— "
+                       "ffmpeg 会安静地少给你几秒" % (i, c.get("to"), b, name, src_dur))
+        need = durs[i - 1] if i - 1 < len(durs) else 0.0
+        if seg + 1e-3 < need:
+            bad.append("镜 %d 的素材段只有 %.2fs，旁白要 %.2fs —— "
+                       "pass_a 会冻结末帧补足，画面会僵住。把 to 往后放，"
+                       "或者把这一镜的旁白挪一句走" % (i, seg, need))
+        elif seg < need + VIDEO_HEADROOM:
+            bad.append("镜 %d 的素材段 %.2fs 只比旁白 %.2fs 多 %.2fs —— "
+                       "余量不足 %.1fs。旁白重新生成后镜长会变，现在刚好等于以后不够"
+                       % (i, seg, need, seg - need, VIDEO_HEADROOM))
+    # 相邻同源镜的段重叠
+    for i in range(1, len(CLIPS)):
+        if not (is_video(i) and is_video(i + 1)):
+            continue
+        if clip_key(CLIPS[i - 1]) != clip_key(CLIPS[i]):
+            continue
+        a1, b1, _ = video_seg(i)
+        a2, b2, _ = video_seg(i + 1)
+        if a2 < b1 - 1e-3 and a1 < b2 - 1e-3:
+            bad.append("镜 %d/%d 共用 %s，但取的段重叠（%.1f~%.1f 和 %.1f~%.1f）—— "
+                       "同一段放两遍，观众读作卡带"
+                       % (i, i + 1, clip_key(CLIPS[i - 1]), a1, b1, a2, b2))
+    return bad
+
+
+def selftest_video():
+    """回归：造三种错各一个，检查必须报警。没有视频镜时直接算过。"""
+    if not any(is_video(i) for i in range(1, len(CLIPS) + 1)):
+        return True
+    print("回归自测: 视频镜 —— 段长为 0 / 没写 to / 出点超出源片，三种各造一个")
+    i = next(i for i in range(1, len(CLIPS) + 1) if is_video(i))
+    keep = dict(CLIPS[i - 1])
+    base = len(check_video())
+    ok = []
+    CLIPS[i - 1]["to"] = keep["ss"]                     # 段长为 0
+    ok.append(len(check_video()) > base)
+    CLIPS[i - 1].update(keep); CLIPS[i - 1].pop("to")   # 没写 to
+    ok.append(len(check_video()) > base)
+    CLIPS[i - 1].update(keep); CLIPS[i - 1]["to"] = 99999
+    ok.append(len(check_video()) > base)                # 出点超出源片
+    CLIPS[i - 1].clear(); CLIPS[i - 1].update(keep)
+    for nm, r in zip(("段长为 0", "没写 to", "出点超出源片"), ok):
+        print("          %-14s %s" % (nm, "对" if r else "**检查失效了**"))
+    print("          当前配置 %d 条 —— %s" % (base, "对" if base == 0 else "有问题要处理"))
+    return all(ok) and len(check_video()) == base
+
+
 def check_moves():
     bad = []
     for i, s in enumerate(SHOTS, 1):
+        # 视频镜没有取景窗，z/f 对它没有意义。不跳过的话它会被当成"标了 kenburns
+        # 却起止一样"而长期报警 —— 判据少建模了一种镜，就会稳定地冤枉它。
+        if is_video(i):
+            continue
         z0, z1 = s["z"]
         for (fx, fy), z, w in ((s["f0"], z0, "起"), (s["f1"], z1, "止")):
             lo, hi = 1 / (2 * z), 1 - 1 / (2 * z)
@@ -1583,7 +1768,8 @@ def check_moves():
         m = motion_of(i)
         moving = want > 1e-6 or abs(z1 - z0) > 1e-6
         if m not in ("kenburns", "static"):
-            bad.append("镜 %d 的 motion=%r 不认识，只能是 'kenburns' 或 'static'" % (i, m))
+            bad.append("镜 %d 的 motion=%r 不认识，只能是 'kenburns' / 'static'"
+                       "（视频镜不用写 motion，CLIPS 里给了 video= 就是）" % (i, m))
         elif m == "static" and moving:
             bad.append("镜 %d 标了 static 却写了行程 (z %.2f→%.2f, f %s→%s) —— "
                        "静帧镜的 z 和 f 起止必须完全一致"
@@ -1605,6 +1791,13 @@ def selftest_moves():
         return True
     keep = [dict(s) for s in SHOTS]
     base = len(check_moves())
+    # **造错误的那一镜不能是视频镜。** check_moves 对视频镜整镜跳过（它没有取景窗），
+    # 挑中视频镜时三个 case 全部"多报 0 条"，回归自测于是报「检查失效了」——
+    # 而失效的其实是自测本身。视频镜自己的回归在 selftest_video()。
+    plain = next((i for i in range(1, len(SHOTS) + 1) if not is_video(i)), None)
+    if plain is None:
+        print("回归自测: 全部是视频镜，check_moves 不适用")
+        return True
 
     def case(name, i, patch):
         SHOTS[i - 1] = dict(keep[i - 1], **patch)
@@ -1615,15 +1808,16 @@ def selftest_moves():
         return n > base
 
     moving = next((i for i, s in enumerate(SHOTS, 1)
-                   if abs(s["f1"][0] - s["f0"][0]) + abs(s["f1"][1] - s["f0"][1]) > 1e-6
-                   or abs(s["z"][1] - s["z"][0]) > 1e-6), None)
+                   if not is_video(i)
+                   and (abs(s["f1"][0] - s["f0"][0]) + abs(s["f1"][1] - s["f0"][1]) > 1e-6
+                        or abs(s["z"][1] - s["z"][0]) > 1e-6)), None)
     ok = []
     if moving:
         ok.append(case("有行程的镜标成 static", moving, dict(motion="static")))
-    z, f = keep[0]["z"][0], keep[0]["f0"]
-    ok.append(case("原地不动的镜标成 kenburns", 1,
+    z, f = keep[plain - 1]["z"][0], keep[plain - 1]["f0"]
+    ok.append(case("原地不动的镜标成 kenburns", plain,
                    dict(motion="kenburns", z=(z, z), f0=f, f1=f)))
-    ok.append(case("motion 写错字", 1, dict(motion="ken_burns")))
+    ok.append(case("motion 写错字", plain, dict(motion="ken_burns")))
     print("          当前配置 %d 条 —— %s" % (base, "对" if base == 0 else "有问题要处理"))
     return all(ok) and len(check_moves()) == base
 
@@ -1640,14 +1834,20 @@ def check_credits():
     if IMG_SOURCE not in ("generated", "found"):
         bad.append("IMG_SOURCE=%r 不认识，只能是 'generated' 或 'found'" % IMG_SOURCE)
     elif IMG_SOURCE == "found":
+        seen = set()
         for c in CLIPS:
-            e = CREDITS.get(c["src"])
+            k = clip_key(c)
+            if k in seen:          # 一份素材用在多镜，登记一次就够
+                continue
+            seen.add(k)
+            e = CREDITS.get(k)
             if not e:
-                bad.append("素材 %s 没登记来源（IMG_SOURCE='found' 时每张都要）" % c["src"])
+                bad.append("素材 %s 没登记来源（IMG_SOURCE='found' 时每一份都要，"
+                           "视频也算）" % k)
             else:
-                miss = [k for k in need if not str(e.get(k, "")).strip()]
+                miss = [k2 for k2 in need if not str(e.get(k2, "")).strip()]
                 if miss:
-                    bad.append("素材 %s 的来源登记缺 %s" % (c["src"], "/".join(miss)))
+                    bad.append("素材 %s 的来源登记缺 %s" % (k, "/".join(miss)))
     if MUSIC_MODE not in ("generated", "public_domain", "library", "none"):
         bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'library' / 'none'"
                    % MUSIC_MODE)
@@ -1746,6 +1946,7 @@ def check_timeline():
     bad += check_reuse()
     bad += check_xfades()
     bad += check_moves()
+    bad += check_video()
     bad += check_resolution()
     bad += check_coldopen(lines)
     bad += check_endcard()
@@ -1758,8 +1959,8 @@ def check_timeline():
         if en > total + 1e-6:
             bad.append("字幕『%s』结束于 %.1fs，超出片长 %.1fs" % (txt, en, total))
     for c in CLIPS:
-        if not os.path.exists(os.path.join(SRC, c["src"])):
-            warn.append("缺素材: " + c["src"])
+        if not os.path.exists(os.path.join(SRC, clip_key(c))):
+            warn.append("缺素材: " + clip_key(c))
     if len(CLIPS) != len(SHOTS):
         bad.append("CLIPS %d 张对不上 SHOTS %d 镜" % (len(CLIPS), len(SHOTS)))
 
@@ -1806,11 +2007,14 @@ def check_timeline():
             warn.append("读不出音乐时长")
 
     ns = sum(1 for n in range(1, len(SHOTS) + 1) if is_static(n))
+    nv = sum(1 for n in range(1, len(SHOTS) + 1) if is_video(n))
     print("\n片长 %.1fs (%d:%04.1f)  镜头 %d  旁白 %d 条  %dx%d"
           % (total, total // 60, total % 60, len(SHOTS), len(NARR), W, H))
-    print("运动: %s（静帧 %d 镜 / 运镜 %d 镜）  配乐: %s  素材: %s"
+    # **视频镜要单独数。** 不数的话它会被并进"运镜"，于是汇总上写着运镜 11 镜、
+    # 实际一镜运镜都没有 —— 汇总是最常被照抄进制作说明的一行，错在这里传得最远。
+    print("运动: %s（静帧 %d 镜 / 运镜 %d 镜 / 视频 %d 镜）  配乐: %s  素材: %s"
           % ({"kenburns": "运镜", "static": "静帧"}.get(MOTION, MOTION),
-             ns, len(SHOTS) - ns,
+             ns, len(SHOTS) - ns - nv, nv,
              {"generated": "生成", "public_domain": "公版",
               "library": "库里挑的", "none": "无"}.get(MUSIC_MODE),
              {"generated": "按任务书生成", "found": "自己找的"}.get(IMG_SOURCE)))
@@ -1825,6 +2029,7 @@ def check_timeline():
     selftest_seg()
     selftest_reuse()
     selftest_moves()
+    selftest_video()
     selftest_credits()
     selftest_langs()
     for w in warn:
@@ -1977,6 +2182,8 @@ def langfit(lang="en"):
 # ================= 素材 =================
 def prep():
     for i, c in enumerate(CLIPS, 1):
+        if c.get("video"):
+            prep_video(i, c); continue
         src = os.path.join(SRC, c["src"])
         if not os.path.exists(src):
             print("   跳过(缺图): " + c["src"]); continue
@@ -2002,6 +2209,51 @@ def prep():
     probe()
 
 
+def prep_video(i, c):
+    """视频镜的 prep：把声明的那一段**归一成成片尺寸的 vidNN.mp4**，
+    顺带出一张 imgNN.png 供缺图检查和封面用。
+
+    和静帧镜的 prep 是同一件事 —— 都是"把素材整理成流水线能直接用的形状"。
+    区别只在产物：静帧镜出一张 PREP 尺寸的大图留给 zoompan 取景，
+    视频镜没有取景可言，直接出成片尺寸。
+
+    ---- 三条实现上的取舍 ----
+    1. **-ss 放在 -i 前面**（输入定位）。放后面是逐帧解到入点，20 分钟的片子
+       每一镜都要重解一遍，十一镜就是十一次全解。放前面靠关键帧跳，
+       代价是入点可能差几帧 —— 对档案影像完全可以接受。
+    2. **fps 在这里就落到 FPS**。29.97 和 30 不统一，pass_c 的 concat
+       会得到一段时间戳乱掉的片子，而且它**不报错**。
+       这里用的是 fps 滤镜的丢/复帧，不是插值 —— 不要改成 minterpolate，
+       默片本来就抖，插出来的中间帧会把抖动抹成糊的。
+    3. **调色和 tweak 走和静帧镜同一套**，否则视频镜和静帧镜在成片里
+       是两个色调，一眼看得出来。
+    """
+    src = os.path.join(SRC, c["video"])
+    if not os.path.exists(src):
+        print("   跳过(缺视频): " + c["video"]); return
+    a, b, seg = video_seg(i)
+    if seg <= 0:
+        print("   跳过(镜%d 的 ss/to 没写或写反了): %s" % (i, c["video"])); return
+    parts = [video_fit_vf()]
+    if str(GRADE).strip():
+        parts.append(GRADE)
+    if c.get("tweak"):
+        parts.append(c["tweak"])
+    parts += ["fps=%d" % FPS, "setsar=1", "format=yuv420p"]
+    vf = ",".join(parts)
+    out = "vid%02d.mp4" % i
+    run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % a, "-t", "%.3f" % seg,
+         "-i", src, "-vf", vf, "-an", "-c:v", "libx264", "-crf", "12",
+         "-preset", "medium", "-pix_fmt", "yuv420p", out],
+        "prep %d/%d  %s  %s~%s (%.1fs)  %s"
+        % (i, len(CLIPS), c["video"], c.get("ss"), c.get("to"), seg,
+           "黑边" if VIDEO_FIT == "pillarbox" else "裁切"))
+    # 出一张静帧：probe/trace/封面 都还按 imgNN.png 找素材，缺了会一路 KeyError。
+    run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % a, "-i", src,
+         "-vf", vf, "-frames:v", "1", "img%02d.png" % i],
+        "     └ 代表帧 img%02d.png" % i)
+
+
 def probe():
     """16x9 亮度网格（横版；竖版模板是 9x16）。能发现落幅摇进无特征区域这类问题。
     **但它量的是整张图，而镜头只经过其中一段，所以报警经常是误报** —— 跑完一定要跑 trace。"""
@@ -2016,7 +2268,7 @@ def probe():
         raw = p.stdout
         if len(raw) != 144:
             print("%s  (读不出)" % f); continue
-        print("\n%s  %s" % (f, CLIPS[i - 1]["src"]))
+        print("\n%s  %s" % (f, clip_key(CLIPS[i - 1])))
         for r in range(9):
             print("   " + " ".join("%3d" % raw[r * 16 + c] for c in range(16)))
 
@@ -2122,7 +2374,7 @@ def trace():
             return cache[i]
         f = "img%02d.png" % i
         if not os.path.exists(f):
-            f = os.path.join(SRC, CLIPS[i - 1]["src"])
+            f = os.path.join(SRC, clip_key(CLIPS[i - 1]))
             if not os.path.exists(f):
                 cache[i] = None; return None
         raw = subprocess.run(["ffmpeg", "-v", "error", "-i", f, "-vf",
@@ -2170,7 +2422,7 @@ def trace():
                 vals.append(stat(raw, b, vig))
             pred[(n, name)] = vals
             cells.append("%s %3.0f/%3.0f/%3.0f" % (name, vals[0], vals[1], vals[2]))
-        print("  镜%-3d %-14s %s" % (n, CLIPS[n - 1]["src"][:13], "   ".join(cells)))
+        print("  镜%-3d %-14s %s" % (n, clip_key(CLIPS[n - 1])[:13], "   ".join(cells)))
     try:
         json.dump({"%d|%s" % k: v for k, v in pred.items()},
                   open("trace_pred.json", "w", encoding="utf-8"))
@@ -2216,7 +2468,7 @@ def trace():
         elif rng < 25:
             note = "  << 整帧极差只有 %.0f，运镜会看不出来" % rng
         print("  镜%-3d %-16s 整帧极差 %3.0f  平坦行 %2d/9%s"
-              % (n, CLIPS[n - 1]["src"][:16], rng, flat, note))
+              % (n, clip_key(CLIPS[n - 1])[:16], rng, flat, note))
     print("\n  平坦行对暗调图**结构性地误报**（大片夜空、暗海面本来就是平的）。")
     print("  真正要紧的是「这一镜从头走到尾画面变了多少」—— 渲完跑 motion 复核，")
     print("  判据均差 >= %.1f 级。别拿 trace 的平坦行去换图。" % MOTION_MIN)
@@ -2248,6 +2500,8 @@ def pass_a():
     os.makedirs("shots", exist_ok=True)
     for i, s in enumerate(SHOTS, 1):
         dur = durs[i - 1]
+        if is_video(i):
+            pass_a_video(i, dur); continue
         if is_static(i):
             vf, how = static_vf(s), "静帧"
         else:
@@ -2268,6 +2522,35 @@ def pass_a():
              "-i", "img%02d.png" % i, "-vf", vf, "-c:v", "libx264", "-crf", "12",
              "-preset", "medium", "-pix_fmt", "yuv420p", "shots/shot%02d.mp4" % i],
             "镜头 %d/%d  %.1fs  %s" % (i, len(SHOTS), dur, how))
+
+
+def pass_a_video(i, dur):
+    """视频镜的 pass_a：从 vidNN.mp4 的头上取 dur 秒。
+
+    `dur` 是旁白算出来的，和素材段本来就不一样长 —— 这条流水线里
+    **时间永远由旁白说了算**，素材去迁就它，不是反过来。
+
+    段比 dur 短时**冻结最后一帧补足**，并且报出来。不补的话 concat 会
+    得到一段比时间轴短的片子，后面所有镜头整体前移，而且没有任何报错 ——
+    这正是"不会报警的错"，所以宁可补上再喊一声。
+    """
+    src = "vid%02d.mp4" % i
+    if not os.path.exists(src):
+        print("   跳过(缺 %s，先跑 prep): 镜%d" % (src, i)); return
+    info = probe_video(src)
+    have = info[2] if info else 0.0
+    vf = "setsar=1,format=yuv420p"
+    note = "视频"
+    if have + 1e-3 < dur:
+        vf = ("tpad=stop_mode=clone:stop_duration=%.3f," % (dur - have + 0.5)) + vf
+        note = "视频(素材短 %.2fs，冻结末帧补足)" % (dur - have)
+        print("   !! 镜%d 的素材段只有 %.2fs，旁白要 %.2fs —— 已冻结末帧补足。"
+              "要么把 to 往后放，要么把这一镜的旁白挪一句走" % (i, have, dur))
+    run(["ffmpeg", "-y", "-v", "error", "-stats", "-i", src,
+         "-t", "%.3f" % dur, "-vf", vf, "-an",
+         "-c:v", "libx264", "-crf", "12", "-preset", "medium",
+         "-pix_fmt", "yuv420p", "-r", str(FPS), "shots/shot%02d.mp4" % i],
+        "镜头 %d/%d  %.1fs  %s" % (i, len(SHOTS), dur, note))
 
 
 def motion():
@@ -2293,6 +2576,8 @@ def motion():
         sys.exit("!!! 还没有 shots/，先跑 a")
     durs = timeline()[1]
     GW, GH = 96, 171
+    # 视频镜两个方向都不判：它"动不动"由素材决定，不是配置错误。
+    # 末段那种几乎全是化学斑的档案影像首尾帧差可能很小 —— 那是内容，不是缺陷。
 
     def frame(f, t):
         raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.3f" % t, "-i", f,
@@ -2304,7 +2589,7 @@ def motion():
     print("\n=== 运动实测（渲出来的首尾帧差）===")
     print("    运镜镜判据 均差 >= %.1f 级；静帧镜判据 均差 <= %.1f 级"
           % (MOTION_MIN, MOTION_STATIC_MAX))
-    bad, drift, skipped, n_static = [], [], [], 0
+    bad, drift, skipped, n_static, n_video = [], [], [], 0, 0
     for i in range(1, len(SHOTS) + 1):
         f = "shots/shot%02d.mp4" % i
         if not os.path.exists(f):
@@ -2314,12 +2599,16 @@ def motion():
             # 读不出多半是这一镜还在写（ffmpeg 还没收尾，moov atom 没落盘）。
             # **不能当成通过。** 第一版跳过之后照样打印"全部都看得出来"，
             # 又造出一个不会报警的检查 —— 这一条是被自己坑了一次之后加的。
-            print("  镜%-3d %-16s (读不出帧，可能还在渲)" % (i, CLIPS[i - 1]["src"][:16]))
+            print("  镜%-3d %-16s (读不出帧，可能还在渲)" % (i, clip_key(CLIPS[i - 1])[:16]))
             skipped.append(i); continue
         d = sorted(abs(a[k] - b[k]) for k in range(GW * GH))
         mean = sum(d) / len(d)
-        flag, how = "", "静帧" if is_static(i) else "运镜"
-        if is_static(i):
+        flag, how = "", ("视频" if is_video(i) else "静帧" if is_static(i) else "运镜")
+        if is_video(i):
+            # 视频镜两个方向都不判：它动不动由素材决定，不是配置错误。
+            # 末段那种几乎全是化学斑的档案影像首尾帧差可能极小 —— 那是内容，不是缺陷。
+            n_video += 1
+        elif is_static(i):
             n_static += 1
             if mean > MOTION_STATIC_MAX:
                 flag = "  << 标了 static 却在动，检查 z/f 的起止和 pass_a 走了哪条路"
@@ -2330,7 +2619,7 @@ def motion():
             flag = "  << 肉眼看不出在动，加大 z 跨度或换一张有结构的图"
             bad.append(i)
         print("  镜%-3d %-16s %s 均差 %5.1f  中位 %3d  p90 %3d  最大 %3d%s"
-              % (i, CLIPS[i - 1]["src"][:16], how, mean, d[len(d) // 2],
+              % (i, clip_key(CLIPS[i - 1])[:16], how, mean, d[len(d) // 2],
                  d[int(len(d) * 0.9)], d[-1], flag))
     if bad:
         print("\n  %d 镜运镜看不出来: %s" % (len(bad), ", ".join(str(i) for i in bad)))
@@ -2340,9 +2629,9 @@ def motion():
         print("\n  !! %d 镜没量到: %s —— **不算通过**，渲完再跑一次"
               % (len(skipped), ", ".join(str(i) for i in skipped)))
     if not bad and not drift and not skipped:
-        print("\n  %d 镜全部对得上（运镜 %d 镜看得出动，静帧 %d 镜真的没动）。"
-              % (len(SHOTS), len(SHOTS) - n_static, n_static))
-    return not bad and not drift and not skipped
+        print("\n  %d 镜全部对得上（运镜 %d 镜看得出动，静帧 %d 镜真的没动，"
+              "视频 %d 镜不判 —— 动不动由素材决定）。"
+              % (len(SHOTS), len(SHOTS) - n_static - n_video, n_static, n_video))
 
 
 def native_factor(w, h):
@@ -2378,8 +2667,24 @@ def check_resolution():
     博物馆开放数据里的画作很多卡在 1.0~1.5 之间，按运镜那条线一刀切会全判死，
     而它们做静帧完全够用。讲述片尤其吃这个：历史题材的真实图像常常只有这个分辨率。
     """
-    bad, rows, warn_pp = [], [], []
+    bad, rows, warn_pp, vrows = [], [], [], []
     for i, c in enumerate(CLIPS, 1):
+        if c.get("video"):
+            # **视频镜不走 pp 判据。** 档案影像天生就低分辨率 —— 640x480 铺到
+            # 1080 高是 2.25 倍放大，按 pp<1.0 那条线一刀切会把整支片子判死，
+            # 而"糊"恰恰是这类素材的内容本身。所以只报事实，不拦。
+            vp = os.path.join(SRC, c["video"])
+            info = probe_video(vp) if os.path.exists(vp) else None
+            if info:
+                vw, vh, vdur, vfps = info
+                if VIDEO_FIT == "crop":
+                    up = max(W / float(vw), H / float(vh))
+                    keep = min(1.0, (vw / float(vh)) / (W / float(H)))
+                else:
+                    up = min(W / float(vw), H / float(vh))
+                    keep = 1.0
+                vrows.append((i, c["video"], vw, vh, vfps, vdur, up, keep))
+            continue
         # "最紧取景"要用**这一镜自己的** z，不是全片的 z 最大值。用全局值时，
         # 各镜 z 差不多还看不出来；一旦跨度大（比如 1.02~2.15），低 z 的镜头会被
         # 算成远低于实际的源像素比，让人去换一张本来完全没问题的图。
@@ -2414,6 +2719,19 @@ def check_resolution():
             # 填了 PP_ACCEPT_REASON 就降级成提示 —— 但**必须写理由**，而且理由会打印出来。
             # 不给一个"静默放行"的开关：那样下一支照抄配置时就再也不知道这里做过妥协了。
             (warn_pp if PP_ACCEPT_REASON.strip() else bad).append(msg)
+    if vrows:
+        print("")
+        print("=== 视频素材（%d 镜；**不参与 pp 判据**）===" % len(vrows))
+        print("   填充方式：%s" % ("加黑边（保画幅完整）" if VIDEO_FIT == "pillarbox"
+                                   else "裁切（填满画框）"))
+        for i, f, vw, vh, vfps, vdur, up, keep in vrows:
+            flag = ""
+            if up > 3.0:
+                flag = "  <- 放大超过 3 倍，成片上会很糊"
+            elif keep < 0.999:
+                flag = "  <- 裁掉了 %.0f%% 的画面" % ((1 - keep) * 100)
+            print("   镜%-3d %-22s %dx%d  %.2ffps  源长 %.1fs  放大 %.2fx%s"
+                  % (i, f, vw, vh, vfps, vdur, up, flag))
     if rows:
         print("")
         print("=== 素材分辨率（有效值）===")
@@ -2459,6 +2777,8 @@ def pixels():
     N, cols = 360, 4
     cells, missing = [], []
     for i, c in enumerate(CLIPS, 1):
+        if c.get("video"):        # 视频镜没有源图可以取原生像素样，不参与
+            continue
         p = os.path.join(SRC, c["src"])
         if not os.path.exists(p):
             missing.append(c["src"]); continue
@@ -2635,12 +2955,15 @@ def credits():
     """导出素材来源表。用了找来的素材时，它是交付物的一部分。"""
     lines = ["# %s · 素材来源" % TITLE, "", "成片：%s" % OUT_NAME, "", "## 画面", ""]
     if IMG_SOURCE == "found":
-        lines.append("| 镜 | 文件 | 作品 | 收藏/权利人 | 来源 | 授权 | 链接 |")
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append("| 镜 | 文件 | 类型 | 用到的段 | 作品 | 收藏/权利人 | 来源 | 授权 | 链接 |")
+        lines.append("|---|---|---|---|---|---|---|---|---|")
         for i, c in enumerate(CLIPS, 1):
-            e = CREDITS.get(c["src"], {})
-            lines.append("| %d | %s | %s | %s | %s | %s | %s |"
-                         % (i, c["src"], e.get("title", "**缺**"), e.get("holder", "**缺**"),
+            k = clip_key(c)
+            e = CREDITS.get(k, {})
+            seg = ("%s–%s" % (c.get("ss"), c.get("to"))) if c.get("video") else "—"
+            lines.append("| %d | %s | %s | %s | %s | %s | %s | %s | %s |"
+                         % (i, k, "视频" if c.get("video") else "静图", seg,
+                            e.get("title", "**缺**"), e.get("holder", "**缺**"),
                             e.get("source", "**缺**"), e.get("license", "**缺**"),
                             e.get("url", "**缺**")))
     else:
@@ -3022,14 +3345,14 @@ def preview(lang=None):
         t1 = starts[i + 1] if i + 1 < len(starts) else total
         desc = SHOTS[i].get("desc", "")
         head = "镜 %d / %d" % (i + 1, len(CLIPS))
-        reuse = [j + 1 for j, d in enumerate(CLIPS) if d["src"] == c["src"]]
+        reuse = [j + 1 for j, d in enumerate(CLIPS) if clip_key(d) == clip_key(c)]
         if len(reuse) > 1:
             head += "   （%s 共用一张图）" % " / ".join("镜%d" % r for r in reuse)
         z0, z1 = SHOTS[i]["z"]
         move = ("静帧" if z0 == z1 and SHOTS[i]["f0"] == SHOTS[i]["f1"]
                 else "推近" if z1 > z0 else "拉远" if z1 < z0 else "横移")
         head += "   %s z %.2f→%.2f   %.1fs" % (move, z0, z1, t1 - t0)
-        for k, txt in enumerate([head, c["src"], desc]):
+        for k, txt in enumerate([head, clip_key(c), desc]):
             if not txt:
                 continue
             ev.append("Dialogue: 0,%s,%s,PV,,0,0,0,,{\\pos(%d,%d)}%s"
@@ -3330,7 +3653,7 @@ def still():
             t = cst[n - 1] + tl
             run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % t, "-i", "preview.mp4",
                  "-frames:v", "1", "stills/%02d%s_%.0fs.png" % (n, tag, t)],
-                "静帧 镜%-3d %s  %.1fs  %s" % (n, tag, t, CLIPS[n - 1]["src"][:14]))
+                "静帧 镜%-3d %s  %.1fs  %s" % (n, tag, t, clip_key(CLIPS[n - 1])[:14]))
             k += 1
     print("\n%d 张静帧在 stills/（每镜 起/中/尾）" % k)
     print("要看三件事，都是量不出来的：")
