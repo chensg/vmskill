@@ -710,6 +710,29 @@ VIDEO_FIT = "pillarbox"      # 视频镜怎么填满画框："pillarbox" 加黑�
 # 本来就该看着像档案。要裁的片子逐镜写 fit="crop"。
 
 
+PLATE_COLOR = "black"       # 贴纸版式的台纸颜色。深色片子用 black，纸本画种要改浅
+
+
+def is_plate(n):
+    """镜 n 是不是贴纸版式（图不裁、整张贴在台纸上）。
+
+    **它不是"省事"的那条，是"这张图本来就不该裁"的那条。** 竖构图的海报、
+    小尺寸的目录版画、档案剧照 —— 裁成 16:9 要么把主体裁没，要么把 pp 拉到
+    1.0 以下靠放大硬撑。贴纸把这两件事一起解决：整张都在，而且是 1:1 不放大。
+
+    代价是运镜全取消（台纸不动），所以只在 static 镜上用 —— check 会拦。"""
+    return (CLIPS[n - 1].get("fit") == "plate") if 0 < n <= len(CLIPS) else False
+
+
+def plate_box(w, h):
+    """一张 w x h 的图贴在成片画框上时的 (缩放后宽, 高, 缩放系数)。
+
+    **系数取 min(1, ...) —— 永远不放大。** 这是贴纸版式存在的全部理由：
+    放大就等于回到了它要解决的那个问题。比画框大的图照常缩到画框内。"""
+    f = min(1.0, W / float(w), H / float(h))
+    return (max(2, int(round(w * f)) // 2 * 2), max(2, int(round(h * f)) // 2 * 2), f)
+
+
 def clip_key(c):
     """CLIPS 一条用的素材文件名。视频镜写 video=，静帧/运镜镜写 src=。
 
@@ -863,7 +886,7 @@ def budget():
     print("")
     rows, capped, tiers = [], [], {}
     for n, s in enumerate(SHOTS, 1):
-        if is_video(n):        # 视频镜不出图，别让它进出图任务书的分档表
+        if is_video(n) or is_plate(n):   # 视频镜和贴纸镜都不按 pp 反推尺寸
             continue
         need, over = required_native(n)
         z = s["z"][0] if is_static(n) else max(s["z"])
@@ -2187,6 +2210,8 @@ def prep():
         src = os.path.join(SRC, c["src"])
         if not os.path.exists(src):
             print("   跳过(缺图): " + c["src"]); continue
+        if c.get("fit") == "plate":
+            prep_plate(i, c, src); continue
         z, cx, cy = c["zoom"], c["cx"], c["cy"]
         # 横版裁 16:9（竖版模板这里是 9:16，两个分数都要跟着翻，翻漏一个会裁出细长条）
         crop = ("crop=w='min(iw,ih/%.6f*16/9)':h='min(ih/%.6f,iw*9/16)':"
@@ -2207,6 +2232,34 @@ def prep():
              "-frames:v", "1", "img%02d.png" % i],
             "prep %d/%d  %s" % (i, len(CLIPS), c["src"]))
     probe()
+
+
+def prep_plate(i, c, src):
+    """贴纸版式的 prep：整张图按 1:1（或缩小）贴在成片画框中央，四周补台纸。
+
+    **不走 crop。** 走 crop 就等于承认要裁，而这条路的前提正是"这张不能裁"。
+
+    出的是**成片尺寸**的 imgNN.png，不是 PREP 尺寸 —— 所以用贴纸版式的片子
+    要把 PREP 设成成片尺寸，让 pass_a 的 static_vf 变成恒等重采样。
+    PREP 还留在 3840x2160 的话，pass_a 会把整张台纸再缩一半，图就只有半幅大。
+    check_resolution 会拦这个组合。
+    """
+    d = img_dims(src)
+    if not d:
+        print("   跳过(读不出尺寸): " + c["src"]); return
+    w, h = d
+    tw, th, f = plate_box(w, h)
+    _parts = ["scale=%d:%d:flags=lanczos" % (tw, th)]
+    if str(GRADE).strip():
+        _parts.append(GRADE)
+    if c.get("tweak"):
+        _parts.append(c["tweak"])
+    _parts.append("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=%s" % (W, H, PLATE_COLOR))
+    _parts.append("setsar=1")
+    run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", ",".join(_parts),
+         "-frames:v", "1", "img%02d.png" % i],
+        "prep %d/%d  %s  贴纸 %dx%d -> %dx%d (x%.2f)"
+        % (i, len(CLIPS), c["src"], w, h, tw, th, f))
 
 
 def prep_video(i, c):
@@ -2667,7 +2720,16 @@ def check_resolution():
     博物馆开放数据里的画作很多卡在 1.0~1.5 之间，按运镜那条线一刀切会全判死，
     而它们做静帧完全够用。讲述片尤其吃这个：历史题材的真实图像常常只有这个分辨率。
     """
-    bad, rows, warn_pp, vrows = [], [], [], []
+    bad, rows, warn_pp, vrows, prows = [], [], [], [], []
+    # **贴纸版式和 PREP 的组合会静默出错。** prep_plate 出的是成片尺寸的图，
+    # 而 pass_a 的 static_vf 会把 PREP 尺寸缩到成片尺寸 —— PREP 还是 3840x2160
+    # 时，那张已经是 1920x1080 的台纸会被再缩一半，成片上图只有半幅大而四周全是台纸。
+    # 渲得出来、不报错、退出码 0，只有真看画面才发现。
+    if any(c.get("fit") == "plate" for c in CLIPS) and tuple(PREP) != (W, H):
+        bad.append("有贴纸版式的镜，但 PREP=%s 不等于成片尺寸 %dx%d —— "
+                   "pass_a 会把台纸再缩一次，成片上图只有 %.0f%% 大小。"
+                   "用贴纸版式就要把 PREP 设成 (%d, %d)"
+                   % (tuple(PREP), W, H, W / float(PREP[0]) * 100, W, H))
     for i, c in enumerate(CLIPS, 1):
         if c.get("video"):
             # **视频镜不走 pp 判据。** 档案影像天生就低分辨率 —— 640x480 铺到
@@ -2698,6 +2760,20 @@ def check_resolution():
         if not d:
             continue
         w, h = d
+        if c.get("fit") == "plate":
+            # 贴纸镜不裁、不放大，pp 按定义就是 1.00。要看的是**另一件事**：
+            # 这张图在画框里占多大 —— 占得太小就成了一张邮票贴在大黑板上。
+            tw, th, sf = plate_box(w, h)
+            # **判据用 max(占宽, 占高)，不用面积比。** 面积比对竖构图是稳定的误报：
+            # 一张 480x1180 的海报贴上去正好把画框的高占满（该有的样子），
+            # 面积却只有 23% —— 按面积判会说它"像一张邮票贴在黑板上"，
+            # 而真正的邮票（两个方向都小）反而混在同一档里看不出来。
+            prows.append((i, c["src"], w, h, tw, th, sf,
+                          max(tw / float(W), th / float(H))))
+            if not (i - 1 < len(SHOTS) and is_static(i)):
+                bad.append("镜 %d 用了贴纸版式却不是静帧镜 —— 台纸不动，"
+                           "运镜在它上面没有意义（写 motion=\"static\"）" % i)
+            continue
         f = native_factor(w, h)
         # 裁成成片比例之后的**短边**。竖版模板这里直接用了裁后宽度，因为竖版的宽就是短边；
         # 横版反过来（宽是长边），照抄会拿长边去比 OUT_SHORT，pp 被虚报 W/H = 1.78 倍 ——
@@ -2719,6 +2795,18 @@ def check_resolution():
             # 填了 PP_ACCEPT_REASON 就降级成提示 —— 但**必须写理由**，而且理由会打印出来。
             # 不给一个"静默放行"的开关：那样下一支照抄配置时就再也不知道这里做过妥协了。
             (warn_pp if PP_ACCEPT_REASON.strip() else bad).append(msg)
+    if prows:
+        print("")
+        print("=== 贴纸版式（%d 镜；不裁不放大，pp 恒为 1.00）===" % len(prows))
+        print("   台纸 %s，看的是「图占画框多大」不是 pp" % PLATE_COLOR)
+        for i, f_, w, h, tw, th, sf, frac in prows:
+            flag = ""
+            if frac < 0.60:
+                flag = "  <- 两个方向都不满 60%，成片上会像一张邮票贴在黑板上"
+            elif frac < 0.95:
+                flag = "  <- 长边只到 %.0f%%" % (frac * 100)
+            print("   镜%-3d %-22s %dx%d -> %dx%d  长边占画框 %.0f%%%s"
+                  % (i, f_, w, h, tw, th, frac * 100, flag))
     if vrows:
         print("")
         print("=== 视频素材（%d 镜；**不参与 pp 判据**）===" % len(vrows))
