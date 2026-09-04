@@ -105,6 +105,18 @@ def plan(seg_dir):
         if f.lower().endswith((".png", ".jpg", ".jpeg")):
             moves.append((os.path.join(seg_dir, f), os.path.join(src, f), "图归位"))
 
+    # **浏览器也可能直接下到 build/vo/**（用户把下载目录指过去，或手工拖进去）。
+    # 那种落法下文件已经在正确的目录里，只是名字带着 ` (N)` —— 原来这里只扫
+    # `素材/`，于是一条都不动，而且"没有要移动的文件"和"确实不用动"长得一模一样。
+    # 45 条里 28 条带后缀的那次就是这么发现的：脚本报「0 个动作」，check 报「缺 45 条」。
+    if os.path.isdir(vo):
+        for f in sorted(os.listdir(vo)):
+            if not f.lower().endswith(".mp3"):
+                continue
+            clean = re.sub(r"\s*\(\d+\)(?=\.mp3$)", "", f)
+            if clean != f:
+                moves.append((os.path.join(vo, f), os.path.join(vo, clean), "就地去后缀"))
+
     for f in sorted(os.listdir(src)):
         p = os.path.join(src, f)
         if not os.path.isfile(p) or not f.lower().endswith(".mp3"):

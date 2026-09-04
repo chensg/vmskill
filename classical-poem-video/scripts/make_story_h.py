@@ -1681,6 +1681,45 @@ def check_xfades():
 
 
 VIDEO_HEADROOM = 0.5        # 素材段至少要比旁白算出来的镜长再多这么多秒
+VIDEO_BLACK_MIN = 0.4       # 连续黑帧超过这么久就算「卡」，不是转场自带的暗场
+
+
+BLACK_CACHE = "black_spans.json"
+
+
+def black_spans(path):
+    """`blackdetect` 扫出来的黑段 [(起, 止), ...]，**按 (大小, mtime) 缓存**。
+
+    不缓存的话每跑一次 check 就要把十一个视频中间件整个解码一遍 ——
+    判据是对的，代价放错了地方：check 应该是随时能跑的，慢到要等就没人跑，
+    而不跑的判据等于没有。这和 vo_durs() 用 vo_times.json 缓 ffprobe 是同一件事。
+
+    键里带 mtime 和大小，所以 prep 重出之后自动失效，不会拿旧结果糊弄。
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    key = "%s|%d|%d" % (os.path.basename(path), st.st_size, int(st.st_mtime))
+    cache = {}
+    if os.path.exists(BLACK_CACHE):
+        try:
+            cache = json.load(open(BLACK_CACHE, encoding="utf-8"))
+        except Exception:
+            cache = {}
+    if key in cache:
+        return [tuple(x) for x in cache[key]]
+    r = subprocess.run(["ffmpeg", "-v", "info", "-i", path, "-an",
+                        "-vf", "blackdetect=d=%.2f:pic_th=0.98:pix_th=0.12"
+                               % VIDEO_BLACK_MIN,
+                        "-f", "null", "-"], capture_output=True, text=True)
+    spans = [(float(m.group(1)), float(m.group(2)))
+             for m in re.finditer(r"black_start:([\d.]+) black_end:([\d.]+)",
+                                  r.stderr or "")]
+    cache[key] = spans
+    with open(BLACK_CACHE, "w", encoding="utf-8") as f:
+        json.dump(cache, f)
+    return spans
 
 
 def check_video():
@@ -1732,6 +1771,27 @@ def check_video():
             bad.append("镜 %d 的素材段 %.2fs 只比旁白 %.2fs 多 %.2fs —— "
                        "余量不足 %.1fs。旁白重新生成后镜长会变，现在刚好等于以后不够"
                        % (i, seg, need, seg - need, VIDEO_HEADROOM))
+    # ---- 段**内部**有没有不能用的黑帧 ----
+    # 这一条是踩出来的：档案影像里常夹着现代标题卡、机构水印黑卡、黑场。
+    # 段够长、入出点合法、不重叠 —— 前三条全过，而金句那一镜开口三秒是一块
+    # 写着 "NFSA 2006" 的黑屏。渲得出来、退出码 0、check 全绿，
+    # 只有真看画面才发现，而看的时候还得刚好采到那一帧
+    # （15 秒一帧的联络表就漏掉了它）。
+    #
+    # 用 blackdetect 一次解码扫完 vidNN.mp4，不逐帧 seek —— 逐帧 seek 在
+    # 十分钟以上的源片上要几分钟，慢到没人会跑。
+    for i in vids:
+        vf = "vid%02d.mp4" % i
+        if not os.path.exists(vf):
+            continue          # 还没 prep，跳过；prep 之后再跑一次 check
+        need = durs[i - 1] if i - 1 < len(durs) else 0.0
+        for a, b in black_spans(vf):
+            if a >= need:
+                continue      # 落在这一镜用不到的那一段里，不管
+            bad.append("镜 %d 的素材段内 %.1f~%.1fs 是黑帧（这一镜只用前 %.1fs，"
+                       "所以它会**出现在成片上**）—— 多半是现代标题卡或机构水印卡，"
+                       "换一段或把 ss 往后挪" % (i, a, min(b, need), need))
+
     # 相邻同源镜的段重叠
     for i in range(1, len(CLIPS)):
         if not (is_video(i) and is_video(i + 1)):
