@@ -4,6 +4,7 @@
   python publish.py new  [片名]      # 打印一份 发布文案.md 的骨架（中英两份）
   python publish.py check 发布文案.md # 量每个平台的标题会被切在哪儿
   python publish.py check 发布文案.md --mono   # 只有中文的老片子用这个
+  python publish.py check 发布文案.md --found  # IMG_SOURCE='found'：验来源授权，不验 AI 声明
   python publish.py limits           # 打印当前配置的各平台长度
 
 **这个脚本只做一件能量的事：标题在各平台被切在第几个字。**
@@ -116,6 +117,12 @@ def parse(path):
         # 正文是散文行，注释是列表项，按这个分就干净了。
         if re.match(r"^[-*]\s", line):
             continue
+        # **列表项的续行也要跳过。** 上面那条只跳过了行首是 `- ` 的行，
+        # 而一条注释写成两行时，第二行是缩进的续行、不以 `-` 开头 ——
+        # 于是它被算进正文，抖音（上限 55）又一次被自己的注释顶爆。
+        # 和上面是同一个假警，只是漏了一半。正文是**顶格**的散文行。
+        if re.match(r"^\s+\S", line):
+            continue
         body_chars += len(line)
     if cur:
         out[cur]["body"] = body_chars
@@ -155,7 +162,7 @@ def parse_keywords(path):
     return out
 
 
-def check(path, bilingual=True):
+def check(path, bilingual=True, found=False):
     """bilingual=False 时跳过英文那些块（只有中文的老片子）。
 
     **默认要求双语**：从"每支片子都出中英双音轨"那天起，只有中文标题的
@@ -235,15 +242,34 @@ def check(path, bilingual=True):
             warn.append("关键词只有 %d 个，建议 %d 个以上（这一栏不占描述字数，写满没有代价）"
                         % (len(kw), YT_KEYWORDS_MIN))
 
-    # 全文必须出现的几项（荐书片/生成画面的片子）
+    # 全文必须出现的几项
     text = io.open(path, encoding="utf-8").read()
-    if not re.search(r"AI\s*生成|人工智能生成|AIGC", text):
-        bad.append("全文没有一句『画面为 AI 生成』—— 画面是 AI 生成的，多个平台要求标注")
-    # 声明也要有英文的：YouTube 的英文简介里没有，等于对英文观众没声明过。
-    if bilingual and not re.search(r"AI[- ]?generated|generated (?:by|with) AI|AIGC",
-                                   text, re.I):
-        bad.append("全文没有一句英文的 AI 生成声明（AI-generated …）—— "
-                   "英文简介里没有，就等于对英文观众没有声明过")
+    if found:
+        # **IMG_SOURCE='found' 的片子不能写 AI 声明 —— 那是假话。**
+        # 这条判据原来无条件要求「画面为 AI 生成」，于是《剩下的二九六公尺》
+        # （18 镜全是 1906 年的真影像和找来的档案照片，一张生成图都没有）
+        # 要么写一句假话过关，要么跳过 check。两条都不行。
+        # 找来的素材该声明的是**来源与授权**：CC-BY 的署名要求是"跟着作品走"，
+        # 贴在简介里才算跟着。
+        # **不扫「有没有写 AI 声明」这件事。** 第一版扫了，结果把
+        #   "Nothing here is AI-generated."（明确声明**不是**生成的）
+        # 当成了 AI 声明报错 —— 正则分不出肯定句和否定句，
+        # 而误报惩罚的恰恰是最该做的那种写法。
+        # "别写假的 AI 声明" 是人读稿子该管的事，不是正则能判的。
+        if not re.search(r"素材来源|来源与授权|Public domain|CC BY", text, re.I):
+            bad.append("全文没有素材来源与授权 —— IMG_SOURCE='found' 的片子，"
+                       "CC-BY 的署名要求是「跟着作品走」，贴在简介里才算跟着")
+        if bilingual and not re.search(r"Public domain|CC BY|Source[s]?:|Credits?:",
+                                       text, re.I):
+            bad.append("英文那一块没有素材来源/授权 —— 英文观众看不到中文那一段")
+    else:
+        if not re.search(r"AI\s*生成|人工智能生成|AIGC", text):
+            bad.append("全文没有一句『画面为 AI 生成』—— 画面是 AI 生成的，多个平台要求标注")
+        # 声明也要有英文的：YouTube 的英文简介里没有，等于对英文观众没声明过。
+        if bilingual and not re.search(r"AI[- ]?generated|generated (?:by|with) AI|AIGC",
+                                       text, re.I):
+            bad.append("全文没有一句英文的 AI 生成声明（AI-generated …）—— "
+                       "英文简介里没有，就等于对英文观众没有声明过")
 
     print("")
     if counted == 0:
@@ -465,8 +491,9 @@ if __name__ == "__main__":
         print(TEMPLATE % (sys.argv[2] if len(sys.argv) > 2 else "片名"))
     elif what == "check":
         if len(sys.argv) < 3:
-            sys.exit("用法: python publish.py check 发布文案.md [--mono]")
-        sys.exit(0 if check(sys.argv[2], "--mono" not in sys.argv) else 1)
+            sys.exit("用法: python publish.py check 发布文案.md [--mono] [--found]")
+        sys.exit(0 if check(sys.argv[2], "--mono" not in sys.argv,
+                            "--found" in sys.argv) else 1)
     elif what == "selftest":
         sys.exit(0 if selftest() else 1)
     else:
