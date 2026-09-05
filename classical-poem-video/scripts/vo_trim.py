@@ -98,9 +98,17 @@ def speech_span(path):
 
 
 def main():
+    global VO_DIR, ORIG_DIR
     mode = sys.argv[1] if len(sys.argv) > 1 else "measure"
     if mode not in ("measure", "apply"):
-        print("用法: python vo_trim.py [measure|apply]"); return 1
+        print("用法: python vo_trim.py [measure|apply] [目录]"); return 1
+    # **第二个参数给目录，因为英文那条轨要剪的是 vo_en_raw/ 不是 vo/。**
+    # 原来只认 vo/，于是每支双语片都在项目里另抄一个 trim_english.py 兜着
+    # （《四十二年》《巴达维亚号》各一份）—— 同一件事抄第三遍就该归位到脚本里。
+    # 剪法、判据、备份规则对哪种语言都一样，不一样的只有目录。
+    if len(sys.argv) > 2:
+        VO_DIR = sys.argv[2].rstrip("/\\")
+        ORIG_DIR = VO_DIR + "_orig"
     if not os.path.isdir(VO_DIR):
         print("没有 %s —— 先把 mp3 下载并归位（sort_downloads.py）" % VO_DIR); return 1
 

@@ -62,6 +62,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -499,6 +500,9 @@ LANG_TEMPO_MAX = 1.06
 # **镜末那一句不许借**：镜末的静默正中骑着转场，借了就是把话说到转场底下去，
 # 而这件事在参数表和波形上都看不出来，要放出来听才发现。
 LANG_BORROW = 0.30
+# 填了理由，压不进槽的那几句就降级成提示（空着照旧拦下）。
+# **不给静默绕过的开关** —— 那样下一支照抄配置时就再也不知道这里做过妥协。
+LANG_ACCEPT_REASON = ""
 # 英文一行的字数上限。中文是 20 个全角字，英文按半角算大约是它的两倍。
 SUB_MAX_CHARS_EN = 42
 
@@ -1372,6 +1376,7 @@ def check_langs(quiet=False):
     "改了翻译、重新生成、忘了跑 langfit" 就是靠这一条拦住的。
     """
     bad = []
+    lang_warn = []
     if len(LANGS) <= 1:
         return bad
     slots = lang_slots()
@@ -1406,16 +1411,45 @@ def check_langs(quiet=False):
             flag = ""
             if d > room + 0.02:
                 flag = "  << 超 %.2fs" % (d - room)
-                over.append((x["vo"], d - room))
+                grp = per_shot()[x["shot"] - 1]
+                at_end = grp.index(k) == len(grp) - 1
+                over.append((x["vo"], d - room, at_end))
             if not quiet:
                 print("  %-11s 槽 %5.2f(+%.2f 可借)  实测 %5.2f%s"
                       % (x["vo"], base, borrow, d, flag))
-        if over:
-            worst = max(over, key=lambda z: z[1])
-            bad.append("%s 轨有 %d 条塞不进中文的槽（最长的 %s 超 %.2fs）—— "
-                       "跑 `python make_story_h.py langfit %s`；"
-                       "压不进去的那几句它会报出还得砍几个词"
-                       % (info["name"], len(over), worst[0], worst[1], lang))
+        # **镜末句和镜内句要分开判，不能一起放行。**
+        # 镜内句超出的两三百毫秒吃的是后面那段气口；镜末句的静默正骑在转场上，
+        # 超了就是把话说到溶解底下去 —— 那件事在参数表和波形上都看不出来。
+        # 第一版的 LANG_ACCEPT_REASON 把两种一起降级，回归自测当场报
+        # 「镜末那条英文超槽 → 多报 0 条 —— 检查失效了」：**开的口子太大**。
+        ends = [z for z in over if z[2]]
+        mids = [z for z in over if not z[2]]
+        for grpz, tail, always_block in ((ends, "**镜末**", True), (mids, "镜内", False)):
+            if not grpz:
+                continue
+            worst = max(grpz, key=lambda z: z[1])
+            msg = ("%s 轨有 %d 条%s句塞不进中文的槽（最长的 %s 超 %.2fs）—— "
+                   "跑 `python make_story_h.py langfit %s`；"
+                   "压不进去的那几句它会报出还得砍几个词"
+                   % (info["name"], len(grpz), tail, worst[0], worst[1], lang))
+            if always_block:
+                bad.append(msg + " —— **镜末不接受妥协**：那段静默骑在转场上，"
+                                 "超出去就是把话说到溶解底下")
+                continue
+            # **有时候砍不动。** "All true." 两个词已经是地板，砍掉 "All" 就丢了
+            # 「那三个数**都**对」这个全部内容；核心数字那一句两个单位都不能省。
+            # 强行砍是拿内容换一个判据过关，那不是修好。
+            #
+            # 所以和 REUSE_ACCEPT_REASON / PP_ACCEPT_REASON 一个形状：
+            # **填了理由就降级成提示，空着照旧拦下，不给静默绕过的开关。**
+            # 理由每次 check 都打印，交付时要照抄进制作说明的「哪几处是妥协的」。
+            #
+            # 判断该不该填，看**超的那几条在不在镜末**：镜内句超出的两三百毫秒
+            # 吃的是气口；镜末句的静默正骑在转场上，超了就是把话说到溶解底下去。
+            if str(LANG_ACCEPT_REASON).strip():
+                lang_warn.append(msg)
+            else:
+                bad.append(msg)
         for x in NARR:
             parts = sub_lines(x.get(lang) or "")
             # **行数也要验。** 原来只验行长，于是「一条断成三行」整个溜过去 ——
@@ -1429,6 +1463,13 @@ def check_langs(quiet=False):
                 if len(p) > SUB_MAX_CHARS_EN:
                     bad.append("%s 字幕行『%s』%d 字，超过一行上限 %d —— 用 %s 手工断行"
                                % (info["name"], p[:34], len(p), SUB_MAX_CHARS_EN, SUB_SEP))
+    if lang_warn:
+        print("")
+        print("=== 多音轨对槽（%d 处超出，**已显式承认**）===" % len(lang_warn))
+        for w in lang_warn:
+            print("  " + w)
+        print("  理由：" + LANG_ACCEPT_REASON.strip())
+        print("  交付时这一条要照抄进制作说明的「哪几处是妥协的」。")
     return bad
 
 
@@ -3758,15 +3799,56 @@ def pass_c():
     verify_tracks(seg)
     verify_tracks(prev)
 
+    # ---- 多音轨要拆成可上传的形态 ----
+    # **单段片子不走 join.py，于是原来永远拿不到这一步。** 多段的由 join 拆
+    # （见 join.py 的 split_tracks），单段的走完 c 就交付了 —— 交出去的是一个
+    # "能播、时长对、中文轨也对，只有英文轨没了" 的上传件，而文件本身完全正常。
+    # 又一个不报错的失败，2026-09-04《剩下的二九六公尺》踩到。
+    up = multi = None
+    auds = []
+    if len(LANGS) > 1:
+        base = PREVIEW_NAME.replace("_预览.mp4", "")
+        multi = os.path.join("..", "%s_多音轨.mp4" % base)
+        shutil.copyfile(prev, multi)
+        up = os.path.join("..", "%s.mp4" % base)
+        run(["ffmpeg", "-y", "-v", "error", "-i", multi,
+             "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
+             "-movflags", "+faststart", up],
+            "上传件：视频 + %s 一条轨（流拷贝）" % LANG_INFO[LANGS[0]]["code"])
+        for jj, lg in enumerate(LANGS[1:], start=1):
+            code = LANG_INFO[lg]["code"]
+            a = os.path.join("..", "%s_音轨_%s.m4a" % (base, code))
+            run(["ffmpeg", "-y", "-v", "error", "-i", multi,
+                 "-map", "0:a:%d" % jj, "-c:a", "copy", a],
+                "独立音频（%s）" % code)
+            auds.append((code, a))
+        # **拆完要验两件，两种失败都不报错。**
+        na = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                             "-show_entries", "stream=index", "-of", "csv=p=0", up],
+                            capture_output=True, text=True).stdout.split()
+        if len(na) != 1:
+            print("  !! 上传件里有 %d 条音轨，应该只有 1 条" % len(na))
+        def _dur(f):
+            return float(subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=nw=1:nk=1", f], capture_output=True, text=True).stdout)
+        vd = _dur(up)
+        for code, a in auds:
+            if abs(_dur(a) - vd) > 0.05:
+                print("  !! %s 音频和画面差 %.3fs —— 独立音频差一点点就是整条错位"
+                      % (code, abs(_dur(a) - vd)))
+
     print("\n完成三件：")
     print("  段用   %s   **不归一**，给 join" % seg)
     print("  预览   %s   归一 + 淡出，单看这一段用这个" % prev)
     print("  字幕   %s   外挂，播放器渲染"
           % " / ".join(os.path.join("..", srt_name(l)) for l in LANGS))
     if len(LANGS) > 1:
-        print("  音轨   %s   语言元数据已写进文件，YouTube 直接认"
-              % " / ".join("a:%d=%s" % (j, LANG_INFO[l]["code"])
-                           for j, l in enumerate(LANGS)))
+        print("  上传件 %s   **只有 %s 一条轨，传这个**"
+              % (up, LANG_INFO[LANGS[0]]["code"]))
+        for code, a in auds:
+            print("  附加音频 %s   在 Studio 里作为独立音频添加" % a)
+        print("  留档   %s   两条轨都在，**不要拿它当上传件**" % multi)
 
 
 def still():
