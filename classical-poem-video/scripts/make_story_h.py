@@ -2068,6 +2068,40 @@ def check_coldopen(lines):
     return []
 
 
+def check_sfx():
+    """音效表在 `check` 里就要验，不能等到 pass_c。
+
+    坑：从上一支复制脚本时 `SFX` 会**整表继承**过来 —— 那张「换项目必须清空」的清单
+    （SRC_NATIVE / PP_ACCEPT_REASON / 两个门禁 / ENDCARD）**漏了 SFX**。
+    继承过来的音效指向上一支的文件、上一支的镜号，而 `check` 一声不吭全绿，
+    渲到 `pass_c` 才 `sys.exit`。前面 prep/a/b 三趟白跑。
+    """
+    bad = []
+    for s in SFX:
+        f = s.get("file", "")
+        if s.get("shot") and s["shot"] > len(SHOTS):
+            bad.append("音效 %s 的 shot=%d 超出本段 %d 镜 —— **多半是从上一支继承来的 SFX 表**"
+                       % (f, s["shot"], len(SHOTS)))
+        p = os.path.join(SRC, f) if f else ""
+        if f and not os.path.exists(p):
+            bad.append("音效缺文件: %s —— 要么补素材，要么这一条本来就不该在表里" % f)
+    return bad
+
+
+def selftest_sfx():
+    """回归：造一个越界镜号 + 一个不存在的文件，check_sfx 必须各报一条。"""
+    global SFX
+    keep = SFX
+    SFX = [dict(file="__不存在的音效__.mp3", shot=len(SHOTS) + 99, target=-30)]
+    n = len(check_sfx())
+    SFX = keep
+    now = len(check_sfx())
+    print("回归自测: 继承来的音效表（越界镜号 + 缺文件） → 报警 %d 条 —— %s"
+          % (n, "对" if n >= 2 else "**检查失效了**"))
+    print("          当前配置 报警 %d 条 —— %s" % (now, "对" if now == 0 else "有问题"))
+    return n >= 2 and now == 0
+
+
 def check_timeline():
     lines, durs, total, _ = timeline()
     _, missing = vo_durs()
@@ -2085,6 +2119,7 @@ def check_timeline():
     bad += check_coldopen(lines)
     bad += check_endcard()
     bad += check_langs()
+    bad += check_sfx()
 
     for st, en, txt, _, _, _ in lines:
         for c in cuts:
@@ -2162,6 +2197,7 @@ def check_timeline():
     print("转场落点: " + "  ".join("%.1f" % c for c in cuts))
     selftest_seg()
     selftest_reuse()
+    selftest_sfx()
     selftest_moves()
     selftest_video()
     selftest_credits()
