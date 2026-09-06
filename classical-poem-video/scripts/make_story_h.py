@@ -1692,11 +1692,21 @@ def selftest_reuse():
     global REUSE_ACCEPT_REASON
     reason_keep = REUSE_ACCEPT_REASON
     REUSE_ACCEPT_REASON = ""
-    keep = dict(SHOTS[1])
-    SHOTS[1].update(z=SHOTS[0]["z"], f0=SHOTS[0]["f1"], f1=SHOTS[0]["f1"])
-    src_keep = CLIPS[1]["src"]; CLIPS[1]["src"] = CLIPS[0]["src"]
+    # **造错要挑一对相邻的静图镜，不能写死 0/1。**
+    # 视频镜没有 `src` 键（它用 video=/ss=/to=），段首两镜正好是视频时这里会 KeyError
+    # —— 视频镜是后加的，这个自测当初没跟上，直到一支 25 个视频镜的片子才炸出来。
+    pair = next((i for i in range(len(CLIPS) - 1)
+                 if not is_video(i + 1) and not is_video(i + 2)), None)
+    if pair is None:
+        REUSE_ACCEPT_REASON = reason_keep
+        print("回归自测: 本段没有相邻的两个静图镜，check_reuse 自测不适用")
+        return True
+    a, b = pair, pair + 1
+    keep = dict(SHOTS[b])
+    SHOTS[b].update(z=SHOTS[a]["z"], f0=SHOTS[a]["f1"], f1=SHOTS[a]["f1"])
+    src_keep = CLIPS[b]["src"]; CLIPS[b]["src"] = CLIPS[a]["src"]
     n = len(check_reuse())
-    SHOTS[1].clear(); SHOTS[1].update(keep); CLIPS[1]["src"] = src_keep
+    SHOTS[b].clear(); SHOTS[b].update(keep); CLIPS[b]["src"] = src_keep
     REUSE_ACCEPT_REASON = reason_keep
     now = len(check_reuse())
     print("回归自测: 相邻两镜共用图且取景相同 → 报警 %d 条 —— %s"
