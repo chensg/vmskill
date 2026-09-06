@@ -2482,6 +2482,46 @@ def scrim_factor(x0, x1, y0, y1):
     return (sum(v) / len(v)) / 200.0          # 0xC8 = 200
 
 
+def fade_factor(t, total):
+    """pass_b 末尾那两道全局淡场在时刻 t 的亮度系数（1.0 = 没压）。
+
+    **同一个坑的第三只脚。** vig_factor 补 pass_a 的暗角、scrim_factor 补 pass_c
+    的 scrim，而淡场是 **pass_b** 加的 —— 而 measure 读的正是 pass_b 的产物
+    master.mp4，不建模就在首尾两镜上系统性对不上。
+
+    这一段代码上面那条注释里记的「镜 1 起幅量到 2/3/2 几乎全黑，而预测 31/51/31」
+    就是这件事的另一种表现：那次是 d=0 退回 25 帧的 bug，修的是黑场本身；
+    **正常的淡场同样要建模**，否则首尾两镜永远对不上。
+
+    竖版 (`make_story_v.py`) 上实测过：150 个比对点里超差 3 个（最大 −24），
+    补上之后 **0 个**，最大 4 级。ffmpeg 的 `fade` 默认线性，所以这里也线性。
+
+    ⚠️ 横版这一路**还没有在真片子上验过**（改动时手上只有竖版工程）。
+    下一支横版跑完 measure 之后，看首尾两镜的偏差是不是也收进 5 级以内。
+    """
+    f = 1.0
+    if FADE_IN > 0 and t < FADE_IN:
+        f = min(f, max(0.0, t) / FADE_IN)
+    if FADE_OUT > 0 and t > total - FADE_OUT:
+        f = min(f, max(0.0, total - t) / FADE_OUT)
+    return max(0.0, min(1.0, f))
+
+
+def _fade_selftest():
+    """回归自测：写反或者退化成常数 1.0，这里立刻看得见。"""
+    if FADE_IN <= 0 and FADE_OUT <= 0:
+        return "回归自测: 本段没有淡场（中间段就该是这样），fade_factor 恒 1.0 —— 对"
+    T = 100.0
+    a = fade_factor(0.0, T)
+    b = fade_factor(FADE_IN, T) if FADE_IN > 0 else 1.0
+    c = fade_factor(T, T)
+    ok = ((a <= 0.01) if FADE_IN > 0 else (a == 1.0)) \
+        and abs(b - 1.0) < 1e-6 \
+        and ((c <= 0.01) if FADE_OUT > 0 else (c == 1.0))
+    return ("回归自测: 淡场建模 段头 %.2f / 淡入结束 %.2f / 段尾 %.2f —— %s"
+            % (a, b, c, "对" if ok else "**反了或没生效**"))
+
+
 def probe_times(n, durs):
     """镜 n 里可以取样的三个**镜内局部时刻**（起/中/止）。trace 和 measure 必须
     共用这一个函数 —— 各写一份就一定会漂。
@@ -2517,7 +2557,7 @@ def trace():
         src = (f - 1/(2z)) + (out/边长) * (1/z)
     打扫过范围要取**并集**，不能打"起帧框顶→止帧框底"：上摇时落幅的框底在起幅框底
     之上，那样打出来会把行程严重低估。"""
-    lines, durs, _, _ = timeline()
+    lines, durs, total, _ = timeline()
     starts = clip_starts()          # 镜内局部时刻要按**渲出来那段片子**的起点算
     dark = POLARITY == "dark_on_light"
     GW, GH = 1288, 724              # 横版：宽 > 高（竖版模板这里是 724x1288）
@@ -2559,7 +2599,9 @@ def trace():
     print("\n=== 取样框预测亮度（三框 × 起/中/止）===")
     print("    这一节的用途**只有一个**：给 measure 对账，自检运镜有没有走在预期位置。")
     print("    字幕外挂之后不再有「字幕底」要判，但那个自检不能跟着丢。")
-    print("    已建模 vignette。跑完 a+b 之后跑 measure，逐条差 %.0f 级以内才算对。" % PROBE_TOL)
+    print("    已建模 vignette + scrim + 首尾淡场。跑完 a+b 之后跑 measure，"
+          "逐条差 %.0f 级以内才算对。" % PROBE_TOL)
+    print("    " + _fade_selftest())
     pred = {}
     for n in range(1, len(SHOTS) + 1):
         raw = gray(n)
@@ -2569,11 +2611,13 @@ def trace():
         for name, rx0, rx1, ry0, ry1 in PROBE_BOXES:
             x0, x1 = int(rx0 * W), int(rx1 * W)
             y0, y1 = int(ry0 * H), int(ry1 * H)
-            vig = vig_factor(x0, x1, y0, y1) * scrim_factor(x0, x1, y0, y1)
+            base = vig_factor(x0, x1, y0, y1) * scrim_factor(x0, x1, y0, y1)
             vals = []
             for tl in probe_times(n, durs):
                 b = box(n, tl, x0, x1, y0, y1)
-                vals.append(stat(raw, b, vig))
+                # 淡场按**这一刻在整段上的绝对时刻**算（镜内局部时刻 + 这一镜的起点），
+                # 不能像 vignette 那样一镜一个常数
+                vals.append(stat(raw, b, base * fade_factor(starts[n - 1] + tl, total)))
             pred[(n, name)] = vals
             cells.append("%s %3.0f/%3.0f/%3.0f" % (name, vals[0], vals[1], vals[2]))
         print("  镜%-3d %-14s %s" % (n, clip_key(CLIPS[n - 1])[:13], "   ".join(cells)))

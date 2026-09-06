@@ -1891,6 +1891,46 @@ def scrim_factor(x0, x1, y0, y1):
     return (sum(v) / len(v)) / 200.0          # 0xC8 = 200
 
 
+def fade_factor(t, total):
+    """pass_b 末尾那两道全局淡场在时刻 t 的亮度系数（1.0 = 没压）。
+
+    **这是同一个坑的第三只脚。** vig_factor 补的是 pass_a 的暗角，scrim_factor
+    补的是 pass_c 的 scrim，而淡入淡出是 **pass_b** 加的 —— 而 `measure` 读的正是
+    pass_b 的产物 master.mp4，所以它看得见淡场，trace 不建模就对不上。
+
+    《娘，再寄点钱来》(2026-09-06) 实测：150 个比对点中位差 −2 级、只有 3 个超过
+    5 级，而那 3 个**全部**在片头淡入和片尾淡出里（最大 −24）。方向是安全的那一边
+    （底更暗、白字更清楚），但一个长期报假偏差的检查会把真正的运镜错误埋掉。
+
+    ffmpeg 的 `fade` 默认线性，所以这里也线性。
+    """
+    f = 1.0
+    if FADE_IN > 0 and t < FADE_IN:
+        f = min(f, max(0.0, t) / FADE_IN)
+    if FADE_OUT > 0 and t > total - FADE_OUT:
+        f = min(f, max(0.0, total - t) / FADE_OUT)
+    return max(0.0, min(1.0, f))
+
+
+def _fade_selftest():
+    """回归自测：把 fade_factor 写反、或者退化成常数 1.0，这里立刻看得见。
+
+    和粒子层的方向自检是同一个道理 —— 这种错在参数表上完全正常，
+    只有拿已知答案的三个时刻去问它才暴露。
+    """
+    if FADE_IN <= 0 and FADE_OUT <= 0:
+        return "回归自测: 本片没有淡场，fade_factor 恒 1.0 —— 对"
+    T = 100.0
+    a = fade_factor(0.0, T)                                  # 片头：该是 0
+    b = fade_factor(FADE_IN, T) if FADE_IN > 0 else 1.0      # 淡入结束：该是 1
+    c = fade_factor(T, T)                                    # 片尾：该是 0
+    ok = ((a <= 0.01) if FADE_IN > 0 else (a == 1.0)) \
+        and abs(b - 1.0) < 1e-6 \
+        and ((c <= 0.01) if FADE_OUT > 0 else (c == 1.0))
+    return ("回归自测: 淡场建模 片头 %.2f / 淡入结束 %.2f / 片尾 %.2f —— %s"
+            % (a, b, c, "对" if ok else "**反了或没生效**"))
+
+
 def trace():
     """量镜头**真正经过的区域** —— 出图阶段就能判一张图能不能用，缺图会跳过。
 
@@ -1898,7 +1938,7 @@ def trace():
         src = (f - 1/(2z)) + (out/边长) * (1/z)
     打扫过范围要取**并集**，不能打"起帧框顶→止帧框底"：上摇时落幅的框底在起幅框底
     之上，那样打出来会把行程严重低估。"""
-    lines, durs, _, _ = timeline()
+    lines, durs, total, _ = timeline()
     starts = clip_starts()          # 镜内局部时刻要按**渲出来那段片子**的起点算
     dark = POLARITY == "dark_on_light"
     ink = 40 if dark else 242
@@ -1938,18 +1978,21 @@ def trace():
         return sum(v) / len(v), v[int(len(v) * 0.01)] if dark else v[int(len(v) * 0.99)]
 
     print("\n=== 字幕实走轨迹（起/中/止，均值/1%%分位；判据：离字色 %d 至少 50 级）===" % ink)
-    print("    （已建模 vignette + scrim；跑完拿它和 measure 逐条对，差 5 级以内才算运镜对）")
+    print("    （已建模 vignette + scrim + 首尾淡场；跑完拿它和 measure 逐条对，"
+          "差 5 级以内才算运镜对）")
+    print("    " + _fade_selftest())
     worst = []
     for st, en, txt, n, _, _ in lines:
         raw = gray(n)
         if raw is None:
             print("  %-24s 镜%-3d (缺图)" % (txt, n)); continue
         x0, x1, y0, y1 = sub_box(txt)
-        vig = vig_factor(x0, x1, y0, y1) * scrim_factor(x0, x1, y0, y1)
+        base = vig_factor(x0, x1, y0, y1) * scrim_factor(x0, x1, y0, y1)
         out, ys = [], []
         for t in (st + 0.2, (st + en) / 2, max(st + 0.3, en - 0.2)):
             b = box(n, t - starts[n - 1], x0, x1, y0, y1)
-            out.append(stat(raw, b, vig)); ys.append((b[2], b[3]))
+            # 淡场按**这一刻**算，不能像 vignette 那样一镜一个常数
+            out.append(stat(raw, b, base * fade_factor(t, total))); ys.append((b[2], b[3]))
         w = min(o[1] for o in out) if dark else max(o[1] for o in out)
         worst.append((w, txt, n))
         flag = "" if abs(w - ink) >= 50 else "   << 不够，加 scrim 或换图"
