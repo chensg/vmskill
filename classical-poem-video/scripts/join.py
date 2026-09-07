@@ -136,6 +136,23 @@ def duration(path):
     return float(r.stdout.strip())
 
 
+def video_frames(path):
+    """视频流的帧数。先读 nb_frames，没有就 -count_frames 数一遍；都拿不到返回 None。
+
+    **判整帧只能靠这个数。** 容器 duration 是按时间基舍入的，
+    2789 帧 @30fps 写进 mp4 变成 92.967000s，乘回去是 2789.010 —— 假的小数。
+    """
+    for args in (["-show_entries", "stream=nb_frames"],
+                 ["-count_frames", "-show_entries", "stream=nb_read_frames"]):
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0"]
+                           + args + ["-of", "csv=p=0", path],
+                           capture_output=True, text=True)
+        v = r.stdout.strip().split("\n")[0].strip()
+        if v.isdigit() and int(v) > 0:
+            return int(v)
+    return None
+
+
 def frame_mean(path, t):
     """t 秒那一帧的平均亮度。读不出返回 None —— **不能当成 0**，
     那会让"读不出"看起来像"是黑场"，是个会骗人的失败模式。"""
@@ -252,12 +269,22 @@ def check_segments(segs):
     bad = []
     print("\n=== 各段 ===")
     for s in segs:
-        fr = s["dur"] * FPS
-        off = abs(fr - round(fr))
-        flag = "" if off < 1e-3 else "  << **不是整帧**（差 %.3f 帧）" % off
-        if off >= 1e-3:
-            bad.append("%s 段长 %.4fs = %.3f 帧，不是整帧 —— concat 会累积 A/V 漂移"
-                       % (s["name"], s["dur"], fr))
+        # **整帧要数帧，不要拿容器时长乘帧率。**
+        # mp4 头里的 duration 是按时间基舍入过的：2789 帧 @30fps 是 92.96666…s，
+        # 写进容器变成 92.967000，×30 = 2789.010 —— 于是**任何帧数除不尽的段都会被误报**。
+        # 踩过一次：四段里唯独 92.9667s 那一段报"不是整帧"，而它的 nb_frames 正好是 2789。
+        n = video_frames(s["mp4"])
+        if n is None:                       # 数不出来才退回时长估
+            fr = s["dur"] * FPS
+            off = abs(fr - round(fr))
+            flag = "" if off < 1e-3 else "  << **不是整帧**（差 %.3f 帧，按时长估）" % off
+            if off >= 1e-3:
+                bad.append("%s 段长 %.4fs = %.3f 帧，不是整帧 —— concat 会累积 A/V 漂移"
+                           % (s["name"], s["dur"], fr))
+        else:
+            flag = ""
+            fr = float(n)
+            s["frames"] = n
         # 每条轨各量各的：只量默认轨的话，"英文轨自己归一过了"查不出来
         s["loud"] = [loudness(s["mp4"], ai=j)[0] for j in range(len(s["tracks"]))]
         li, tp = loudness(s["mp4"], ai=0)
