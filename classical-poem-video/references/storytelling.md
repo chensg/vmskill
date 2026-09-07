@@ -747,7 +747,13 @@ python vo_trim.py apply       # 再真剪，原件进 vo_orig/
 `check_seg` 只验 ENDCARD 该不该存在、不验里面写了什么，所以一路全绿，
 **是用户看片时发现的**。已加 `check_endcard()`：预告板的 head 里出现本集 `TITLE` 就拦。
 
-复制脚本后第一件事是把这五个清空重填。
+**第六个是 `SFX`。** 这一条是后来补进来的，补的原因正说明这张单子不写全就没用：
+《剩下的二九六公尺》从《经度》抄脚本，`SFX` 里那几条音效的镜号在这一支根本不存在、
+音频文件也不在，`check` 却一路绿灯 —— 因为当时**没有任何一条检查看 `SFX`** ——
+一直渲到 `pass_c` 混音才炸。已加 `check_sfx()`：镜号越界、文件缺失都在 `check` 拦下。
+
+复制脚本后第一件事是把这六个清空重填：
+`SRC_NATIVE` / `PP_ACCEPT_REASON` / `GATE_SCRIPT_OK` / `GATE_PREVIEW_OK` / `ENDCARD` / `SFX`。
 
 ### `check_pace` 的「字/秒」判据对短句系统性误报
 
