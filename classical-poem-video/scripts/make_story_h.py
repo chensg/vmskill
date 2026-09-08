@@ -660,12 +660,19 @@ def check_gates():
     return True
 
 
-PP_ACCEPT_REASON = (
-    "生成器封顶 1672x941，源图短边比成片短边还小，pp 无法达到 1.0。"
-    "已在最差镜（镜5 pp 0.56）做 1080p/720p 判决性对比："
-    "高频方差 284.5 vs 315.1（软 11%），但 1:1 目视笔触未糊。"
-    "pp 曲线是拿实拍照片量的，对油画偏严。接受软化，保持 1080p。"
-)
+# 填了它，pp<1.0 的**拦截**就降级成提示 —— 所以它**出厂必须是空的**。
+#
+# 2026-09-09 修：这里原本硬编码着《青玉案》那一支的理由，于是**每一个新项目
+# 一开工就继承了「已经承认过」的状态**，分辨率这道拦截从此对谁都不响。
+# 《伯德》那一支全片 pp 0.80 在放大，check 却放行了 —— 结论碰巧和人的判断一致，
+# 但那是运气，不是检查在工作。**一条永远不报警的检查比没有检查更糟。**
+#
+# 要用它，必须自己做过判决性对比再写自己的理由，例如（《青玉案》的原文，留作范例）：
+#   "生成器封顶 1672x941，源图短边比成片短边还小，pp 无法达到 1.0。
+#    已在最差镜（镜5 pp 0.56）做 1080p/720p 判决性对比：
+#    高频方差 284.5 vs 315.1（软 11%），但 1:1 目视笔触未糊。
+#    pp 曲线是拿实拍照片量的，对油画偏严。接受软化，保持 1080p。"
+PP_ACCEPT_REASON = ""
 
 
 # ================= 素材来源：任务书生成 / 自己找 =================
@@ -2068,13 +2075,35 @@ def check_coldopen(lines):
     return []
 
 
+# 「换项目必须清空」的清单。**以前它只活在注释里，于是漏过 SFX。**
+# 放在这里是为了让它被打印出来 —— 一张没人看得见的清单等于没有清单。
+# 每一项写成 (名字, 为什么危险)。check 每次都打，不判对错（对错只有人知道）。
+CARRY_OVER = [
+    ("SFX",              "整表继承会指向上一支的文件和镜号；check_sfx 抓 shot 越界，但同名文件抓不到"),
+    ("SRC_NATIVE",       "填成上一支的尺寸，分辨率判据就全部失真（文件尺寸会骗人，只能靠记录）"),
+    ("PP_ACCEPT_REASON", "非空 = pp<1.0 的拦截被降成提示。**新项目必须留空**"),
+    ("GATE_SCRIPT_OK",   "继承上一支的签字 = 这一支的门禁从没被人过过"),
+    ("GATE_PREVIEW_OK",  "同上"),
+    ("ENDCARD",          "尾板文字会带着上一支的片名和落款"),
+    ("CREDITS",          "素材来源表指向上一支的图"),
+    ("MUSIC_CREDIT",     "配乐授权写着上一支那首"),
+    ("TITLE / SUBTITLE", "片头字卡是全片唯一烧进画面的字，错了要重渲整段"),
+]
+
+
+def print_carry_over():
+    print("\n=== 换项目必须逐项过一遍（继承来的值不会报错，只会安静地错）===")
+    for name, why in CARRY_OVER:
+        print("  %-18s %s" % (name, why))
+
+
 def check_sfx():
     """音效表在 `check` 里就要验，不能等到 pass_c。
 
-    坑：从上一支复制脚本时 `SFX` 会**整表继承**过来 —— 那张「换项目必须清空」的清单
-    （SRC_NATIVE / PP_ACCEPT_REASON / 两个门禁 / ENDCARD）**漏了 SFX**。
-    继承过来的音效指向上一支的文件、上一支的镜号，而 `check` 一声不吭全绿，
-    渲到 `pass_c` 才 `sys.exit`。前面 prep/a/b 三趟白跑。
+    坑：从上一支复制脚本时 `SFX` 会**整表继承**过来，指向上一支的文件、上一支的镜号，
+    而 `check` 一声不吭全绿，渲到 `pass_c` 才 `sys.exit`，前面 prep/a/b 三趟白跑。
+    那张「换项目必须清空」的清单以前只写在这段注释里，所以漏过 SFX 自己 ——
+    现在做成了模块级的 CARRY_OVER，check 每次都会打出来。
     """
     bad = []
     for s in SFX:
@@ -2204,6 +2233,7 @@ def check_timeline():
     selftest_langs()
     for w in warn:
         print("提示: " + w)
+    print_carry_over()
     if bad:
         print("\n!! 问题 %d 条:" % len(bad))
         for b in bad:
@@ -3896,7 +3926,11 @@ def pass_c():
     # 又一个不报错的失败，2026-09-04《剩下的二九六公尺》踩到。
     up = multi = None
     auds = []
-    if len(LANGS) > 1:
+    # **只有单段片子在这里拆。** 多段的由 join.py 拆（见 join.py 的 split_tracks）——
+    # 每段都出一份 _多音轨.mp4 再从它导上传件和独立音频，是纯浪费：
+    # 一次整文件复制 + 两次 remux，而这些产物 join 之后一个都用不上。
+    # 2026-09-09 用户提的。
+    if len(LANGS) > 1 and SEG_TOTAL == 1:
         base = PREVIEW_NAME.replace("_预览.mp4", "")
         multi = os.path.join("..", "%s_多音轨.mp4" % base)
         shutil.copyfile(prev, multi)
@@ -3933,7 +3967,10 @@ def pass_c():
     print("  预览   %s   归一 + 淡出，单看这一段用这个" % prev)
     print("  字幕   %s   外挂，播放器渲染"
           % " / ".join(os.path.join("..", srt_name(l)) for l in LANGS))
-    if len(LANGS) > 1:
+    if len(LANGS) > 1 and SEG_TOTAL > 1:
+        print("  留档   本段是多音轨的 %s，**上传件和独立音频由 join.py 出**，"
+              "这里不再逐段拆" % seg)
+    if len(LANGS) > 1 and SEG_TOTAL == 1:
         print("  上传件 %s   **只有 %s 一条轨，传这个**"
               % (up, LANG_INFO[LANGS[0]]["code"]))
         for code, a in auds:
