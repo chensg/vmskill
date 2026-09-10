@@ -144,6 +144,12 @@ ENDCARD = dict(head=TITLE, sub="1816 · 无夏之年", t0=1.2, t1=99.0, y=560)
 POLARITY = "light_on_dark"
 TITLE_POLARITY = "light_on_dark"
 
+# 封面**单独**一条极性。None = 跟 TITLE_POLARITY 走。
+# 浅底封面（白墙、云天、浅灰的碟面）填 "dark_on_light" —— 白字在那种底上
+# 量出来常常只有 30~40 级，而判据是 50，收字号和挪位置都救不了。
+# 不要为此去翻 TITLE_POLARITY：它同时管尾板，尾板多半是暗底。
+COVER_POLARITY = None
+
 SCRIM_ALPHA = 0.30          # 字幕在左下，所以 scrim 压的是**底部**，不是右侧
 SCRIM_Y0, SCRIM_SOFT, SCRIM_POW = 1180, 340, 1.4
 
@@ -2724,6 +2730,8 @@ def styles_block():
            "Alignment,MarginL,MarginR,MarginV,Encoding\n" \
            + "\n".join([_style("T", 88, TITLE_POLARITY, 6),
                         _style("TS", 44, TITLE_POLARITY, 8),
+                        _style("CT", 88, COVER_POLARITY or TITLE_POLARITY, 6),
+                        _style("CTS", 44, COVER_POLARITY or TITLE_POLARITY, 8),
                         _style("M", SUB_FS, POLARITY, 2)]) + "\n"
 
 
@@ -3236,7 +3244,7 @@ def check_cover_text(shot_png, bare_png):
     a, b = gray(bare_png), gray(shot_png)
     if len(a) < W * H or len(b) < W * H:
         print("   (读不出帧，跳过封面对比度检查)"); return True
-    dark_ink = TITLE_POLARITY == "dark_on_light"
+    dark_ink = (COVER_POLARITY or TITLE_POLARITY) == "dark_on_light"
     ink = 40 if dark_ink else 242
     under = sorted(a[i] for i in range(W * H) if abs(a[i] - b[i]) > 30)
     if len(under) < 200:
@@ -3264,10 +3272,10 @@ def cover(lang=None):
     t = COVER_TEXT[lang]
     ev = []
     for txt, fs, y in t["lines"]:
-        ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,T,,0,0,0,,"
+        ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,CT,,0,0,0,,"
                   "{\\pos(%d,%d)\\fs%d}%s" % (W // 2, y, fs, txt))
     stxt, sfs, sy = t["sub"]
-    ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,TS,,0,0,0,,"
+    ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,CTS,,0,0,0,,"
               "{\\pos(%d,%d)\\fs%d}%s" % (W // 2, sy, sfs, stxt))
     with open("cover.ass", "w", encoding="utf-8-sig") as f:
         f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
