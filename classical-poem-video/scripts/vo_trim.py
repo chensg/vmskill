@@ -45,6 +45,11 @@ SPEAK_DB = -40.0    # 高于这个算在说话。**这个数要为每个音色�
                     # 沿用文档里为 zhixingnv 定的 -45 会把底噪峰当成说话。
 KEEP_HEAD = 0.06    # 说话点之前保留一点点，避免削掉爆破音的起始
 KEEP_TAIL = 0.10    # 说话止点之后保留一点，避免把尾音切秃
+MAX_CUT = 2.0       # 一条最多剪掉多少秒，超过就跳过并报警 —— 这是"检测坏了"的护栏，
+                    # 不是"这个音色的 padding 上限"。**padding 每个音色一套**：
+                    # 豆包·渊博小叔实测尾部静音 2.5~3.0s（《约翰斯敦》97 条），
+                    # 2.0 的护栏会把它整批拦下。这种时候用 --max-cut 抬护栏，
+                    # 不要去改 SPEAK_DB —— 那会让检测本身变松，是另一回事。
 
 
 SR = 44100          # 统一重采样到这个率，好让"帧数"能换算成秒
@@ -106,9 +111,14 @@ def main():
     # 原来只认 vo/，于是每支双语片都在项目里另抄一个 trim_english.py 兜着
     # （《四十二年》《巴达维亚号》各一份）—— 同一件事抄第三遍就该归位到脚本里。
     # 剪法、判据、备份规则对哪种语言都一样，不一样的只有目录。
-    if len(sys.argv) > 2:
+    if len(sys.argv) > 2 and not sys.argv[2].startswith("--"):
         VO_DIR = sys.argv[2].rstrip("/\\")
         ORIG_DIR = VO_DIR + "_orig"
+
+    global MAX_CUT
+    if "--max-cut" in sys.argv:
+        MAX_CUT = float(sys.argv[sys.argv.index("--max-cut") + 1])
+        print("** 护栏抬到 %.2fs（默认 %.2f）—— 只有在逐条量过、确认长尾是音色自带的静音时才这么做" % (MAX_CUT, 2.0))
     if not os.path.isdir(VO_DIR):
         print("没有 %s —— 先把 mp3 下载并归位（sort_downloads.py）" % VO_DIR); return 1
 
@@ -138,7 +148,7 @@ def main():
         flag = ""
         if b - a < 0.25:
             bad.append((f, "剪完只剩 %.2fs，太短，没动" % (b - a))); flag = "  !! 太短，跳过"
-        elif cut > 2.0:
+        elif cut > MAX_CUT:
             bad.append((f, "要剪掉 %.2fs，异常多，没动" % cut)); flag = "  !! 剪太多，跳过"
         print("%-12s %8.3f %8.3f %8.3f %8.3f%s" % (f, dur, a, b, cut, flag))
         if mode == "apply" and not flag:
