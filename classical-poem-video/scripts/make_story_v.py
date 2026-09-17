@@ -841,7 +841,10 @@ def shot_of(t):
 
 
 def sub_lines(txt):
-    return [p for p in txt.split(SUB_SEP) if p]
+    """按手工断行符切。**每段都要 strip**：英文稿里写成 "a ｜ b" 是自然的，
+    不 strip 的话第二行会顶着一个空格出现在 SRT 里 —— 中文稿看不出来
+    （没人在 ｜ 两边加空格），英文稿每一条都中。"""
+    return [q for q in (p.strip() for p in txt.split(SUB_SEP)) if q]
 
 
 def text_w(s):
