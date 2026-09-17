@@ -1241,6 +1241,29 @@ def selftest_moves():
     return all(ok) and len(check_moves()) == base
 
 
+def check_template_leftovers():
+    """模板里留着上一支的示例值，换片时最容易漏 —— 而且**一路都不会报错**。
+
+    《按图选人》上真的漏了：`ENDCARD` 的 sub 还是 "1816 · 无夏之年"，
+    于是一支汉代片子的片尾字卡上印着 1816。check 过了、渲染成功、
+    响度对、字幕干净，**只有抽帧用眼睛看才看得见**。
+
+    所以凡是模板自带的示例串，都在这里点名拦一次。换新模板时把
+    LEFTOVERS 换成新示例里的专名。
+    """
+    LEFTOVERS = ("1816", "无夏之年", "坦博拉", "德莱斯", "没有夏天的那一年")
+    bad = []
+    fields = [("TITLE", TITLE), ("SUBTITLE", SUBTITLE),
+              ("ENDCARD.head", str(ENDCARD.get("head", ""))),
+              ("ENDCARD.sub", str(ENDCARD.get("sub", ""))),
+              ("OUT_NAME", OUT_NAME)]
+    for name, val in fields:
+        for x in LEFTOVERS:
+            if x in val:
+                bad.append("%s 里还留着模板示例 %r（值：%r）" % (name, x, val))
+    return bad
+
+
 def check_credits():
     """素材来源与授权的登记。**只对"自己找来的"素材是硬约束。**
 
@@ -1494,6 +1517,7 @@ def check_timeline():
         warn.append("**时间轴是估算的** —— 还缺 %d 条旁白 (%s...)。"
                     "配音生成之后跑 sync 会自动重算" % (len(missing), missing[0]))
     bad += check_credits()
+    bad += check_template_leftovers()
     if not music_on():
         n = sum(1 for f, *_ in SFX if os.path.exists(os.path.join(SRC, f)))
         print("\n配乐: 无（MUSIC_MODE='none'）—— 音频是 %d 条旁白 + %d 条音效"
