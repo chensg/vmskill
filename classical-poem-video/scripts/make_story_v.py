@@ -2000,14 +2000,16 @@ def trace():
     # 外挂 SRT 时字幕由播放器渲染在它自己的底上，画面里那块区域的明暗跟可读性
     # 没有关系 —— 这一整段判据不适用。不关掉的话它会长期报一串处理不了也不该
     # 处理的告警，而**一个长期报假警的检查等于没有检查**：真出事那次也会被划过去。
+    # 外挂 SRT 时字幕由播放器渲染在它自己的底上，**"离字色 50 级"这条判据不适用**。
+    # 但**测量本身要留着**：这批数是和 measure 逐条对轴、自检**运镜落点**的唯一依据
+    # （motion 只能证明"动了"，对轴证明的是"动到了你说的位置"）。
+    # 第一版把整段 break 掉，等于顺手删了一个好检查 —— 关判据 != 关测量。
     sub_applies = (SUB_MODE != "srt")
     if not sub_applies:
         print("")
-        print("  字幕底：**不适用** —— SUB_MODE='srt'，字幕由播放器渲染，不压在画面上。")
-        print("  判据是字数上限，不是像素对比度。")
+        print("  下面这些数**不是字幕可读性判据**（SUB_MODE='srt'，字幕由播放器渲染）。")
+        print("  它们是取样点，用途只有一个：和 measure 逐条对，差 5 级以内才算运镜落点对。")
     for st, en, txt, n, _, _ in lines:
-        if not sub_applies:
-            break
         raw = gray(n)
         if raw is None:
             print("  %-24s 镜%-3d (缺图)" % (txt, n)); continue
@@ -2020,11 +2022,11 @@ def trace():
             out.append(stat(raw, b, base * fade_factor(t, total))); ys.append((b[2], b[3]))
         w = min(o[1] for o in out) if dark else max(o[1] for o in out)
         worst.append((w, txt, n))
-        flag = "" if abs(w - ink) >= 50 else "   << 不够，加 scrim 或换图"
+        flag = "" if (not sub_applies or abs(w - ink) >= 50) else "   << 不够，加 scrim 或换图"
         print("  %-24s 镜%-3d y %.3f~%.3f  " % ("".join(sub_lines(txt))[:12], n,
                                                 min(a for a, _ in ys), max(b for _, b in ys))
               + "  ".join("%3.0f/%3.0f" % o for o in out) + flag)
-    if worst:
+    if worst and sub_applies:
         m, who, n = min(worst) if dark else max(worst)
         print("\n  最差处的底 %.0f，出现在『%s』(镜 %d)，离字色 %d 差 %.0f 级 —— %s"
               % (m, "".join(sub_lines(who))[:12], n, ink, abs(m - ink),
