@@ -1822,7 +1822,9 @@ def prep():
         crop = ("crop=w='min(iw,ih/%.6f*9/16)':h='min(ih/%.6f,iw*16/9)':"
                 "x='clip(%.6f*iw-out_w/2,0,iw-out_w)':"
                 "y='clip(%.6f*ih-out_h/2,0,ih-out_h)'" % (z, z, cx, cy))
-        vf = crop + "," + GRADE + ("," + c["tweak"] if c["tweak"] else "")
+        # GRADE 为空是合法取值（"几乎不调"就是这条），但直接拼会拼出
+        # "crop=...,," -> ffmpeg 报 No such filter: ''。按段过滤，别按字符串拼。
+        vf = ",".join(x for x in (crop, GRADE, c["tweak"]) if str(x).strip())
         vf += ",scale=%d:%d:flags=lanczos,setsar=1" % PREP
         run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", vf,
              "-frames:v", "1", "img%02d.png" % i],
@@ -1995,7 +1997,17 @@ def trace():
           "差 5 级以内才算运镜对）")
     print("    " + _fade_selftest())
     worst = []
+    # 外挂 SRT 时字幕由播放器渲染在它自己的底上，画面里那块区域的明暗跟可读性
+    # 没有关系 —— 这一整段判据不适用。不关掉的话它会长期报一串处理不了也不该
+    # 处理的告警，而**一个长期报假警的检查等于没有检查**：真出事那次也会被划过去。
+    sub_applies = (SUB_MODE != "srt")
+    if not sub_applies:
+        print("")
+        print("  字幕底：**不适用** —— SUB_MODE='srt'，字幕由播放器渲染，不压在画面上。")
+        print("  判据是字数上限，不是像素对比度。")
     for st, en, txt, n, _, _ in lines:
+        if not sub_applies:
+            break
         raw = gray(n)
         if raw is None:
             print("  %-24s 镜%-3d (缺图)" % (txt, n)); continue
