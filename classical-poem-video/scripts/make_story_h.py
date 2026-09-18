@@ -13,7 +13,8 @@
   python make_story_h.py b       # 转场串成无字无声 master.mp4
   python make_story_h.py langfit # **双语时**：把英文逐句压进中文定的槽（放在 c 之前）
   python make_story_h.py c       # 旁白+音效 -> 段用成片 + SRT（每种语言一条轨）
-                                 # **预览片默认不渲**，要就 `c preview` 或 RENDER_PREVIEW=True
+                                 # 不分段：直接出成片（`SEG_NAME.mp4`），不出段用、不出预览
+                                 # 分段：出段用；`*_预览.mp4` 默认不渲，要就 `c preview`
   python make_story_h.py srt     # 只重出字幕文件（改了文案跑这个，不用重渲）
   python make_story_h.py still   # 抽静帧看画面（字幕不烧，所以这一趟只验画面）
   python make_story_h.py measure # 拿 trace 的落幅取样框复验运镜（**不再是量字幕底**）
@@ -35,7 +36,8 @@
      - FADE_IN 只给第一段、FADE_OUT 只给最后一段，中间接缝硬切。
      - 段长**向上取整到整帧**，否则 concat 会累积 A/V 漂移。
      - 出的是 `*_段用.mp4`（不归一、按 SEG_FIRST/SEG_LAST 决定淡场，给 join）。
-       另有 `*_预览.mp4`（归一 + 头尾淡场，给人看），**默认不渲** —— 见 RENDER_PREVIEW。
+       **不分段时没有段用文件也没有预览**：归一那一趟就是成片 `SEG_NAME.mp4`（见 final_name）。
+       分段时另有 `*_预览.mp4`（归一 + 头尾淡场，只为单看这一段），**默认不渲** —— 见 RENDER_PREVIEW。
        两者只差「响度归一 + 尾部淡出」，但各是一趟 crf18/preset slow 的全长编码；
        而 join.py 只吃段用文件，逐段那一份没有任何下游。**要看单段就直接开段用文件。**
   4. **CLAIMS 是全片的，不是本段的**。假说可能在第二段抛出、第五段才自拆，
@@ -88,13 +90,29 @@ SEG_INDEX, SEG_TOTAL = 1, 5
 SEG_FIRST = (SEG_INDEX == 1)       # 只有第一段有开场淡入
 SEG_LAST = (SEG_INDEX == SEG_TOTAL)  # 只有最后一段有片尾淡出，也只有它验假说自拆
 OUT_NAME = "%s_段用.mp4" % SEG_NAME       # 给 join 用：不归一
-PREVIEW_NAME = "%s_预览.mp4" % SEG_NAME   # 给人看：归一 + 头尾淡场
+PREVIEW_NAME = "%s_预览.mp4" % SEG_NAME   # **只有分段片子有这个**：给人看，默认不渲
+
+
+def final_name():
+    """交付物叫什么。**分不分段是两回事**：
+
+      分段   -> 段用文件，归一和拼接都由 join 做，这里出的是半成品。
+      不分段 -> 没有 join，所以「归一」那一趟渲出来的**就是成片**：
+                单语 `SEG_NAME.mp4`；多语 `*_多音轨.mp4`，再拆成上传件 + 独立音频。
+
+    credits 表头也要印它 —— 原来印的是段用文件名，不分段时那个文件根本不存在。
+    """
+    if SEG_TOTAL > 1:
+        return OUT_NAME
+    return ("%s_多音轨.mp4" % SEG_NAME) if len(LANGS) > 1 else ("%s.mp4" % SEG_NAME)
 # **预览片默认不渲**（2026-09-12 用户定：「一点用都没有」）。
 # 它和段用文件只差响度归一和尾部淡出，却要多跑一整趟全长编码（crf18 / preset slow，
 # 长片一段就是几十分钟），而 join.py 只读段用文件 —— 逐段预览没有任何下游。
 # 单段片子是例外：那时候没有 join，`*_预览.mp4` 就是交付物本身，不能跳。
 # 要单段预览：跑 `python make_story_h.py c preview`，或把这行改成 True。
-RENDER_PREVIEW = (SEG_TOTAL == 1)
+# 这个开关只管**分段**片子的 `*_预览.mp4`。不分段那一路渲的是成片，不受它管
+# （2026-09-19，见 pass_c 里「输出几个文件、叫什么」那段注释）。
+RENDER_PREVIEW = False
 # 字幕文件名由 srt_name(lang) 生成：中文 段一.srt，英文 段一.en.srt。
 # **这里不再定义 SRT_NAME** —— 留一个没人读的常量在这儿，
 # 迟早有人改它然后奇怪为什么文件名没变。
@@ -3297,7 +3315,7 @@ def mquality():
 
 def credits():
     """导出素材来源表。用了找来的素材时，它是交付物的一部分。"""
-    lines = ["# %s · 素材来源" % TITLE, "", "成片：%s" % OUT_NAME, "", "## 画面", ""]
+    lines = ["# %s · 素材来源" % TITLE, "", "成片：%s" % final_name(), "", "## 画面", ""]
     if IMG_SOURCE == "found":
         lines.append("| 镜 | 文件 | 类型 | 用到的段 | 作品 | 收藏/权利人 | 来源 | 授权 | 链接 |")
         lines.append("|---|---|---|---|---|---|---|---|---|")
@@ -3929,20 +3947,35 @@ def pass_c():
            "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart",
            "-r", str(FPS), "-t", "%.3f" % total]
 
-    # ---- 两个输出，别搞混 ----------------------------------------------------
-    # 段用：**不归一**。逐段归一 = 每段一个增益 = 接缝处一个响度台阶，而且不报警
-    #       （loudnorm 的整合响度带门限，各段静默比例不同就会算出不同的增益）。
-    #       归一由 join 在拼完之后做一次。淡场按 SEG_FIRST/SEG_LAST 决定，已在 pass_b 里做完。
-    # 预览：归一 + 尾部淡出，只为单看这一段。**不要拿它去拼片。**
+    # ---- 输出几个文件、叫什么，取决于**分不分段** ------------------------------
+    # 分段（SEG_TOTAL > 1）：
+    #   段用 **不归一**。逐段归一 = 每段一个增益 = 接缝处一个响度台阶，而且不报警
+    #   （loudnorm 的整合响度带门限，各段静默比例不同就会算出不同的增益）。
+    #   归一由 join 在拼完之后做一次。淡场按 SEG_FIRST/SEG_LAST 决定，已在 pass_b 里做完。
+    #   `*_预览.mp4` 只为单看这一段，**默认不渲**，不要拿它去拼片。
+    #
+    # 不分段（SEG_TOTAL == 1）：**没有 join。**
+    #   于是「归一」那一趟渲出来的**就是成片**，不是预览 —— 所以它不再叫 `*_预览.mp4`
+    #   （见 final_name）。段用文件同时也没人要了：它唯一的下游就是 join。
+    #   **那一整趟编码跳过**，`c` 因此快一倍。
+    #
+    #   2026-09-19 用户：「预览片默认不要，上次还是生成了」。上次生成的其实是成片，
+    #   只是名字长得像预览 —— 交付物是归一过的那个，段用那个没归一。
+    #   所以**能省的是段用和那个名字，归一那一趟不能省**。
+    single = (SEG_TOTAL == 1)
     seg = os.path.join("..", OUT_NAME)
-    fc = [video_chain("[0:v]", has, text=has_text)]
-    fc += ["[%d:a]aresample=48000[a_%s]" % (base + j, l) for j, l in enumerate(LANGS)]
-    run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
-        + ["-filter_complex", ";".join(fc), "-map", "[v]"] + amaps + enc + ameta + [seg],
-        "段用（**不归一**，%d 条音轨，给 join 拼片）-> %s" % (len(LANGS), seg))
+    if single:
+        print("")
+        print(">>> 不分段：**段用文件跳过**（它唯一的下游是 join）。归一那一趟就是成片。")
+    else:
+        fc = [video_chain("[0:v]", has, text=has_text)]
+        fc += ["[%d:a]aresample=48000[a_%s]" % (base + j, l) for j, l in enumerate(LANGS)]
+        run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
+            + ["-filter_complex", ";".join(fc), "-map", "[v]"] + amaps + enc + ameta + [seg],
+            "段用（**不归一**，%d 条音轨，给 join 拼片）-> %s" % (len(LANGS), seg))
 
-    prev = os.path.join("..", PREVIEW_NAME)
-    want_prev = RENDER_PREVIEW or (len(sys.argv) > 2 and sys.argv[2] == "preview")
+    prev = os.path.join("..", final_name())
+    want_prev = single or RENDER_PREVIEW or (len(sys.argv) > 2 and sys.argv[2] == "preview")
     if not want_prev:
         # 跳过的是**一整趟全长编码**，不是一个小步骤。段用文件已经出来了，
         # 单看这一段直接开它就行 —— 只是没归一、没尾部淡出。
@@ -3958,9 +3991,11 @@ def pass_c():
     if want_prev:
         run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
             + ["-filter_complex", ";".join(fcp), "-map", "[v]"] + amaps + enc + ameta + [prev],
-            "预览（归一到 %.1f LUFS + 尾部淡出，给人看）-> %s" % (TARGET_I, prev))
+            ("成片（归一到 %.1f LUFS）-> %s" if single
+             else "预览（归一到 %.1f LUFS + 尾部淡出，给人看）-> %s") % (TARGET_I, prev))
 
-    verify_tracks(seg)
+    if not single:
+        verify_tracks(seg)
     if want_prev:
         verify_tracks(prev)
 
@@ -3975,13 +4010,14 @@ def pass_c():
     # 每段都出一份 _多音轨.mp4 再从它导上传件和独立音频，是纯浪费：
     # 一次整文件复制 + 两次 remux，而这些产物 join 之后一个都用不上。
     # 2026-09-09 用户提的。
-    if len(LANGS) > 1 and SEG_TOTAL == 1:
-        # 单段多音轨要从预览拆上传件；SEG_TOTAL==1 时 RENDER_PREVIEW 恒为 True，
-        # 但万一有人手改了开关，这里要炸得明白，不要拆出一个空文件。
-        assert want_prev, "单段多音轨片必须渲预览片才能拆上传件：把 RENDER_PREVIEW 设回 True"
-        base = PREVIEW_NAME.replace("_预览.mp4", "")
-        multi = os.path.join("..", "%s_多音轨.mp4" % base)
-        shutil.copyfile(prev, multi)
+    if len(LANGS) > 1 and single:
+        # 不分段时 want_prev 恒为 True（那一趟就是成片）。万一有人手改了开关，
+        # 这里要炸得明白，不要拆出一个空文件。
+        assert want_prev, "单段多音轨片必须渲成片才能拆上传件"
+        base = SEG_NAME
+        # 归一那一趟**已经直接渲成 `*_多音轨.mp4`**（见 final_name），
+        # 不再多复制一份整文件 —— 原来那次 shutil.copyfile 是纯浪费。
+        multi = prev
         up = os.path.join("..", "%s.mp4" % base)
         run(["ffmpeg", "-y", "-v", "error", "-i", multi,
              "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
@@ -4010,18 +4046,22 @@ def pass_c():
                 print("  !! %s 音频和画面差 %.3fs —— 独立音频差一点点就是整条错位"
                       % (code, abs(_dur(a) - vd)))
 
-    print("\n完成：")
-    print("  段用   %s   **不归一**，给 join；单看这一段也开它" % seg)
-    if want_prev:
-        print("  预览   %s   归一 + 淡出" % prev)
-    else:
-        print("  预览   **没渲**（默认行为）。要归一版跑 `c preview`")
+    print("")
+    print("完成：")
+    if not single:
+        print("  段用   %s   **不归一**，给 join；单看这一段也开它" % seg)
+        if want_prev:
+            print("  预览   %s   归一 + 淡出" % prev)
+        else:
+            print("  预览   **没渲**（默认行为）。要归一版跑 `c preview`")
+    elif len(LANGS) == 1:
+        print("  成片   %s   归一到 %.1f LUFS，**这就是交付物**" % (prev, TARGET_I))
     print("  字幕   %s   外挂，播放器渲染"
           % " / ".join(os.path.join("..", srt_name(l)) for l in LANGS))
     if len(LANGS) > 1 and SEG_TOTAL > 1:
         print("  留档   本段是多音轨的 %s，**上传件和独立音频由 join.py 出**，"
               "这里不再逐段拆" % seg)
-    if len(LANGS) > 1 and SEG_TOTAL == 1:
+    if len(LANGS) > 1 and single:
         print("  上传件 %s   **只有 %s 一条轨，传这个**"
               % (up, LANG_INFO[LANGS[0]]["code"]))
         for code, a in auds:
