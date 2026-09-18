@@ -1888,21 +1888,34 @@ def check_video():
 
 
 def selftest_video():
-    """回归：造三种错各一个，检查必须报警。没有视频镜时直接算过。"""
+    """回归：造三种错各一个，检查必须报警。没有视频镜时直接算过。
+
+    **判据是「那一句话有没有出现」，不是「问题总数有没有变多」。**
+    数量判会被自己骗：注入的错误常常**替换**掉同一镜上原有的那条问题——
+    比如「余量不足 0.5s」被「ss/to 反了或相等」顶掉，总数一条没变，
+    于是自测报「检查失效了」，而失效的是自测本身。
+    （selftest_moves 早踩过同一个坑，那里的解法是换一镜；这里换镜没用，
+    因为项目常常只有一个视频镜，所以改成认错误原文。）
+    """
     if not any(is_video(i) for i in range(1, len(CLIPS) + 1)):
         return True
     print("回归自测: 视频镜 —— 段长为 0 / 没写 to / 出点超出源片，三种各造一个")
     i = next(i for i in range(1, len(CLIPS) + 1) if is_video(i))
     keep = dict(CLIPS[i - 1])
     base = len(check_video())
-    ok = []
-    CLIPS[i - 1]["to"] = keep["ss"]                     # 段长为 0
-    ok.append(len(check_video()) > base)
-    CLIPS[i - 1].update(keep); CLIPS[i - 1].pop("to")   # 没写 to
-    ok.append(len(check_video()) > base)
-    CLIPS[i - 1].update(keep); CLIPS[i - 1]["to"] = 99999
-    ok.append(len(check_video()) > base)                # 出点超出源片
-    CLIPS[i - 1].clear(); CLIPS[i - 1].update(keep)
+
+    def case(patch, drop, sig):
+        CLIPS[i - 1].clear(); CLIPS[i - 1].update(keep)
+        CLIPS[i - 1].update(patch)
+        for k in drop:
+            CLIPS[i - 1].pop(k, None)
+        hit = any(("镜 %d " % i) in b and sig in b for b in check_video())
+        CLIPS[i - 1].clear(); CLIPS[i - 1].update(keep)
+        return hit
+
+    ok = [case({"to": keep.get("ss", 0)}, (), "反了或相等"),
+          case({}, ("to",), "没写 to="),
+          case({"to": 99999}, (), "超出")]
     for nm, r in zip(("段长为 0", "没写 to", "出点超出源片"), ok):
         print("          %-14s %s" % (nm, "对" if r else "**检查失效了**"))
     print("          当前配置 %d 条 —— %s" % (base, "对" if base == 0 else "有问题要处理"))
