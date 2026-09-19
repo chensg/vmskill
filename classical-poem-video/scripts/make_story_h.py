@@ -92,6 +92,19 @@ SEG_LAST = (SEG_INDEX == SEG_TOTAL)  # 只有最后一段有片尾淡出，也�
 OUT_NAME = "%s_段用.mp4" % SEG_NAME       # 给 join 用：不归一
 PREVIEW_NAME = "%s_预览.mp4" % SEG_NAME   # **只有分段片子有这个**：给人看，默认不渲
 
+def out_dir():
+    """交付物（成片 / SRT / 封面 / 素材来源表）落在哪 —— **跟着素材在哪走**。
+
+      分段布局    项目/素材  +  项目/段N/脚本   -> SRC 指向上一级，交付物也往上一级写
+      不分段布局  项目/素材  +  项目/脚本       -> SRC 就在手边，交付物**必须写在项目里**
+
+    2026-09-19 踩到：不分段的《约翰斯敦》把 全片.mp4 / 全片.srt / 素材来源.md
+    写到了片库根目录 ani/ 去 —— 整条流水线一句警告都没有，因为 ".." 永远存在。
+    判据故意不用 SEG_TOTAL：有人可能把不分段的片子照样放在 段一/ 里。
+    """
+    return "." if os.path.dirname(os.path.abspath(SRC)) == HERE else ".."
+
+
 
 def final_name():
     """交付物叫什么。**分不分段是两回事**：
@@ -3375,7 +3388,7 @@ def credits():
                   "intellectual property rights，**It is your responsibility to check**」——"
                   "而从 Freesound 转载的条目，原始授权可能是 CC-BY（要求署名）。"
                   "署名成本为零，不署名的风险不为零。"]
-    out = os.path.join("..", "素材来源.md")
+    out = os.path.join(out_dir(), "素材来源.md")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
     print("素材来源表 -> " + out)
@@ -3756,7 +3769,7 @@ def preview(lang=None):
     parts.append("[0:v]fps=%d,format=yuv420p,subtitles=_pv.ass:fontsdir=%s[v]"
                  % (FPS, FONTS.replace("\\", "/")))
 
-    out = os.path.join("..", CHECK_NAME if lang == DEFAULT_LANG
+    out = os.path.join(out_dir(), CHECK_NAME if lang == DEFAULT_LANG
                        else CHECK_NAME.replace(".mp4", ".%s.mp4" % lang))
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(parts), "-map", "[v]", "-map", "[a]",
@@ -3800,7 +3813,7 @@ def make_srt(lang=None):
             fixed += 1
         ev.append("%d\n%s --> %s\n%s\n" % (len(ev) + 1, srt_ts(st), srt_ts(en),
                                            "\n".join(sub_lines(txt))))
-    out = os.path.join("..", srt_name(lang))
+    out = os.path.join(out_dir(), srt_name(lang))
     with open(out, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(ev))
     print("已生成 %s（%s，%d 条%s）"
@@ -3963,7 +3976,7 @@ def pass_c():
     #   只是名字长得像预览 —— 交付物是归一过的那个，段用那个没归一。
     #   所以**能省的是段用和那个名字，归一那一趟不能省**。
     single = (SEG_TOTAL == 1)
-    seg = os.path.join("..", OUT_NAME)
+    seg = os.path.join(out_dir(), OUT_NAME)
     if single:
         print("")
         print(">>> 不分段：**段用文件跳过**（它唯一的下游是 join）。归一那一趟就是成片。")
@@ -3974,7 +3987,7 @@ def pass_c():
             + ["-filter_complex", ";".join(fc), "-map", "[v]"] + amaps + enc + ameta + [seg],
             "段用（**不归一**，%d 条音轨，给 join 拼片）-> %s" % (len(LANGS), seg))
 
-    prev = os.path.join("..", final_name())
+    prev = os.path.join(out_dir(), final_name())
     want_prev = single or RENDER_PREVIEW or (len(sys.argv) > 2 and sys.argv[2] == "preview")
     if not want_prev:
         # 跳过的是**一整趟全长编码**，不是一个小步骤。段用文件已经出来了，
@@ -4018,14 +4031,14 @@ def pass_c():
         # 归一那一趟**已经直接渲成 `*_多音轨.mp4`**（见 final_name），
         # 不再多复制一份整文件 —— 原来那次 shutil.copyfile 是纯浪费。
         multi = prev
-        up = os.path.join("..", "%s.mp4" % base)
+        up = os.path.join(out_dir(), "%s.mp4" % base)
         run(["ffmpeg", "-y", "-v", "error", "-i", multi,
              "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
              "-movflags", "+faststart", up],
             "上传件：视频 + %s 一条轨（流拷贝）" % LANG_INFO[LANGS[0]]["code"])
         for jj, lg in enumerate(LANGS[1:], start=1):
             code = LANG_INFO[lg]["code"]
-            a = os.path.join("..", "%s_音轨_%s.m4a" % (base, code))
+            a = os.path.join(out_dir(), "%s_音轨_%s.m4a" % (base, code))
             run(["ffmpeg", "-y", "-v", "error", "-i", multi,
                  "-map", "0:a:%d" % jj, "-c:a", "copy", a],
                 "独立音频（%s）" % code)
@@ -4057,7 +4070,7 @@ def pass_c():
     elif len(LANGS) == 1:
         print("  成片   %s   归一到 %.1f LUFS，**这就是交付物**" % (prev, TARGET_I))
     print("  字幕   %s   外挂，播放器渲染"
-          % " / ".join(os.path.join("..", srt_name(l)) for l in LANGS))
+          % " / ".join(os.path.join(out_dir(), srt_name(l)) for l in LANGS))
     if len(LANGS) > 1 and SEG_TOTAL > 1:
         print("  留档   本段是多音轨的 %s，**上传件和独立音频由 join.py 出**，"
               "这里不再逐段拆" % seg)
@@ -4259,7 +4272,7 @@ def cover(lang=None):
     src = "img%02d.png" % COVER_FROM
     if not os.path.exists(src):
         sys.exit("!!! 缺 " + src + "，先跑 prep")
-    out = os.path.join("..", COVER_NAME if lang == DEFAULT_LANG
+    out = os.path.join(out_dir(), COVER_NAME if lang == DEFAULT_LANG
                        else COVER_NAME.replace(".png", "_%s.png" % lang))
     base = "scale=%d:%d:flags=lanczos%s" % (W, H, "," + VIGNETTE if VIGNETTE else "")
     run(["ffmpeg", "-y", "-v", "error", "-i", src,
