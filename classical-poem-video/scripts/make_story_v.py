@@ -412,6 +412,20 @@ CREDITS = {}        # {"01_xxx.png": dict(title=, holder=, source=, license=, ur
 # **上限是 PREP 不是钱包**：prep 第一步就 scale 到 PREP，源图短边超出的部分
 # 在流水线第一步就被丢掉。跑 budget 看每一镜到底要多大。
 PP_STATIC, PP_KENBURNS, PP_DETAIL = 1.00, 1.20, 1.30
+
+# **已确认接受的 pp 下限。** None = 不接受任何低于 1.0 的素材（默认）。
+#
+# pp < 1.0 是"在放大"，是缺陷，默认拦死。但有两种情况它拦不出更好的结果：
+# 生成器封顶（ChatGPT 的 9:16 只出到 941x1672）、档案馆/博物馆的原件就那么大。
+# 这时唯一的出路要么是换素材，要么是**人看过、量过，决定接受**。
+#
+# 没有这个开关的时候，接受只能靠去改判据里那个 1.0 —— 那等于把检查废掉，
+# 而且下一支还要再废一次。所以把"接受"做成一个要显式写下来的值：
+#
+#   * 填**素材的实际 pp**，不要随手填 0.8 —— 比这批更软的图仍然会报警
+#   * 它只放行 pp >= PP_ACCEPTED 的，低于照样拦
+#   * check 会把它打出来，交付时要主动说这一条是妥协
+PP_ACCEPTED = None
 DETAIL_SHOTS = set()    # 镜号(1 起)：细节就是内容的那几镜（人脸特写、图表、地图）
 
 
@@ -2279,9 +2293,10 @@ def check_resolution():
         # 从 98% 掉到 92%，是取舍不是缺陷，提示。
         # 旧的 flat "eff >= 1.5 x W" 两头都不对：对缓推镜多要一倍多的像素，
         # 对大推镜反而放行。
-        if pp < 1.0 - 1e-3:
-            bad.append("%s 最紧取景只有 %.2f 源像素/输出像素（<1.0 = 在放大，成片会软）"
-                       % (c["src"], pp))
+        floor = 1.0 if PP_ACCEPTED is None else min(1.0, PP_ACCEPTED)
+        if pp < floor - 1e-3:
+            bad.append("%s 最紧取景只有 %.2f 源像素/输出像素（<%.2f = 在放大，成片会软）"
+                       % (c["src"], pp, floor))
     if rows:
         print("")
         print("=== 素材分辨率（有效值）===")
@@ -2294,7 +2309,11 @@ def check_resolution():
         else:
             print("   SRC_NATIVE 未设 —— 按文件尺寸算。"
                   "**如果图是放大上来的，这里的数字全是假的**")
-        print("   判据：pp < 1.0 = 在放大（拦）；1.0 ~ 目标 = 顶层细节 92%~98%（提示）")
+        if PP_ACCEPTED is not None:
+            print("   ** PP_ACCEPTED=%.2f —— 低于 1.0 的素材已由人确认接受；"
+                  "低于 %.2f 的仍然拦。交付时要说这一条 **" % (PP_ACCEPTED, PP_ACCEPTED))
+        print("   判据：pp < %.2f = 在放大（拦）；1.0 ~ 目标 = 顶层细节 92%%~98%%（提示）"
+              % (1.0 if PP_ACCEPTED is None else min(1.0, PP_ACCEPTED)))
         for i, s, w, h, f, eff, pp, st, tgt in rows:
             if pp < 1.0 - 1e-3:
                 flag = "  << 在放大"
