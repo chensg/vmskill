@@ -150,7 +150,9 @@ TITLE_POLARITY = "light_on_dark"
 # 不要为此去翻 TITLE_POLARITY：它同时管尾板，尾板多半是暗底。
 COVER_POLARITY = None
 
-SCRIM_ALPHA = 0.30          # 字幕在左下，所以 scrim 压的是**底部**，不是右侧
+SCRIM_ALPHA = 0.30          # 字幕在左下，所以 scrim 压的是**底部**，不是右侧。
+                            # **只在 SUB_MODE="burn" 时生效**（见 scrim_on()）——
+                            # 外挂字幕不需要压暗带，不用再记得手动抹成 0。
 SCRIM_Y0, SCRIM_SOFT, SCRIM_POW = 1180, 340, 1.4
 
 # ================= 全局参数 =================
@@ -1370,6 +1372,34 @@ def check_mode():
     return bad
 
 
+def check_scrim():
+    """守住 scrim_on() 那条守卫**本身**。
+
+    这条守卫没有症状：把它拿掉，外挂字幕的片子会重新被白白压暗画面下三分之一，
+    而全套检查一条都不会报 —— 成片只是"有点闷"。所以两头都钉一次：
+    只测"外挂时关掉"的话，把 scrim_on 写成 `return False` 也能过，
+    那会把烧录字幕的片子推进另一个坑（白字糊在亮底上）。
+    """
+    bad = []
+    save = (globals()["SUB_MODE"], globals()["SCRIM_ALPHA"])
+    try:
+        globals()["SUB_MODE"], globals()["SCRIM_ALPHA"] = "srt", 0.30
+        if scrim_on():
+            bad.append("scrim_on() 在 SUB_MODE='srt' 下返回真 —— 外挂字幕由播放器渲染，"
+                       "压暗带没有保护对象，留着只会白白压暗画面下三分之一。")
+        globals()["SUB_MODE"] = "burn"
+        if not scrim_on():
+            bad.append("scrim_on() 在 SUB_MODE='burn' + SCRIM_ALPHA=0.30 下返回假 —— "
+                       "烧录字幕没有压暗带，近白的字会糊在亮底上。")
+    finally:
+        globals()["SUB_MODE"], globals()["SCRIM_ALPHA"] = save
+    if SCRIM_ALPHA > 0 and SUB_MODE != "burn":
+        bad.append("SCRIM_ALPHA=%.2f 但 SUB_MODE=%r —— scrim_on() 已经把它挡掉了，"
+                   "配置里请写成 0.0，别让下一个人以为画面底部压过一档。"
+                   % (SCRIM_ALPHA, SUB_MODE))
+    return bad
+
+
 def check_langs(quiet=False):
     """多音轨的自检。四件事，都是「单看中文那条轨完全正常」的那一类：
 
@@ -1507,6 +1537,7 @@ def check_timeline():
     bad += check_claims()
     bad += check_pace()
     bad += check_mode()
+    bad += check_scrim()
     bad += check_subs()
     bad += check_safe()
     bad += check_langs()
@@ -1918,6 +1949,24 @@ def vig_factor(x0, x1, y0, y1):
     return (sum(v) / len(v)) / ctr
 
 
+def scrim_on():
+    """这一支到底要不要那层底部压暗。**唯一的判据，别在别处再判一次。**
+
+    scrim 只为**烧录**正文字幕服务 —— 它的活是把字幕带底下的画面压暗，
+    让近白的字在亮底上仍然读得出来。`SUB_MODE="srt"` 时字幕由播放器渲染
+    （自带描边/底），这层压暗**保护不了任何东西**，只是白白把画面下三分之一
+    压暗 SCRIM_ALPHA。尾板也不归它管（ENDCARD 在 y≈560，scrim 从 SCRIM_Y0
+    才起步），所以"留着给尾板垫底"也不成立。
+
+    《瓶子裡的金子》(2026-09-21) 踩到：外挂字幕 + SCRIM_ALPHA=0.30，成片暗部
+    （<16）面积 22.7%，而 prep 之后的素材只有 3.3% —— 多出来的全是这层没人
+    需要的压暗。在这之前，每支外挂字幕的片子都得**记得**手动把 SCRIM_ALPHA
+    抹成 0，忘了不报错、画面只是"有点闷"，而偏暗正好是这条流水线的老毛病，
+    藏得住。**所以判据写进脚本，不留成纪律。**
+    """
+    return SCRIM_ALPHA > 0 and SUB_MODE == "burn"
+
+
 def scrim_factor(x0, x1, y0, y1):
     """pass_c 里那层 scrim 对画面上某矩形的平均透过率（1.0 = 没压）。
 
@@ -1928,7 +1977,7 @@ def scrim_factor(x0, x1, y0, y1):
 
     做法同样是拿一张纯灰跑一遍真正的合成，按画心归一，改参数自动跟着变。
     """
-    if SCRIM_ALPHA <= 0:
+    if not scrim_on():
         return 1.0
     if "map" not in _SCRIM_CACHE:
         if not os.path.exists("scrim.png"):
@@ -2998,8 +3047,12 @@ def make_srt(lang=None):
 
 
 def make_scrim():
-    """字幕在**左下**，所以 scrim 压的是底部，不是诗片的右侧。"""
-    if SCRIM_ALPHA <= 0:
+    """字幕在**左下**，所以 scrim 压的是底部，不是诗片的右侧。
+
+    要不要叠由 scrim_on() 说了算 —— pass_c / still / measure / scrim_factor
+    四处都调这个函数，守卫写在这里才不会四处走样。
+    """
+    if not scrim_on():
         return False
     c = "white" if POLARITY == "dark_on_light" else "black"
     v = "255" if c == "white" else "0"

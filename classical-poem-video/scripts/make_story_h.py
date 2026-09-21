@@ -263,7 +263,7 @@ COVER_POLARITY = None
 
 # scrim 原本是为烧录字幕压底的。**字幕外挂之后它没有用途了** —— 叠一条压暗带
 # 只会让画面脏一档，而且 trace/measure 两边都要跟着建模它（那是三只脚的坑）。
-# 一律关掉。要开就得同时补 scrim_factor() 和 measure 的抽帧叠回。
+# **横版恒关，由 scrim_on() 保证**，下面这个值设了也不生效（check_scrim 会说）。
 SCRIM_ALPHA = 0.0
 SCRIM_Y0, SCRIM_SOFT, SCRIM_POW = 900, 260, 1.4
 
@@ -1953,6 +1953,28 @@ def selftest_video():
     return all(ok) and len(check_video()) == base
 
 
+def check_scrim():
+    """守住 scrim_on() 那条守卫**本身**，外加"设了也没用"要说出来。
+
+    没有这条自检，守卫被拿掉不会有任何症状：画面只是"有点闷"，
+    而偏暗是这条流水线的长期毛病，正好藏得住。
+    """
+    bad = []
+    save = globals()["SCRIM_ALPHA"]
+    try:
+        globals()["SCRIM_ALPHA"] = 0.30
+        if scrim_on():
+            bad.append("scrim_on() 在横版返回真 —— 横版正文字幕一律外挂"
+                       "（make_ass 只烧标题卡和尾板），压暗带没有保护对象。")
+    finally:
+        globals()["SCRIM_ALPHA"] = save
+    if SCRIM_ALPHA > 0:
+        bad.append("SCRIM_ALPHA=%.2f 在横版会被忽略（scrim_on() 恒假）。想压暗画面"
+                   "底部请走 GRADE 或 VIGNETTE，别指望这个 —— 它不建模进 trace。"
+                   % SCRIM_ALPHA)
+    return bad
+
+
 def check_moves():
     bad = []
     for i, s in enumerate(SHOTS, 1):
@@ -2209,6 +2231,7 @@ def check_timeline():
     bad += check_reuse()
     bad += check_xfades()
     bad += check_moves()
+    bad += check_scrim()
     bad += check_video()
     bad += check_resolution()
     bad += check_coldopen(lines)
@@ -2595,6 +2618,23 @@ def vig_factor(x0, x1, y0, y1):
     return (sum(v) / len(v)) / ctr
 
 
+def scrim_on():
+    """横版**永远**不要那层底部压暗。**唯一的判据，别在别处再判一次。**
+
+    scrim 只为烧录正文字幕服务（把字幕带底下压暗，让近白的字在亮底上读得出来），
+    而横版这条模板的正文字幕**一律外挂** —— make_ass 只烧标题字卡和尾板，
+    两者都在画面中上部，压不到。所以这层压暗在这里永远没有保护对象。
+
+    竖版 make_story_v.py 的同名函数判的是 `SUB_MODE == "burn"`，那边两种都跑。
+    这边没有 SUB_MODE 这个开关，因为横版没有"烧正文"那一路。
+
+    原来靠 `SCRIM_ALPHA = 0.0` 这个配置值来关。《瓶子裡的金子》(2026-09-21) 证明
+    那不够：竖版那支忘了抹，pass_c 无条件叠了上去，成片暗部（<16）面积 22.7%
+    对素材侧的 3.3%，全套检查一条都没报。**判据要写进脚本，不能留成纪律。**
+    """
+    return False
+
+
 def scrim_factor(x0, x1, y0, y1):
     """pass_c 里那层 scrim 对画面上某矩形的平均透过率（1.0 = 没压）。
 
@@ -2605,7 +2645,7 @@ def scrim_factor(x0, x1, y0, y1):
 
     做法同样是拿一张纯灰跑一遍真正的合成，按画心归一，改参数自动跟着变。
     """
-    if SCRIM_ALPHA <= 0:
+    if not scrim_on():
         return 1.0
     if "map" not in _SCRIM_CACHE:
         if not os.path.exists("scrim.png"):
@@ -3862,8 +3902,12 @@ def make_ass():
 
 
 def make_scrim():
-    """字幕在**左下**，所以 scrim 压的是底部，不是诗片的右侧。"""
-    if SCRIM_ALPHA <= 0:
+    """字幕在**左下**，所以 scrim 压的是底部，不是诗片的右侧。
+
+    横版恒不叠（见 scrim_on()）。函数留着是为了和竖版那条模板同形，
+    也为了 pass_c / still / measure / scrim_factor 四处调用点不用各写一遍判断。
+    """
+    if not scrim_on():
         return False
     c = "white" if POLARITY == "dark_on_light" else "black"
     v = "255" if c == "white" else "0"
