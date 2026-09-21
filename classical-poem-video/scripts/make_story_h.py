@@ -2077,6 +2077,19 @@ def check_credits():
                 miss = [k2 for k2 in need if not str(e.get(k2, "")).strip()]
                 if miss:
                     bad.append("素材 %s 的来源登记缺 %s" % (k, "/".join(miss)))
+    if IMG_SOURCE == "generated" and CREDITS:
+        # 混用是常态，登记了就要登记全、而且要真的用在片子里 ——
+        # 登记一个没人用的文件名等于没登记，而那正是最容易发生的写错方式。
+        used = set(clip_key(c) for c in CLIPS)
+        for k in sorted(CREDITS):
+            e = CREDITS[k]
+            if k not in used:
+                bad.append("CREDITS 里登记了 %s，但没有任何一镜用它 —— "
+                           "文件名写错了？这条登记不会出现在素材来源表里。" % k)
+                continue
+            miss = [k2 for k2 in need if not str(e.get(k2, "")).strip()]
+            if miss:
+                bad.append("素材 %s 的来源登记缺 %s" % (k, "/".join(miss)))
     if MUSIC_MODE not in ("generated", "public_domain", "library", "none"):
         bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'library' / 'none'"
                    % MUSIC_MODE)
@@ -2120,9 +2133,22 @@ def selftest_credits():
     b = len(check_credits()) > base_m
     MUSIC_MODE, MUSIC_CREDIT = km, kmc
 
+    # 第三条：**混用**。生成图里掺一张真档案，登记齐全 ——
+    # 交付物里必须出现它。判据只能看 credits() 的**输出**：
+    # 旧版这种配置下 check 一条都不报（它确实没错），错的是写出去的那份文件。
+    IMG_SOURCE = "generated"
+    CREDITS = {clip_key(CLIPS[0]): dict(title="T", holder="H", source="S",
+                                        license="CC BY 4.0", url="U")}
+    txt = "\n".join(credits(dry=True))
+    c_ok = (clip_key(CLIPS[0]) in txt and "CC BY 4.0" in txt
+            and "无第三方权利" not in txt.split("## 配乐")[0])
+    IMG_SOURCE, CREDITS = ki, kc
+
     print("回归自测: 素材标 found 但没登记来源 —— %s" % ("对" if a else "**检查失效了**"))
     print("          配乐标 public_domain 但没填授权 —— %s" % ("对" if b else "**检查失效了**"))
-    return a and b
+    print("          生成图里掺了登记过的真档案 —— %s"
+          % ("对" if c_ok else "**登记没写进素材来源表**"))
+    return a and b and c_ok
 
 
 def check_endcard():
@@ -3366,8 +3392,12 @@ def mquality():
     print("   多留一条候选、把最终选择交回用户，比自己拍板诚实。")
 
 
-def credits():
-    """导出素材来源表。用了找来的素材时，它是交付物的一部分。"""
+def credits(dry=False):
+    """导出素材来源表。用了找来的素材时，它是交付物的一部分。
+
+    `dry=True` 只返回行、不落盘 —— selftest_credits() 要**看输出**才验得了
+    "登记了有没有真的写进去"，光数 check 的条数看不出来。
+    """
     lines = ["# %s · 素材来源" % TITLE, "", "成片：%s" % final_name(), "", "## 画面", ""]
     if IMG_SOURCE == "found":
         lines.append("| 镜 | 文件 | 类型 | 用到的段 | 作品 | 收藏/权利人 | 来源 | 授权 | 链接 |")
@@ -3382,7 +3412,35 @@ def credits():
                             e.get("source", "**缺**"), e.get("license", "**缺**"),
                             e.get("url", "**缺**")))
     else:
-        lines.append("按出图任务书生成（IMG_SOURCE='generated'），无第三方权利。")
+        # **不能一句"全部生成"带过。** IMG_SOURCE 是全片一个值，而"二十几张生成图
+        # + 几张真档案"是讲述片的常态；那几张的登记就写在同一个脚本的 CREDITS 里。
+        # 旧版只在 IMG_SOURCE=="found" 时读 CREDITS，于是**登记了也等于没登记**，
+        # 交付物里断言"无第三方权利"。《瓶子裡的金子》(2026-09-21) 就这么交过一版：
+        # 4 张 Commons 档案照，其中镜 7 是 **CC BY 4.0**，署名是硬要求。
+        # 这是下面音效那条注释说的同一个坑的第二只脚。
+        seen, reg = set(), []
+        for c in CLIPS:
+            k = clip_key(c)
+            if k in seen:
+                continue
+            seen.add(k)
+            if k in CREDITS:
+                reg.append((k, c))
+        if not reg:
+            lines.append("按出图任务书生成（IMG_SOURCE='generated'），无第三方权利。")
+        else:
+            lines.append("%d 份素材按出图任务书生成，其中 **%d 份来自第三方**，"
+                         "逐条登记如下。" % (len(seen) - len(reg), len(reg)))
+            lines += ["", "| 文件 | 类型 | 用到的段 | 作品 | 收藏/权利人 | 来源 | 授权 | 链接 |",
+                      "|---|---|---|---|---|---|---|---|"]
+            for k, c in reg:
+                e = CREDITS[k]
+                seg = ("%s–%s" % (c.get("ss"), c.get("to"))) if c.get("video") else "—"
+                lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |"
+                             % (k, "视频" if c.get("video") else "静图", seg,
+                                e.get("title", "**缺**"), e.get("holder", "**缺**"),
+                                e.get("source", "**缺**"), e.get("license", "**缺**"),
+                                e.get("url", "**缺**")))
     lines += ["", "## 配乐", ""]
     if not music_on():
         lines.append("无背景音乐（MUSIC_MODE='none'）。")
@@ -3428,6 +3486,8 @@ def credits():
                   "intellectual property rights，**It is your responsibility to check**」——"
                   "而从 Freesound 转载的条目，原始授权可能是 CC-BY（要求署名）。"
                   "署名成本为零，不署名的风险不为零。"]
+    if dry:
+        return lines
     out = os.path.join(out_dir(), "素材来源.md")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
