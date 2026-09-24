@@ -87,9 +87,8 @@ python make_v.py motion    # 量每镜首尾帧差（运镜 ≥4.0，静帧 ≤0
 python make_v.py cover     # 封面
 ```
 
-横版换 `make_h.py`。**但它是旧模板**，缺 `check_safe`/`vig_factor`/`FLIP_SHOTS`/
-目标响度音效/粒子层/`pick`/`GRAIN`/`check_paper`/MV 模式——做横版前要么先移植，要么心里有数。
-（另：`make_h.py` 不带参数直接跑的是 `check`，不是打印帮助，和 `make_v.py` 不一样。）
+诗词只做竖版。横版诗词模板 `make_h.py` 2026-09-25 退役（一直是旧模板，缺安全区、
+暗角建模、极性翻转、粒子层、`pick`、素材来源表）；真要横版时从 `make_v.py` 移植。
 
 ### 讲述模式（历史小故事 / 冷知识 / 荐书）
 
@@ -308,8 +307,8 @@ assert want == got, "对不上！缺 %s，多 %s" % (sorted(want - got), sorted(
 | `Fontconfig error` + Segmentation fault | 在 bash 里跑了带 drawtext 的 ffmpeg，换 PowerShell |
 | `UnicodeEncodeError: cp1252` | 临时 `python -c` 缺 `PYTHONIOENCODING=utf-8` |
 | 字幕字体不对 | `FONTS` 三个候选目录都没有 `simkai.ttf` |
-| `!! 缺素材: imgNN.png` | 文件名要正好是 `img01.png` 这种；`make_v` 报提示、`make_h` 报错误 |
-| `MUSIC_MODE='song' 不认识` | 只有 `make_v.py` 支持 MV；另外三个模板没有 |
+| `!! 缺素材: imgNN.png` | 文件名要正好是 `img01.png` 这种 |
+| `MUSIC_MODE='song' 不认识` | 只有 `make_v.py` 支持 MV；两个讲述模板没有 |
 | `pick` 拒跑 | MV 模式没有切入点可挑，正常 |
 | 检查全绿但成片难看 | 见下 |
 
@@ -367,3 +366,21 @@ python lyric_sync.py proof # 听一遍
 2. **等待条件要按日志里的完成标记判，不要按"有没有 ffmpeg 进程"判。**
    `b` 结束到 `c` 启动之间有个空隙，按进程判会在那个空隙里误判成全部结束
    （这个也踩了，就在同一次里）。
+
+---
+
+<!-- 2026-09-25 从 SKILL.md 原样搬来 -->
+
+## 附：ChatCut 在 Codex 里
+
+上面就是完整的操作说明 —— 装在哪、怎么触发、三种模式各自的
+命令序列、Windows 上两个 shell 的分工、长渲染怎么后台跑、报错对照表。
+第一次在 Codex 上开工先读它。下面只留几条和 ChatCut 相关的：
+
+- ChatCut 相关的技能在 Codex 里叫 `chatcut-plugin-basics`（不是 `-claude` 那个），
+  配乐用 `music` 技能、音效和 TTS 用 `voice` 技能
+- 需要结构化提问时 Codex 用 `ask_followup_questions`
+- 生成任务一律 `submit_*` 拿 jobId，再用 `track_progress` 等；
+  **非终态时不要忙轮询**，按它给的 `checkBackAfterSeconds` 睡一次再查一次
+- 本地 `ffmpeg` / `ffprobe` 是这条流水线的主力，**成片就是本地合成的**，
+  ChatCut 项目只用来生成音频素材

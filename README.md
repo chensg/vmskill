@@ -7,7 +7,7 @@
 
 | | 做什么 | 时间轴由什么定 | 字幕 | 脚本 |
 |---|---|---|---|---|
-| **诗词模式** | 一首古诗词，一句一镜，片尾竖排诗文页 | 字数 × 0.45 + 1.8 的可读下限 | 竖排、右侧、楷体 | `make_v.py` / `make_h.py` |
+| **诗词模式** | 一首古诗词，一句一镜，片尾竖排诗文页 | 字数 × 0.45 + 1.8 的可读下限 | 竖排、右侧、楷体 | `make_v.py`（只做竖版） |
 | **讲述模式** | 历史小故事 / 冷知识 / 科普 / **荐书** | 旁白实测时长（`sync` 量完自动推） | 横排、左下、黑体 | `make_story_v.py`（竖）/ `make_story_h.py`（横，分段） |
 | **MV 模式** | 一条带演唱的成品歌 + 一份歌词 | **锁死等于歌长**，换镜只能落在句间空档 | 跟着唱腔走 | `lyric_sync.py` → `make_v.py` |
 | **小说第一人称** | 公版小说连载，书里一个角色自述 | 一集 600s ± 60，一集一个完整故事 | 外挂 SRT | `make_story_h.py` + `join.py` |
@@ -102,7 +102,7 @@ python make_story_v.py cover    # 封面
 python publish.py new 片名      # 交付物之一：发布文案
 ```
 
-诗词模式把 `make_story_v.py` 换成 `make_v.py`（竖版）或 `make_h.py`（横版），
+诗词模式把 `make_story_v.py` 换成 `make_v.py`（只做竖版，横版模板已退役），
 去掉 `sync` / `vo_trim` / 两道门禁。分段长片和小说连载走 `make_story_h.py`
 一幕一个段目录，最后 `python join.py 段一 段二 ...` 拼全片。
 
@@ -127,16 +127,23 @@ copy 过去改内容块就能用。
 
 **主文档**
 
-- `SKILL.md` — 所有判据和它们的来历
+- `SKILL.md` — 总纲：选模式、三条轴、必须量的四件事（摘要）、四趟渲染、交付，以及「什么时候读哪份 reference」那张表。2026-09-25 从 93KB 拆到 24KB，其余原样搬进 references/
 
 **参考（按需读，不用全读）**
 
 - `references/storytelling.md` — 讲述模式独有的：出图前两道门禁（〇）、事实分级（一）、
   旁白气口与语速（二）、横排字幕避操作栏（三）、镜数与节奏（四）、侧链躲闪（五）、
   **荐书子型**（七）、**旁白 TTS 完整配置与去 AI 味**（八）、**小说第一人称模式**（九）
+- `references/measuring.md` — 四件必须量的事：运镜行程与缩放、`probe`/`trace`/`measure` 三级实测、
+  两边建模同一条流水线、字幕在真实成片上验
+- `references/visuals.md` — 静帧模式、视频镜、素材分辨率门槛与 `budget`
+- `references/style.md` — 画种与字幕极性（会反转）、调色的判据是直方图
+- `references/bilingual.md` — 双语音轨：时间轴归中文、`langfit`、竖版先切 `SUB_MODE`
+- `references/poem.md` — 诗词模式：开工前五件事、时间轴、诵读、粒子层、竖排字幕安全区
+- `references/mv.md` — MV：带演唱的成品歌怎么对轴、换镜余地
 - `references/sourcing.md` — 找图与生成图：五个画种的共用风格前缀、暗调写实的"留暗"
   怎么写、`IMG_SOURCE='found'` 那一路怎么走、验证纪律
-- `references/music.md` — 配乐四种来源：查库 / 生成 / 公版 / 不要。录音权与作品权的区别、
+- `references/music.md` — 配乐四种来源：查库 / 生成 / 公版 / 不要；片长倒推与 maximin 切入点；音效目标响度。录音权与作品权的区别、
   公版录音怎么量、没有音乐时归一化为什么要换策略
 - `references/publishing.md` — 发布文案：标题在各平台被切在第几个字；标题不能剧透第三幕；双语片必须有英文那一块
 - `references/checklist.md` — 开工到交付的逐项检查表，含所有硬性数值
@@ -145,7 +152,7 @@ copy 过去改内容块就能用。
 
 **构建脚本**
 
-- `scripts/make_v.py` / `make_h.py` — 诗词模式 竖版 / 横版。横版**还是旧模板**，缺几样检查
+- `scripts/make_v.py` — 诗词模式竖版 / MV（横版诗词模板 `make_h.py` 2026-09-25 退役）
 - `scripts/make_story_v.py` — 讲述模式 竖版，多 `sync`（量旁白）、`vofit`（压进平台硬线）、
   `motion`（验运镜）
 - `scripts/make_story_h.py` — 讲述模式 横版**分段**，字幕外挂不烧录。长片与小说连载走它
@@ -161,3 +168,7 @@ copy 过去改内容块就能用。
 - `scripts/music_index.py` / `sfx_index.py` — 素材库登记与检索（库本身不在仓库里）
 - `scripts/sort_downloads.py` — 把浏览器下载的一堆文件归到脚本要找的位置
 - `agents/openai.yaml` — Codex 的技能界面配置
+
+**回归测试**（仓库根，不随技能安装）
+
+- `tests/test_intermediates.py` — 中间件对账 / 并行 a / credits 备份 / 交付物目录守卫，逐条把被检查的东西弄坏、验它报警
