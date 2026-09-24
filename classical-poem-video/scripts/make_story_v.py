@@ -35,11 +35,14 @@
   SUB_MODE    字幕**烧进画面**（抖音/小红书）还是**外挂 SRT**（YouTube Shorts）——
               这一条决定这支片子能不能做双语：烧了字就只能是中文版
 """
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -438,6 +441,274 @@ def run(args, desc):
         sys.exit("!!! 失败: " + desc)
 
 
+# ================= 中间件对账：过期的 img / shot 不许往下游走 =================
+# 下面三种事故都是**静默**的 —— 每镜单看都正常、退出码 0 —— 全部真踩过：
+#   1. 改了镜数（中间插一镜）没重跑 prep：imgNN 还是旧 CLIPS 的产物，插入点之后
+#      画面和旁白整体错一格（2026-09-16《他說他看反了羅盤》）。prep 遇到缺图只打
+#      「跳过」、上一轮的同名 imgNN 照样被 a 拿去渲，是同一个洞。
+#   2. 渲到一半被打断：shots/ 里留下 48 字节的 shotNN.mp4，名字对，b 照样拼进去
+#      （2026-09-21）。
+#   3. 改了 XF 或旁白（镜长跟着变）没重跑 a：旧 shot 长度不对，b 照样拼，
+#      后面的转场整体错位。
+# 所以 prep / a 每做完一件中间件就记一笔「按什么输入做的」，下游用之前先对账，
+# 对不上就停。顺带让 a **只补过期的那几镜**，并且多进程并行 —— 串行的 a 在 70 镜的
+# 横版上要 4 个多小时（zoompan 单线程，四核闲三核；2026-09-24《人工肾》）。
+
+PREP_KEYS = "prep_keys.json"
+# a 并行渲几镜。zoompan 单线程，按核数开、留一核给系统。
+# 想看 -stats 进度或内存吃紧时跑 `a 1`。
+JOBS = max(1, min(3, (os.cpu_count() or 2) - 1))
+
+
+def _sig(path):
+    """文件签名：大小 + 修改时间。不读内容 —— 素材动辄几百 MB。"""
+    try:
+        st = os.stat(path)
+        return [st.st_size, st.st_mtime_ns]
+    except OSError:
+        return None
+
+
+def _key(*parts):
+    raw = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _prep_keys():
+    try:
+        with open(PREP_KEYS, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _set_prep_key(i, key):
+    keys = _prep_keys()
+    if key is None:
+        keys.pop(str(i), None)
+    else:
+        keys[str(i)] = key
+    with open(PREP_KEYS, "w", encoding="utf-8") as f:
+        json.dump(keys, f, indent=1, sort_keys=True)
+
+
+def stale_prep():
+    """哪些镜的 imgNN 不是按**现在的** CLIPS 第 N 条做出来的。空 = 全对得上。"""
+    keys = _prep_keys()
+    return [i for i, c in enumerate(CLIPS, 1) if keys.get(str(i)) != prep_key(i, c)]
+
+
+def shot_path(i):
+    return os.path.join("shots", "shot%02d.mp4" % i)
+
+
+def _shot_keyfile(i):
+    return os.path.join("shots", "shot%02d.key" % i)
+
+
+def media_dur(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", path], capture_output=True, text=True)
+    try:
+        return float(r.stdout.strip())
+    except ValueError:
+        return None
+
+
+def shot_key(i, argv):
+    return _key("shot", argv, prep_key(i, CLIPS[i - 1]))
+
+
+def shot_problem(i, dur, key):
+    """shots/shotNN.mp4 能不能拿去拼。能 -> None；不能 -> 一句原因。
+
+    印记是主判据（整条 ffmpeg 命令 + 这一镜 prep 的输入）；时长是第二道保险，
+    容差 2 帧 —— 2026-09-24《人工肾》70 镜实测，正常渲出来的 shot 和时间轴镜长
+    最多差 1.1 帧（0.037s @30fps）。
+    """
+    p = shot_path(i)
+    if not os.path.exists(p):
+        return "没渲"
+    try:
+        with open(_shot_keyfile(i), encoding="utf-8") as f:
+            got = f.read().strip()
+    except OSError:
+        got = None
+    if got is None:
+        return "没有印记（渲到一半被打断过，或者是旧版脚本渲的）"
+    if got != key:
+        return "不是按现在的参数渲的（改过运镜 / 镜长 / 转场 / prep 之后没重跑 a）"
+    d = media_dur(p)
+    if d is None:
+        return "读不出时长（文件坏了）"
+    if abs(d - dur) > 2.0 / FPS:
+        return "时长 %.3fs，时间轴要 %.3fs" % (d, dur)
+    return None
+
+
+def _drop_key(i):
+    try:
+        os.remove(_shot_keyfile(i))
+    except OSError:
+        pass
+
+
+def _stamp(i, key, dur):
+    """渲完盖印记，然后立刻按 shot_problem 复核一遍；复核不过就把印记撕掉。"""
+    with open(_shot_keyfile(i), "w", encoding="utf-8") as f:
+        f.write(key)
+    why = shot_problem(i, dur, key)
+    if why:
+        _drop_key(i)
+    return why
+
+
+def pass_a(jobs=None, force=False):
+    """每镜做运镜或静帧 -> shots/。**只渲过期的镜**：`a force` 全部重渲，`a 1` 串行。"""
+    durs = timeline()[1]
+    stale = stale_prep()
+    if stale:
+        sys.exit("!!! 镜 %s 的 imgNN 不是按现在的 CLIPS 做的 —— 改过镜数 / 裁切 / 调色 / "
+                 "换过图，或者 prep 那一镜因为缺图跳过了。先跑 prep。"
+                 % "/".join(map(str, stale)))
+    os.makedirs("shots", exist_ok=True)
+    todo = []
+    for i in range(1, len(SHOTS) + 1):
+        argv, desc, warn = shot_cmd(i, durs[i - 1])
+        if warn:
+            print(warn)
+        key = shot_key(i, argv)
+        if force or shot_problem(i, durs[i - 1], key):
+            todo.append((i, argv, desc, key))
+    if len(todo) < len(SHOTS):
+        print("\n%d 镜已是最新，跳过%s" % (len(SHOTS) - len(todo),
+                                         "" if todo else " —— 全部都是，这一趟不用渲"))
+    if not todo:
+        return
+    jobs = JOBS if jobs is None else max(1, jobs)
+    if jobs == 1 or len(todo) == 1:
+        for i, argv, desc, key in todo:
+            _drop_key(i)            # 先撕印记：渲到一半被打断，残文件就对不上账
+            run(argv[:1] + ["-stats"] + argv[1:], desc)
+            why = _stamp(i, key, durs[i - 1])
+            if why:
+                sys.exit("!!! 镜 %d 渲完了却对不上账：%s" % (i, why))
+        return
+    todo.sort(key=lambda t: (is_static(t[0]), -durs[t[0] - 1]))   # 慢的先开，免得拖尾
+    _render_parallel(todo, jobs, durs)
+
+
+def _render_parallel(todo, jobs, durs):
+    """多进程渲 shots。子进程 stderr **写文件，不接管道** —— 管道写满 ffmpeg 就挂住，
+    而且零报错（2026-09-24《人工肾》三个视频镜这样卡了两小时）。"""
+    print("\n>>> 并行渲 %d 镜，%d 路（想串行看进度：`a 1`）" % (len(todo), jobs))
+    queue, running, failed = list(todo), [], []
+    t0 = time.time()
+    try:
+        while queue or running:
+            while queue and len(running) < jobs:
+                i, argv, desc, key = queue.pop(0)
+                _drop_key(i)
+                log = open(os.path.join("shots", "_err%02d.log" % i), "wb")
+                running.append((i, key, desc, log, subprocess.Popen(
+                    argv, stdout=subprocess.DEVNULL, stderr=log)))
+            time.sleep(0.5)
+            for r in list(running):
+                i, key, desc, log, p = r
+                if p.poll() is None:
+                    continue
+                running.remove(r)
+                log.close()                     # Windows 下不关句柄就删不掉
+                lp = os.path.join("shots", "_err%02d.log" % i)
+                why = (("ffmpeg 退出码 %d" % p.returncode) if p.returncode
+                       else _stamp(i, key, durs[i - 1]))
+                if why:
+                    with open(lp, "rb") as f:
+                        err = f.read().decode("utf-8", "replace").strip()[-300:]
+                    failed.append(i)
+                    print("   !! %s —— %s%s" % (desc, why, ("\n      " + err) if err else ""))
+                else:
+                    os.remove(lp)
+                    print("   ok %s  (%.1f min)" % (desc, (time.time() - t0) / 60))
+    finally:
+        for i, key, desc, log, p in running:    # Ctrl-C / 出错：别留下还在写文件的孤儿进程
+            p.kill()
+            p.wait()
+            log.close()
+    if failed:
+        sys.exit("!!! 镜 %s 没渲成，日志在 shots/_errNN.log"
+                 % "/".join(map(str, sorted(failed))))
+    print("   %d 镜并行渲完  %.1f min" % (len(todo), (time.time() - t0) / 60))
+
+
+def check_shots(durs):
+    """b 之前：每个 shots/shotNN.mp4 都按现在的参数渲过、时长对得上。"""
+    bad = []
+    for i in range(1, len(SHOTS) + 1):
+        why = shot_problem(i, durs[i - 1], shot_key(i, shot_cmd(i, durs[i - 1])[0]))
+        if why:
+            bad.append("镜%d %s" % (i, why))
+    if bad:
+        sys.exit("!!! 这些镜的 shots 不能拿去拼：\n    %s\n    —— 先跑 a（只会补这几镜）"
+                 % "\n    ".join(bad))
+
+
+GEN_MARK = ("<!-- 自动生成 sha1=%s ：手写内容别写在这份里，重跑会整份重写"
+            "（被改过的会先备份成 .bak-时间戳） -->")
+
+
+def write_generated(path, lines):
+    """整份重写一个**自动生成**的交付物，但先确认它没被人手改过。
+
+    `credits` 原来直接覆盖 素材来源.md，不提示、不备份 —— 2026-09-02 被吃过一次：
+    配乐铺法、抽帧处理、调色决定都手写在那份里，重跑一次全没了。
+    现在末尾带一行正文指纹。重写前对一下：对得上 = 没人动过，直接盖；
+    对不上、没有指纹、或指纹后面还有字（被手改过 / 旧版脚本生成的）= 先备份再写，
+    并大声说出来。**不拦** —— 拦了只会逼人手工删掉它，一样丢。
+    """
+    body = "\n".join(lines) + "\n"
+    if os.path.exists(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            old = f.read()
+        m = re.search(r"<!-- 自动生成 sha1=([0-9a-f]+)", old)
+        pristine = old == body or bool(
+            m and hashlib.sha1(old[:m.start()].encode("utf-8")).hexdigest()[:12] == m.group(1)
+            and old.rstrip() == (old[:m.start()] + GEN_MARK % m.group(1)).rstrip())
+        if not pristine:
+            bak = "%s.bak-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
+            shutil.copy2(path, bak)
+            print("!! %s 被手改过（或是旧版脚本生成的、没有指纹）—— 原文件先备份到 %s\n"
+                  "   手写的内容请挪到别的文件（比如 素材处理说明.md），这一份随时会被重写。"
+                  % (path, bak))
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(body + GEN_MARK % hashlib.sha1(body.encode("utf-8")).hexdigest()[:12] + "\n")
+
+
+
+def _library_like(d):
+    """d 底下有几个「自带 素材/ 或 build/ 的子目录」。两个以上 = 片库根，不是一支片子。"""
+    n = 0
+    for x in os.listdir(d):
+        p = os.path.join(d, x)
+        if os.path.isdir(os.path.join(p, "素材")) or os.path.isdir(os.path.join(p, "build")):
+            n += 1
+    return n
+
+
+def _guard_library(d):
+    """最后一道闸：交付物目录长得像片库根就停。
+
+    光判"素材目录在不在"不够 —— ani/ 下本来就有一个历史遗留的 素材/，
+    脚本错放在项目根时 ../素材 照样存在，out_dir 照样算出 ".."。
+    """
+    n = _library_like(d)
+    if n >= 2:
+        sys.exit("!!! 交付物要写到 %s，而它看起来是片库根（底下有 %d 个带 素材/ 或 build/ "
+                 "的子目录）—— 写下去会和别的片子撞名、静默覆盖。\n"
+                 "    脚本应该放在 <项目>/build/ 里，SRC 用默认的 ../素材"
+                 % (os.path.abspath(d), n))
+
+
 def motion_of(n):
     """镜 n(1 起) 是运镜还是静帧。逐镜的 motion= 覆盖全局 MOTION。"""
     return SHOTS[n - 1].get("motion", MOTION)
@@ -622,6 +893,22 @@ def n_words(txt):
 
 def lang_text(n, lang):
     return n["txt"] if lang == DEFAULT_LANG else (n.get(lang) or "")
+
+
+
+def out_dir():
+    """交付物（成片 / SRT / 封面 / 素材来源表）落在哪 —— **跟着素材在哪走**。
+
+      标准布局    项目/素材  +  项目/build/脚本  -> SRC 指向上一级，交付物也往上一级写
+      平铺布局    项目/素材  +  项目/脚本        -> SRC 就在手边，交付物**必须写在项目里**
+
+    原来竖版一律写 ".."（横版 2026-09-19 就改了，竖版没跟上）。脚本放在项目根时
+    ".." 就是片库根 ani/：成片、SRT、素材来源.md 全落进所有片子共用的目录，
+    和上一支撞名、静默覆盖（2026-09-10《坎培拉》）。
+    """
+    d = "." if os.path.dirname(os.path.abspath(SRC)) == HERE else ".."
+    _guard_library(d)
+    return d
 
 
 def out_base():
@@ -1913,21 +2200,36 @@ def langfit(lang="en"):
 # ================= 素材 =================
 def prep():
     for i, c in enumerate(CLIPS, 1):
-        src = os.path.join(SRC, c["src"])
-        if not os.path.exists(src):
-            print("   跳过(缺图): " + c["src"]); continue
-        z, cx, cy = c["zoom"], c["cx"], c["cy"]
-        crop = ("crop=w='min(iw,ih/%.6f*9/16)':h='min(ih/%.6f,iw*16/9)':"
-                "x='clip(%.6f*iw-out_w/2,0,iw-out_w)':"
-                "y='clip(%.6f*ih-out_h/2,0,ih-out_h)'" % (z, z, cx, cy))
-        # GRADE 为空是合法取值（"几乎不调"就是这条），但直接拼会拼出
-        # "crop=...,," -> ffmpeg 报 No such filter: ''。按段过滤，别按字符串拼。
-        vf = ",".join(x for x in (crop, GRADE, c["tweak"]) if str(x).strip())
-        vf += ",scale=%d:%d:flags=lanczos,setsar=1" % PREP
-        run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", vf,
-             "-frames:v", "1", "img%02d.png" % i],
-            "prep %d/%d  %s" % (i, len(CLIPS), c["src"]))
+        _set_prep_key(i, None)      # 先撕印记：这一镜要是跳过了，a 会拦下来
+        img = "img%02d.png" % i
+        before = _sig(img)
+        prep_one(i, c)
+        after = _sig(img)
+        if after and after != before:
+            _set_prep_key(i, prep_key(i, c))
     probe()
+
+
+def prep_one(i, c):
+    src = os.path.join(SRC, c["src"])
+    if not os.path.exists(src):
+        print("   跳过(缺图): " + c["src"]); return
+    z, cx, cy = c["zoom"], c["cx"], c["cy"]
+    crop = ("crop=w='min(iw,ih/%.6f*9/16)':h='min(ih/%.6f,iw*16/9)':"
+            "x='clip(%.6f*iw-out_w/2,0,iw-out_w)':"
+            "y='clip(%.6f*ih-out_h/2,0,ih-out_h)'" % (z, z, cx, cy))
+    # GRADE 为空是合法取值（"几乎不调"就是这条），但直接拼会拼出
+    # "crop=...,," -> ffmpeg 报 No such filter: ''。按段过滤，别按字符串拼。
+    vf = ",".join(x for x in (crop, GRADE, c["tweak"]) if str(x).strip())
+    vf += ",scale=%d:%d:flags=lanczos,setsar=1" % PREP
+    run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", vf,
+         "-frames:v", "1", "img%02d.png" % i],
+        "prep %d/%d  %s" % (i, len(CLIPS), c["src"]))
+
+
+def prep_key(i, c):
+    """imgNN 由哪些输入做出来。任何一项变了，旧产物作废。"""
+    return _key("prep", i, c, GRADE, PREP, _sig(os.path.join(SRC, c["src"])))
 
 
 def probe():
@@ -2208,31 +2510,30 @@ def static_vf(s):
             + (VIGNETTE + "," if VIGNETTE else "") + "setsar=1,format=yuv420p")
 
 
-def pass_a():
-    durs = timeline()[1]
-    os.makedirs("shots", exist_ok=True)
-    for i, s in enumerate(SHOTS, 1):
-        dur = durs[i - 1]
-        if is_static(i):
-            vf, how = static_vf(s), "静帧"
-        else:
-            d = max(1, int(round(dur * FPS)) - 1)
-            z0, z1 = s["z"]; (x0, y0), (x1, y1) = s["f0"], s["f1"]
-            ze = "%.6f+(%.6f)*on/%d" % (z0, z1 - z0, d)
-            xe = ("max(0,min(iw-iw/zoom,(%.6f+(%.6f)*on/%d)*iw-(iw/zoom)/2))"
-                  % (x0, x1 - x0, d))
-            ye = ("max(0,min(ih-ih/zoom,(%.6f+(%.6f)*on/%d)*ih-(ih/zoom)/2))"
-                  % (y0, y1 - y0, d))
-            vf = ("scale=%d:%d:flags=lanczos," % UP
-                  + "zoompan=z='%s':x='%s':y='%s':d=1:s=%dx%d:fps=%d,"
-                    % (ze, xe, ye, W, H, FPS)
-                  + (VIGNETTE + "," if VIGNETTE else "") + "setsar=1,format=yuv420p")
-            how = "运镜"
-        run(["ffmpeg", "-y", "-v", "error", "-stats", "-loop", "1",
+def shot_cmd(i, dur):
+    """第 i 镜的 pass_a 命令（不含 -stats）。返回 (argv, 说明, 警告或 None)。
+    pass_a 用它渲，pass_b 用它算印记对账 —— 同一份，不会漂。"""
+    s = SHOTS[i - 1]
+    if is_static(i):
+        vf, how = static_vf(s), "静帧"
+    else:
+        d = max(1, int(round(dur * FPS)) - 1)
+        z0, z1 = s["z"]; (x0, y0), (x1, y1) = s["f0"], s["f1"]
+        ze = "%.6f+(%.6f)*on/%d" % (z0, z1 - z0, d)
+        xe = ("max(0,min(iw-iw/zoom,(%.6f+(%.6f)*on/%d)*iw-(iw/zoom)/2))"
+              % (x0, x1 - x0, d))
+        ye = ("max(0,min(ih-ih/zoom,(%.6f+(%.6f)*on/%d)*ih-(ih/zoom)/2))"
+              % (y0, y1 - y0, d))
+        vf = ("scale=%d:%d:flags=lanczos," % UP
+              + "zoompan=z='%s':x='%s':y='%s':d=1:s=%dx%d:fps=%d,"
+                % (ze, xe, ye, W, H, FPS)
+              + (VIGNETTE + "," if VIGNETTE else "") + "setsar=1,format=yuv420p")
+        how = "运镜"
+    return (["ffmpeg", "-y", "-v", "error", "-loop", "1",
              "-framerate", str(FPS), "-t", "%.3f" % dur,
              "-i", "img%02d.png" % i, "-vf", vf, "-c:v", "libx264", "-crf", "12",
-             "-preset", "medium", "-pix_fmt", "yuv420p", "shots/shot%02d.mp4" % i],
-            "镜头 %d/%d  %.1fs  %s" % (i, len(SHOTS), dur, how))
+             "-preset", "medium", "-pix_fmt", "yuv420p", shot_path(i)],
+            "镜头 %d/%d  %.1fs  %s" % (i, len(SHOTS), dur, how), None)
 
 
 def motion():
@@ -2457,6 +2758,7 @@ def pixels():
 
 def pass_b():
     _, durs, total, _ = timeline()
+    check_shots(durs)
     ins = []
     for i in range(1, len(SHOTS) + 1):
         ins += ["-i", "shots/shot%02d.mp4" % i]
@@ -2667,9 +2969,8 @@ def credits(dry=False):
                   "署名成本为零，不署名的风险不为零。"]
     if dry:
         return lines
-    out = os.path.join("..", "素材来源.md")
-    with open(out, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+    out = os.path.join(out_dir(), "素材来源.md")
+    write_generated(out, lines)
     print("素材来源表 -> " + out)
     if "**缺**" in "\n".join(lines):
         print("!! 表里有**缺**的格子 —— 先把 CREDITS / MUSIC_CREDIT 填全（check 也会拦）")
@@ -3012,7 +3313,7 @@ def preview(lang=None):
     parts.append("[0:v]fps=%d,format=yuv420p,subtitles=_pv.ass:fontsdir=%s[v]"
                  % (FPS, FONTS.replace("\\", "/")))
 
-    out = os.path.join("..", CHECK_NAME if lang == DEFAULT_LANG
+    out = os.path.join(out_dir(), CHECK_NAME if lang == DEFAULT_LANG
                        else CHECK_NAME.replace(".mp4", ".%s.mp4" % lang))
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(parts), "-map", "[v]", "-map", "[a]",
@@ -3095,7 +3396,7 @@ def make_srt(lang=None):
             fixed += 1
         ev.append("%d\n%s --> %s\n%s\n" % (len(ev) + 1, srt_ts(st), srt_ts(en),
                                            "\n".join(sub_lines(txt))))
-    out = os.path.join("..", srt_name(lang))
+    out = os.path.join(out_dir(), srt_name(lang))
     with open(out, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(ev))
     print("已生成 %s（%s，%d 条%s）"
@@ -3177,7 +3478,7 @@ def split_tracks(multi):
     返回 (上传件, [(语言码, 音频文件), ...])。
     """
     base = out_base()
-    upload = os.path.join("..", OUT_NAME)
+    upload = os.path.join(out_dir(), OUT_NAME)
     run(["ffmpeg", "-y", "-v", "error", "-i", multi,
          "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
          "-movflags", "+faststart", upload],
@@ -3195,7 +3496,7 @@ def split_tracks(multi):
         if lang == DEFAULT_LANG:
             continue
         code = LANG_INFO[lang]["code"]
-        out = os.path.join("..", "%s_音轨_%s.m4a" % (base, code))
+        out = os.path.join(out_dir(), "%s_音轨_%s.m4a" % (base, code))
         run(["ffmpeg", "-y", "-v", "error", "-i", multi,
              "-map", "0:a:%d" % j, "-c:a", "copy", out],
             "独立音频（%s）-> %s" % (code, out))
@@ -3254,7 +3555,7 @@ def pass_c():
            "-t", "%.3f" % total]
 
     if len(LANGS) == 1:
-        out = os.path.join("..", OUT_NAME)
+        out = os.path.join(out_dir(), OUT_NAME)
         run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
             + ["-filter_complex", ";".join(fc), "-map", "[v]"] + amaps
             + enc + audio_meta() + [out],
@@ -3263,11 +3564,11 @@ def pass_c():
         print("\n完成: " + out)
         if SUB_MODE != "burn":
             print("字幕: %s（外挂，跟着成片一起发）"
-                  % os.path.join("..", srt_name(DEFAULT_LANG)))
+                  % os.path.join(out_dir(), srt_name(DEFAULT_LANG)))
         return
 
     # ---- 多音轨：先渲一份全都在的，再拆成能传的 ----
-    multi = os.path.join("..", "%s_多音轨.mp4" % out_base())
+    multi = os.path.join(out_dir(), "%s_多音轨.mp4" % out_base())
     run(["ffmpeg", "-y", "-v", "error", "-stats"] + ins
         + ["-filter_complex", ";".join(fc), "-map", "[v]"] + amaps
         + enc + audio_meta() + [multi],
@@ -3281,7 +3582,7 @@ def pass_c():
     for code, p in auds:
         print("  附加音频 %s   在 Studio 里作为 %s 音轨添加" % (p, code))
     print("  字幕     %s   外挂，两份都要传"
-          % " / ".join(os.path.join("..", srt_name(l)) for l in LANGS))
+          % " / ".join(os.path.join(out_dir(), srt_name(l)) for l in LANGS))
     print("  留档     %s   所有语言在一个文件里，不要传这个" % multi)
 
 
@@ -3463,7 +3764,7 @@ def cover(lang=None):
     src = "img%02d.png" % COVER_FROM
     if not os.path.exists(src):
         sys.exit("!!! 缺 " + src + "，先跑 prep")
-    out = os.path.join("..", COVER_NAME if lang == DEFAULT_LANG
+    out = os.path.join(out_dir(), COVER_NAME if lang == DEFAULT_LANG
                        else COVER_NAME.replace(".png", "_%s.png" % lang))
     base = "scale=%d:%d:flags=lanczos%s" % (W, H, "," + VIGNETTE if VIGNETTE else "")
     run(["ffmpeg", "-y", "-v", "error", "-i", src,
@@ -3484,7 +3785,14 @@ def cover(lang=None):
 
 
 if __name__ == "__main__":
-    what = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if len(sys.argv) < 2:
+        # 不带参数**不再等于 all**：2026-09-21 误跑过一次，整条流水线从 prep 重来，
+        # 打断之后 shots/ 里留下哑弹。all 要明说。
+        sys.exit("用法: python %s <命令>\n"
+                 "  流水线  sync -> check -> prep -> a -> b -> c    （all = prep+a+b+c）\n"
+                 "  a 只补过期的镜；`a force` 全部重渲；`a 1` 串行（默认 %d 路并行）"
+                 % (os.path.basename(sys.argv[0]), JOBS))
+    what = sys.argv[1]
     if what == "vofit":
         vofit(float(sys.argv[2]) if len(sys.argv) > 2 else None)
         sys.exit(0)
@@ -3520,7 +3828,8 @@ if __name__ == "__main__":
     if what in ("a", "all"):
         if what == "all":
             prep()
-        pass_a()
+        rest = sys.argv[2:]
+        pass_a(jobs=next((int(x) for x in rest if x.isdigit()), None), force="force" in rest)
     if what in ("b", "all"):
         pass_b()
     if what in ("c", "all"):

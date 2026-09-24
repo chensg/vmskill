@@ -49,11 +49,14 @@ SUNG 表不要手写，跑 `lyric_sync.py` 出，那边有整套吸附和验证�
 白字 + 黑描边、黑场淡入淡出、pass_a 加 vignette、pass_c 留颗粒。
 纸本画面里这三样都是"脏"，暗调实拍里它们是"对"。做纸本版时记得全部翻回去。
 """
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -554,6 +557,38 @@ def run(args, desc):
     print("\n>>> " + desc)
     if subprocess.run(args).returncode != 0:
         sys.exit("!!! 失败: " + desc)
+
+
+GEN_MARK = ("<!-- 自动生成 sha1=%s ：手写内容别写在这份里，重跑会整份重写"
+            "（被改过的会先备份成 .bak-时间戳） -->")
+
+
+def write_generated(path, lines):
+    """整份重写一个**自动生成**的交付物，但先确认它没被人手改过。
+
+    `credits` 原来直接覆盖 素材来源.md，不提示、不备份 —— 2026-09-02 被吃过一次：
+    配乐铺法、抽帧处理、调色决定都手写在那份里，重跑一次全没了。
+    现在末尾带一行正文指纹。重写前对一下：对得上 = 没人动过，直接盖；
+    对不上、没有指纹、或指纹后面还有字（被手改过 / 旧版脚本生成的）= 先备份再写，
+    并大声说出来。**不拦** —— 拦了只会逼人手工删掉它，一样丢。
+    """
+    body = "\n".join(lines) + "\n"
+    if os.path.exists(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            old = f.read()
+        m = re.search(r"<!-- 自动生成 sha1=([0-9a-f]+)", old)
+        pristine = old == body or bool(
+            m and hashlib.sha1(old[:m.start()].encode("utf-8")).hexdigest()[:12] == m.group(1)
+            and old.rstrip() == (old[:m.start()] + GEN_MARK % m.group(1)).rstrip())
+        if not pristine:
+            bak = "%s.bak-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
+            shutil.copy2(path, bak)
+            print("!! %s 被手改过（或是旧版脚本生成的、没有指纹）—— 原文件先备份到 %s\n"
+                  "   手写的内容请挪到别的文件（比如 素材处理说明.md），这一份随时会被重写。"
+                  % (path, bak))
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(body + GEN_MARK % hashlib.sha1(body.encode("utf-8")).hexdigest()[:12] + "\n")
+
 
 
 def xf(i):
@@ -2115,8 +2150,7 @@ def credits():
         lines.append("")
         lines.append("生成（ChatCut submit_sound）%d 条，无第三方权利。" % len(SFX))
     out = os.path.join("..", "素材来源.md")
-    with open(out, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+    write_generated(out, lines)
     print("素材来源表 -> " + out)
     if "**缺**" in "\n".join(lines):
         print("!! 表里有**缺**的格子 —— 先把 CREDITS / MUSIC_CREDIT 填全（check 也会拦）")
