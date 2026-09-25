@@ -36,6 +36,23 @@ import sys
 import time
 
 
+# ---- Windows 上 subprocess 的文本模式按 UTF-8 解 ----
+# 不指定时按 locale（cp1252）解码。ffprobe / ffmpeg 的输出一带中文路径就在读线程里抛
+# UnicodeDecodeError —— 主线程拿到 stdout=None 照样往下跑，读出来的尺寸、时长全是空的。
+# 素材齐的时候 ffprobe 不报错、输出里没有中文，所以前几支没撞上；
+# 《史尼育唔》分镜时素材还没到位，缺图的报错里带着中文路径，当场炸出来（2026-09-25）。
+if getattr(subprocess.run, "__name__", "") != "_run_utf8":
+    _SUBPROCESS_RUN = subprocess.run
+
+    def _run_utf8(*a, **k):
+        if k.get("text") or k.get("universal_newlines"):
+            k.setdefault("encoding", "utf-8")
+            k.setdefault("errors", "replace")
+        return _SUBPROCESS_RUN(*a, **k)
+
+    subprocess.run = _run_utf8
+
+
 def _default(name, value):
     """模板（或 segment_config）没写这个配置时才用引擎的缺省值。"""
     g = globals()
