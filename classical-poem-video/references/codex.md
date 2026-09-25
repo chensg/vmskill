@@ -62,6 +62,8 @@ Documents/ani/《片名》/
 
 **新开一支时从克隆 copy `scripts/*.py`，不要从任何一处安装、也不要从上一支 copy。**
 上一支的脚本里带着它自己的配置和临时补丁。
+讲述片**模板和引擎要一起 copy**：`make_story_h.py`（或 `_v`）＋ `story_core.py`，
+缺了引擎模板会直接报「找不到 story_core.py」。
 
 ---
 

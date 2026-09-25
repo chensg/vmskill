@@ -80,6 +80,8 @@ def scenario(script, lib, proj, wh):
     build = os.path.join(proj, "build")
     dst = os.path.join(build, script)
     shutil.copy(os.path.join(SCRIPTS, script), dst)
+    # 引擎和模板一起复制 —— 开新一支时也是这么做的
+    shutil.copy(os.path.join(SCRIPTS, "story_core.py"), os.path.join(build, "story_core.py"))
     os.chdir(build)
     for d in ("shots",):
         shutil.rmtree(d, ignore_errors=True)
@@ -221,6 +223,50 @@ def scenario(script, lib, proj, wh):
     return M
 
 
+def engine_checks(H, V, proj):
+    """共用引擎本身的回归：缺省值不许盖配置、版式推得对、拆出来时修的那几个 bug 不回潮。"""
+    print("\n== 共用引擎")
+    ok(H.LAYOUT == "h" and V.LAYOUT == "v", "版式按 W/H 推：横版 h、竖版 v")
+    ok(H.SUB_MODE == "srt", "横版模板没写 SUB_MODE -> 引擎缺省外挂")
+    ok(V.SUB_MODE == "burn", "竖版模板写了 burn -> 引擎不许盖掉")
+    ok(H.scrim_on() is False, "横版外挂 -> 不叠 scrim")
+
+    # _default 必须让模板配置赢：造一份在配置区改了 VIDEO_FIT / JOBS 的模板
+    build = os.path.join(proj, "build")
+    src = open(os.path.join(build, "make_story_v.py"), encoding="utf-8").read()
+    mark = "\n# ================= 以下是引擎"
+    assert mark in src
+    alt = os.path.join(build, "make_story_alt.py")
+    with open(alt, "w", encoding="utf-8") as f:
+        f.write(src.replace(mark, '\nVIDEO_FIT = "crop"\nJOBS = 1\n' + mark, 1))
+    A = load(alt, "make_story_alt")
+    ok(A.VIDEO_FIT == "crop" and A.JOBS == 1,
+       "模板配置了引擎也有缺省值的 VIDEO_FIT/JOBS -> 模板的赢")
+    os.remove(alt)
+
+    # check_sfx 原来读错键（file= 而表里是 f=），缺文件那一半从来不报警
+    for M in (H, V):
+        keep = M.SFX
+        M.SFX = [dict(f="__不存在__.mp3", shot=1, off=0.0, tgt=-30.0, fi=0.1, fo=0.1, dur=1.0)]
+        got = M.check_sfx()
+        M.SFX = keep
+        ok(any("缺文件" in x for x in got), "%s: 音效表指向不存在的文件 -> check_sfx 报警" % M.__name__)
+
+    # 预告板误报：竖版片尾板 head=TITLE 是设计如此，只有「包含但不等于」才报
+    keep = V.ENDCARD
+    V.ENDCARD = dict(head=V.TITLE, sub="x", t0=1.0, t1=5.0, y=560)
+    ok(V.check_endcard() == [], "片尾标题板 head == TITLE -> 不报")
+    V.ENDCARD = dict(head="下一集 · " + V.TITLE, sub="x", t0=1.0, t1=5.0, y=560)
+    ok(len(V.check_endcard()) == 1, "预告板写了本集标题 -> 报")
+    V.ENDCARD = keep
+
+    # 裁切比例按 W/H 推：横 16:9、竖 9:16（两份手抄时代各写死一套）
+    Hw, Hh, Vw, Vh = H.W, H.H, V.W, V.H
+    H.W, H.H, V.W, V.H = 1920, 1080, 1080, 1920
+    ok(H._ratio() == (16, 9) and V._ratio() == (9, 16), "_ratio 横 16:9 / 竖 9:16")
+    H.W, H.H, V.W, V.H = Hw, Hh, Vw, Vh
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="vmskill_test_")
     cwd = os.getcwd()
@@ -231,20 +277,29 @@ def main():
         ok(any("经度" in x for x in leftovers), "横版模板原样 -> 报《经度》残留")
         H.TITLE, H.SUBTITLE = "新题", "新副题"
         ok(H.check_template_leftovers() == [], "  换掉之后 -> 不报")
-        scenario("make_story_v.py", lib, proj, (180, 320))
+        V = scenario("make_story_v.py", lib, proj, (180, 320))
+        engine_checks(H, V, proj)
     finally:
         os.chdir(cwd)
         shutil.rmtree(tmp, ignore_errors=True)
 
-    # 三份 write_generated 必须一字不差 —— 两份脚本各改各的就是这次 review 的主病
+    # 模板里**不许有函数** —— 横竖两份手抄脚本分叉（50/112 个同名函数）就是从
+    # "在模板里改一个函数"开始的。引擎只有 story_core.py 一份。
+    print("\n== 模板只放配置")
+    for f in ("make_story_h.py", "make_story_v.py"):
+        t = ast.parse(open(os.path.join(SCRIPTS, f), encoding="utf-8").read())
+        defs = [n.name for n in t.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))]
+        ok(not defs, "%s 没有函数定义%s" % (f, "" if not defs else "（有：%s）" % defs))
+
+    # write_generated 在引擎和诗词模板里各一份，必须一字不差
     print("\n== 副本一致")
     srcs = {}
-    for f in ("make_story_h.py", "make_story_v.py", "make_v.py"):
+    for f in ("story_core.py", "make_v.py"):
         t = open(os.path.join(SCRIPTS, f), encoding="utf-8").read()
         for n in ast.parse(t).body:
             if isinstance(n, ast.FunctionDef) and n.name == "write_generated":
                 srcs[f] = ast.get_source_segment(t, n)
-    ok(len(srcs) == 3 and len(set(srcs.values())) == 1, "write_generated 三份一致")
+    ok(len(srcs) == 2 and len(set(srcs.values())) == 1, "write_generated 两份一致（引擎 / make_v）")
 
     print("\n%s" % ("全部通过" if not FAILS else "失败 %d 条：%s" % (len(FAILS), FAILS)))
     sys.exit(1 if FAILS else 0)
