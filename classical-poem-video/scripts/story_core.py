@@ -1599,7 +1599,10 @@ def check_video():
     for i in vids:
         c = CLIPS[i - 1]
         name = c["video"]
-        if not c.get("to"):
+        # 「没写」是键不在或值为空，**不是值为 0**：ss=0 的项目里 to=0 是声明了的
+        # 零长段，该由下面「反了或相等」那条报。写成 `not c.get("to")` 时它被这条截走，
+        # selftest_video 的「段长为 0」于是报「检查失效了」（2026-09-27《史尼育唔》）。
+        if c.get("to") in (None, ""):
             bad.append("镜 %d 是视频镜但没写 to= —— 出点不声明，prep 会一路读到片尾" % i)
             continue
         a, b, seg = video_seg(i)
