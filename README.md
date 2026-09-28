@@ -169,6 +169,10 @@ copy 过去改内容块就能用。
 - `scripts/sort_downloads.py` — 把浏览器下载的一堆文件归到脚本要找的位置
 - `agents/openai.yaml` — Codex 的技能界面配置
 
+**在做的片子**（仓库根，不随技能安装）
+
+- `stories/franklin-river-rescue/` — 《被困激流20小时》讲述稿第三版 + 给 Codex 的交接（含 CLAIMS 表）。门禁一未签
+
 **回归测试**（仓库根，不随技能安装）
 
 - `tests/test_intermediates.py` — 中间件对账 / 并行 a / credits 备份 / 交付物目录守卫，逐条把被检查的东西弄坏、验它报警
