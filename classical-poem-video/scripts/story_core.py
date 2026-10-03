@@ -77,6 +77,9 @@ _default("PREVIEW_NAME", "%s_预览.mp4" % SEG_NAME)
 _default("CHECK_NAME", "%s_检查片.mp4" % SEG_NAME)
 _default("RENDER_PREVIEW", False)
 _default("PREVIEW_FADE_OUT", 1.5)
+# 封面字用粗体＋厚描边（2026-10-04《被困激流》用户定的横版封面字号，见 make_story_h.py COVER_TEXT 上面那段）。
+# 微软雅黑常规体笔画细，缩到 320px 宽会和底平均掉；粗体才扛得住。竖版没定，缺省关。
+_default("COVER_HEAVY", False)
 
 # ---- 字幕：烧录还是外挂 ----
 # 横版一律外挂（YouTube / 电视，播放器渲染）；竖版默认烧录（抖音/小红书那一路）。
@@ -3608,7 +3611,7 @@ def measure_loudness(path):
 
 
 # ================= 字幕 =================
-def _style(name, size, pol, spacing=0, align=5):
+def _style(name, size, pol, spacing=0, align=5, heavy=False):
     # **第 4 个位置参数是字距，第 5 个才是对齐。**
     # 传 _style(..., 3) 想要右下对齐，实际设的是字距 3、对齐仍是默认的 5（居中），
     # 于是 \pos 变成以该点为中心，一半文字跑出画面 —— 而且渲得出来，不报错。
@@ -3616,8 +3619,11 @@ def _style(name, size, pol, spacing=0, align=5):
         pri, out, ol, sh = "&H00262A2D", "&H00EAF3F6", 3, 0
     else:
         pri, out, ol, sh = "&H00F2F2EC", "&H00000000", 3, 3
-    return ("Style: %s,%s,%d,%s,%s,%s,%s,0,0,0,0,100,100,%d,0,1,%d,%d,%d,20,20,0,1"
-            % (name, SUB_FONT, size, pri, pri, out, out, spacing, ol, sh, align))
+    bold = 0
+    if heavy:               # 封面大字：粗体、描边 10、阴影 5（_default COVER_HEAVY）
+        bold, ol, sh = -1, 10, 5
+    return ("Style: %s,%s,%d,%s,%s,%s,%s,%d,0,0,0,100,100,%d,0,1,%d,%d,%d,20,20,0,1"
+            % (name, SUB_FONT, size, pri, pri, out, out, bold, spacing, ol, sh, align))
 
 
 def styles_block():
@@ -3627,8 +3633,8 @@ def styles_block():
            "Alignment,MarginL,MarginR,MarginV,Encoding\n" \
            + "\n".join([_style("T", 88, TITLE_POLARITY, 6),
                         _style("TS", 44, TITLE_POLARITY, 8),
-                        _style("CT", 88, COVER_POLARITY or TITLE_POLARITY, 6),
-                        _style("CTS", 44, COVER_POLARITY or TITLE_POLARITY, 8),
+                        _style("CT", 88, COVER_POLARITY or TITLE_POLARITY, 6, heavy=COVER_HEAVY),
+                        _style("CTS", 44, COVER_POLARITY or TITLE_POLARITY, 8, heavy=COVER_HEAVY),
                         _style("M", SUB_FS, POLARITY, 2),
                         _style("L", 26, POLARITY, 0, 3)]) + "\n"
 
@@ -4221,8 +4227,9 @@ def cover(lang=None):
     for txt, fs, y in t["lines"]:
         ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,CT,,0,0,0,,"
                   "{\\pos(%d,%d)\\fs%d}%s" % (W // 2, y, fs, txt))
-    stxt, sfs, sy = t["sub"]
-    ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,CTS,,0,0,0,,"
+    if t.get("sub"):        # 横版大字封面不要副标：sub=None
+        stxt, sfs, sy = t["sub"]
+        ev.append("Dialogue: 0,0:00:00.00,0:00:10.00,CTS,,0,0,0,,"
               "{\\pos(%d,%d)\\fs%d}%s" % (W // 2, sy, sfs, stxt))
     with open("cover.ass", "w", encoding="utf-8-sig") as f:
         f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
