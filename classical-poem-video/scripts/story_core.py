@@ -3325,6 +3325,16 @@ def credits(dry=False):
         lines.append("无背景音乐（MUSIC_MODE='none'）。")
     elif MUSIC_MODE == "generated":
         lines.append("生成（ChatCut submit_music），无第三方权利。")
+    elif MUSIC_MODE == "library" and any(str(MUSIC_CREDIT.get(k, "")).strip()
+                                         for k in ("license", "performer", "url")):
+        # 库里的曲子**不一定是自生成的**：找来的 CC BY 录音进库之后也走 library。
+        # 以前这里一律写"原为自生成，无第三方权利"——喜、李应台两支都是 CC BY，
+        # 交付物里就写着一句假话（喜那支是手改的）。填了 MUSIC_CREDIT 就照实登记。
+        lines.append("从素材库复用：`%s`，**第三方录音**：" % (MUSIC_FROM_LIBRARY or "**没填 MUSIC_FROM_LIBRARY**"))
+        lines.append("")
+        for k, label in (("work", "作品"), ("performer", "演奏/录音"),
+                         ("source", "来源"), ("license", "授权"), ("url", "链接")):
+            lines.append("- %s：%s" % (label, MUSIC_CREDIT.get(k, "**缺**")))
     elif MUSIC_MODE == "library":
         lines.append("从素材库复用：`%s`（原为自生成），无第三方权利。"
                      % (MUSIC_FROM_LIBRARY or "**没填 MUSIC_FROM_LIBRARY**"))
