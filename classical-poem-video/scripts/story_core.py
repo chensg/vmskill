@@ -1100,8 +1100,15 @@ def check_claims():
     return bad
 
 
+_LATIN_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]*")
+
+
 def n_chars(txt):
-    return sum(1 for ch in "".join(sub_lines(txt)) if ch not in "，。：；、？！—…「」《》 ")
+    """中文字幕「读的字数」。夹在中文里的拉丁词（人名 Winson、14K）一眼读完、念出来约两个音节，
+    按一个词 2 字算 —— 逐字母算会把「Winson 就在這裡長大」量成 12 字，误报读不完（潘靈卓 10-16）。"""
+    s = "".join(sub_lines(txt))
+    words = len(_LATIN_WORD.findall(s))
+    return sum(1 for ch in _LATIN_WORD.sub("", s) if ch not in "，。：；、？！—…「」《》 ") + 2 * words
 
 
 def check_pace():
