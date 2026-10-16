@@ -237,8 +237,8 @@ def run(args, desc):
 
 _default("PREP_KEYS", "prep_keys.json")
 # a 并行渲几镜。zoompan 单线程，按核数开、留一核给系统。
-# 想看 -stats 进度或内存吃紧时跑 `a 1`。
-_default("JOBS", max(1, min(3, (os.cpu_count() or 2) - 1)))
+# 想看 -stats 进度或内存吃紧时跑 `a 1`。上限 5（用户 2026-10-16 定；换了 12 核 24 线程的新机）。
+_default("JOBS", max(1, min(5, (os.cpu_count() or 2) - 1)))
 
 
 def _sig(path):
