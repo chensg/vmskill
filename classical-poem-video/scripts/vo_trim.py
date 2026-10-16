@@ -135,7 +135,12 @@ def main():
     print("%-12s %8s %8s %8s %8s  %s" % ("文件", "原长", "说话起", "说话止", "剪掉", ""))
     for f in files:
         src = os.path.join(VO_DIR, f)
-        a, b, dur = speech_span(src)
+        orig = os.path.join(ORIG_DIR, f)
+        # 幂等：备份里已有原件就从原件剪，不在剪过的文件上再剪一刀、也不覆盖备份。
+        # （2026-10-16《一杯水》：重跑 apply 每次多削 0.04~0.07s 字头字尾，还多一代编码。）
+        # 换了新文件要重剪：先删 ORIG_DIR 里的同名旧原件。
+        inp = orig if (mode == "apply" and os.path.exists(orig)) else src
+        a, b, dur = speech_span(inp)
         tot_dur += dur
         if a is None:
             bad.append((f, "整条都在 %.0fdB 以下，判不出说话" % SPEAK_DB))
@@ -152,10 +157,11 @@ def main():
             bad.append((f, "要剪掉 %.2fs，异常多，没动" % cut)); flag = "  !! 剪太多，跳过"
         print("%-12s %8.3f %8.3f %8.3f %8.3f%s" % (f, dur, a, b, cut, flag))
         if mode == "apply" and not flag:
-            shutil.copy2(src, os.path.join(ORIG_DIR, f))
+            if inp == src:
+                shutil.copy2(src, orig)
             tmp = src + ".tmp.mp3"
             r = subprocess.run(
-                ["ffmpeg", "-v", "error", "-y", "-i", src,
+                ["ffmpeg", "-v", "error", "-y", "-i", inp,
                  "-ss", "%.3f" % a, "-to", "%.3f" % b,
                  "-c:a", "libmp3lame", "-q:a", "2", tmp],
                 capture_output=True, text=True)
