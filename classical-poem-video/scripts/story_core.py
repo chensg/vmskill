@@ -2345,7 +2345,9 @@ def langfit(lang="en"):
             act = "原速"
             cmd = ["ffmpeg", "-y", "-v", "error", "-i", raw, "-c", "copy", dst]
         else:
-            tempo = d / room
+            # 重编码 mp3 会多出一两帧（≈26ms/帧）的填充：按「槽 − 0.04s」算倍率，
+            # 否则压完量出来正好超 0.02s，check 报「镜内句塞不进」（2026-10-19《冷山》VO_09a）。
+            tempo = d / max(room - 0.04, 0.1)
             if tempo > LANG_TEMPO_MAX:
                 over.append((x["vo"], d, room, tempo,
                              (d - room * LANG_TEMPO_MAX) * rate))

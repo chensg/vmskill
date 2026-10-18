@@ -10,9 +10,14 @@
 // 用法（每次调用都是一次 javascript_tool）：
 //   1) 先 `python el_web_image.py js 档名...`，把输出贴进去（定义 __C/__ROWS 并展开成 __P）
 //   2) 贴本文件
-//   3) await __checkSettings()            → 核对模型/比例/分辨率/画质/张数；任何 navigate 之后都要重核
+//   3) await __applySettings()            → 按 __WANT 把模型/比例/分辨率/张数/画质全改好并核对；任何 navigate 之后都要重跑
+//      （只核不改：await __checkSettings()）
 //   4) __runQueue()                       → 后台逐张提交（不 await），进度看 __glog
-//   5) 等生成完：await __harvest(45000)   → 逐张打开、Load 2K、按提示词对档名，存进 __R；一次调用最多跑 45 秒，没收完再调
+//   5) 等生成完：await __refresh(); await __harvest(45000)
+//                                         → __refresh 走站内路由 Explore→History 重拉列表（隐藏页里新图不会自己出现；
+//                                           navigate 也能刷新，但页面里的 JS 全丢、设定被重置）。
+//                                           __harvest 逐张打开、Load 2K、按提示词对档名，存进 __R；一次最多跑 45 秒，没收完再调；
+//                                           第二个参数 maxCards 限制往下翻几张（只收刚出的几张时填 6，免得翻遍几个月的历史）
 //   6) __export()                         → 返回 JSON + 30 万字符填充：工具结果超长会自动存成文件，
 //                                           交给 `python el_web_image.py fetch <那个文件>` 下载。链接 2 小时过期，收完马上下。
 
@@ -33,7 +38,53 @@
     return new RegExp([W.model, W.ratio, W.res, W.quality, W.n, W.improve].map(x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' / ')).test(window.__settings());
   };
   window.__checkSettings = async () => ({ ok: window.__ok(), now: window.__settings().slice(-80), want: window.__WANT });
-  // 改设定：菜单在窄面板里点选项常不生效 → 先 pointerdown 打开，再用 computer 工具按方向键 + Enter
+  // 改设定（2026-10-19《冷山》）：菜单项的 click / pointer 事件常不生效，computer 工具按方向键又会丢键
+  // （连按 5 下只走 1 格）。**在 JS 里对触发按钮发 ArrowDown 打开菜单、对高亮项发方向键/Enter** 最稳：
+  // Radix 菜单认 keydown，不认合成的点击。
+  const menuItems = () => [...document.querySelectorAll('[role="menuitemradio"],[role="option"],[role="menuitem"]')];
+  const itemText = (e) => e.innerText.trim().split('\n')[0].trim();
+  window.__menuTo = async (target) => {
+    for (let k = 0; k < 40; k++) {
+      const items = menuItems(), h = items.find(e => e.getAttribute('data-highlighted') !== null);
+      if (!h) return 'no highlight';
+      const t = itemText(h);
+      if (t === target) { h.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); await waitFor(() => false, 500); return 'selected ' + t; }
+      const names = items.map(itemText);
+      if (names.indexOf(target) < 0) return 'no item ' + target + ' in ' + names.join('|');
+      h.dispatchEvent(new KeyboardEvent('keydown', { key: names.indexOf(target) > names.indexOf(t) ? 'ArrowDown' : 'ArrowUp', bubbles: true, cancelable: true }));
+      await waitFor(() => false, 150);
+    }
+    return 'gave up';
+  };
+  window.__setOpt = async (btn, target) => {
+    if (!btn) return 'no button';
+    btn.focus();
+    btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    if (!await waitFor(() => menuItems().find(e => e.getAttribute('data-highlighted') !== null), 2000)) return 'menu did not open';
+    return await window.__menuTo(target);
+  };
+  window.__applySettings = async () => {
+    const W = window.__WANT, out = [];
+    const bar = () => [...document.querySelectorAll('button')].filter(b => b.getBoundingClientRect().top > window.innerHeight * 0.55);
+    const model = bar().find(b => /^(GPT|Nano|FLUX|Recraft|Seedream|Krea|Kling|Gen-4|Wan)/.test(b.innerText.trim()));
+    if (model && model.innerText.trim() !== W.model) out.push('model: ' + await window.__setOpt(model, W.model));
+    for (const [label, v] of [['Aspect ratio', W.ratio], ['Resolution', W.res], ['Number of generations', W.n], ['Quality', W.quality]]) {
+      const b = document.querySelector(`button[aria-label="${label}"]`);     // 画质最后改：切模型会把画质弹回 High
+      if (b && b.innerText.trim() !== v) out.push(label + ': ' + await window.__setOpt(b, v));
+    }
+    return { ok: window.__ok(), now: window.__settings().slice(-80), did: out };
+  };
+  window.__refresh = async () => {
+    const link = (t) => [...document.querySelectorAll('a,button')].find(e => e.innerText.trim() === t);
+    const ex = link('Explore'); if (!ex) return 'no Explore tab';
+    ex.click(); await waitFor(() => !location.href.includes('history'), 5000); await waitFor(() => false, 1500);
+    const hi = link('History'); if (!hi) return 'no History tab';
+    hi.click(); await waitFor(() => location.href.includes('history'), 5000);
+    await waitFor(() => window.__cards().length > 3, 15000);
+    window.__hi = 0;
+    return 'cards ' + window.__cards().length;
+  };
+  // 旧接口留着：只把菜单打开、列出选项
   window.__openMenu = async (label) => {
     const b = document.querySelector(`button[aria-label="${label}"]`);
     if (!b) return 'no button ' + label;
@@ -90,13 +141,14 @@
     return true;
   };
   // 从历史列表第 0 张往下逐张开；只收 __P 里还没收到的。一次调用最多跑 budgetMs，没收完就再调一次。
-  window.__harvest = async (budgetMs = 40000) => {
+  window.__harvest = async (budgetMs = 40000, maxCards = 200) => {
     const t0 = performance.now(), log = [];
     if (window.__viewerPrompt()) await closeViewer();
     window.scrollTo(0, 0);
     await waitFor(() => window.__cards().length > 0, 15000);
     for (let i = window.__hi || 0; performance.now() - t0 < budgetMs; i++) {
       if (!Object.keys(window.__P).some(k => !window.__R[k])) { window.__hi = 0; break; }
+      if (i >= maxCards) { log.push('翻到第 ' + maxCards + ' 张还没收齐，停（刚交的图可能还在生成：等一会儿 __refresh 再收）'); window.__hi = 0; break; }
       let cs = window.__cards();
       for (let k = 0; k < 8 && i >= cs.length; k++) { window.scrollBy(0, 2000); await waitFor(() => false, 800); cs = window.__cards(); }
       if (i >= cs.length) { log.push(i + ' 没有更多卡片'); window.__hi = 0; break; }
