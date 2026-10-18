@@ -267,6 +267,84 @@ def engine_checks(H, V, proj):
     H.W, H.H, V.W, V.H = Hw, Hh, Vw, Vh
 
 
+def plate_scenario(M, proj):
+    """贴纸镜和运镜镜同片：PREP=2×成片时，贴纸镜在成片上仍是 1:1（不缩成半幅）。
+
+    2026-10-18 之前 prep_plate 出成片尺寸的台纸，PREP≠成片时被 pass_a 再缩一半；
+    check 只能要求 PREP＝成片，于是运镜镜全片发软。这里验新行为，并验旧行为会被抓到。"""
+    print("")
+    print("== 贴纸镜 + 运镜镜同片")
+    small = os.path.join(proj, "素材", "small.png")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=white:size=100x80",
+                    "-frames:v", "1", small], check=True)
+    W, H = M.W, M.H
+    M.PREP = (W * 2, H * 2)
+    M.CLIPS = [dict(src="a.png", zoom=1.0, cx=0.5, cy=0.5, tweak=""),
+               dict(src="small.png", fit="plate", tweak="")]
+    M.SHOTS = [dict(z=(1.0, 1.15), f0=(0.5, 0.5), f1=(0.55, 0.5)),
+               dict(z=(1.0, 1.0), f0=(0.5, 0.5), f1=(0.5, 0.5), motion="static")]
+    durs = [1.0, 1.0]
+    M.timeline = lambda: (None, list(durs), sum(durs), None)
+    quiet(M.prep)
+    quiet(M.pass_a, jobs=1)
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", M.shot_path(2), "-frames:v", "1",
+                          "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True).stdout
+    cols = [x for x in range(W) if any(raw[y * W + x] > 128 for y in range(H))]
+    rows = [y for y in range(H) if any(raw[y * W + x] > 128 for x in range(W))]
+    bw = (cols[-1] - cols[0] + 1) if cols else 0
+    bh = (rows[-1] - rows[0] + 1) if rows else 0
+    ok(abs(bw - 100) <= 3 and abs(bh - 80) <= 3, "PREP=2×成片：贴纸镜在成片上 %dx%d（应 100x80，1:1 不缩不放）" % (bw, bh))
+    dims = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                           "img02.png"], capture_output=True, text=True).stdout.strip()
+    ok(dims == "%d,%d" % M.PREP, "贴纸镜的 img02 是 PREP 尺寸（%s），和运镜镜同一尺寸" % dims)
+    res = []
+    quiet(lambda: res.extend(M.check_resolution() or []))
+    bad = [b for b in res if "贴纸版式" in b and "PREP" in b]
+    ok(not bad, "PREP=2×成片且同比例 -> check 不再拦贴纸镜")
+
+
+def title_checks(M):
+    """TITLE_CARD before= 按时间轴推窗口；压到旁白 / 太短都报。"""
+    print("")
+    print("== 片名字卡挂在某句前面（before=）")
+    M.NARR = [dict(vo="VO_001", shot=1, txt="甲"), dict(vo="VO_002", shot=2, txt="乙")]
+    lines = [(0.9, 4.2, "甲", 1, 1.0, 3.0), (8.9, 11.2, "乙", 2, 9.0, 2.0)]
+    M.timeline = lambda: (lines, [5.0, 6.0], 11.0, [0.0, 5.0])
+    M.TITLE_CARD = dict(head="片名", sub="副题", before="VO_002", y=400)
+    t0, t1 = M.title_window()
+    ok(abs(t0 - 5.3) < 1e-6 and abs(t1 - 8.7) < 1e-6, "before=VO_002 -> 窗口 %.2f~%.2f（镜 2 起点 +0.3 到出声前 0.3）" % (t0, t1))
+    ok(M.check_title(lines) == [], "  窗口落在静默里、3.4s -> 不报")
+    M.TITLE_CARD = dict(head="片名", sub="副题", t0=2.0, t1=6.0, y=400)
+    ok(any("压在旁白上" in b for b in M.check_title(lines)), "手填 t0/t1 压到第一句 -> 报")
+    M.TITLE_CARD = dict(head="片名", sub="副题", t0=7.0, t1=8.5, y=400)
+    ok(any("只在屏" in b for b in M.check_title(lines)), "手填只有 1.5s -> 报")
+    M.TITLE_CARD = None
+
+
+def cue_checks(M, proj):
+    """长句分屏：SUB_CUE 换屏、每屏 ≤2 行；SRT 一屏一条，时间按字数分。"""
+    print("")
+    print("== 长句分屏（SUB_CUE）")
+    C, S_ = M.SUB_CUE, M.SUB_SEP
+    long_ = "一二三四五" + S_ + "六七八九十" + C + "甲乙丙丁戊"
+    lines = [(0.0, 6.0, long_, 1, 0.1, 5.5)]
+    M.NARR = [dict(vo="VO_001", shot=1, txt=long_)]
+    M.timeline = lambda: (lines, [6.0], 6.0, [0.0])
+    ct = M.cue_times(0.0, 6.0, long_)
+    ok(len(ct) == 2 and abs(ct[0][1] - 4.0) < 1e-6, "两屏按字数分：10 字 / 5 字 -> 0~4.0 / 4.0~6.0（实得 %s）" % [round(x[1], 2) for x in ct])
+    ok(not [b for b in M.check_subs() if "最多两行" in b], "每屏两行以内 -> check_subs 不报（旧判据数总行数 3 会报）")
+    lines[:] = [(0.0, 6.0, "一" + S_ + "二" + S_ + "三", 1, 0.1, 5.5)]
+    ok([b for b in M.check_subs() if "最多两行" in b], "一屏三行 -> 仍然报")
+    lines[:] = [(0.0, 1.5, "一二" + C + "三四", 1, 0.1, 1.4)]
+    ok(M.cue_times(0.0, 1.5, "一二" + C + "三四")[0][1] == 0.75, "总长不够 2×CUE_MIN -> 平分")
+    lines[:] = [(0.0, 6.0, long_, 1, 0.1, 5.5)]
+    M.LANGS, M.DEFAULT_LANG = ["zh"], "zh"
+    out = M.make_srt("zh")
+    body = open(out, encoding="utf-8-sig").read()
+    ok(body.count(" --> ") == 2 and "甲乙丙丁戊" in body, "SRT：一条旁白出两条字幕")
+    os.remove(out)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="vmskill_test_")
     cwd = os.getcwd()
@@ -279,6 +357,10 @@ def main():
         ok(H.check_template_leftovers() == [], "  换掉之后 -> 不报")
         V = scenario("make_story_v.py", lib, proj, (180, 320))
         engine_checks(H, V, proj)
+        os.chdir(os.path.join(proj, "build"))
+        plate_scenario(H, proj)
+        title_checks(H)
+        cue_checks(H, proj)
     finally:
         os.chdir(cwd)
         shutil.rmtree(tmp, ignore_errors=True)

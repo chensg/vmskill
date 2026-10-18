@@ -232,6 +232,8 @@ SHOT_LABELS = {}
 
 # ---- 开场标题字卡 ----（只有第一段有；烧进画面，不走 SRT）
 # 段一镜 1 前六七秒只有标题在走，一个字幕都没有 —— 这一段是让出来的。
+# 片名不在开头、挂在某一句前面时写 before="VO_xxx"（时间由时间轴推，改旁白不用回填秒数），
+# 并给那一句的 NARR 加够 pre（片名在屏 ≥2.5s，check_title 会验）。
 TITLE_CARD = dict(head=TITLE, sub=SUBTITLE, t0=1.0, t1=6.4, y=470) if SEG_FIRST else None
 
 # ================= 明暗极性 =================
@@ -501,6 +503,7 @@ SUB_LH = 64
 # 所以判据要换成**字数** —— 通行做法是一行不超过 ~18 个全角字符、一屏不超过两行。
 SUB_MAX_CHARS = 20
 SUB_SEP = "｜"              # 手工断行符，不上屏。不要交给自动换行
+SUB_CUE = "‖"              # 换屏符：一条旁白太长时字幕分几屏先后出（每屏仍 ≤2 行）
 # 行宽按**字形宽度**算，不按字数：ASCII 只有汉字的一半多一点，
 # 「1815 年 4 月，印尼松巴哇岛，」按字数是 18 个超标，按宽度只有 14.4 个字，够得下。
 ASCII_W = 0.55
@@ -702,10 +705,14 @@ PP_STATIC, PP_KENBURNS, PP_DETAIL = 1.00, 1.20, 1.30
 # 项目内容由同目录 segment_config.py 覆盖；上面的模板块只是缺省值。
 # **必须放在模板块之后、流水线之前** —— 放前面会被模板反过来覆盖，
 # 而且不报错：素材列表、音效列表会静默变回模板的，旁白却是项目的。
+# **按文件路径 exec，不用 import**（2026-10-18）：`from segment_config import *` 走 sys.path ——
+# `python -I` 不把脚本目录放进 sys.path，直接 ModuleNotFoundError；更糟的是 sys.path 上
+# 恰好有别的项目的 segment_config.py 时，会**静默导进那一支的旁白和镜头表**。
+# exec 进本模块全局，效果等同 `import *`，只认同目录这一份。
 import os as _os
-if _os.path.exists(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                                 "segment_config.py")):
-    from segment_config import *          # noqa: F401,F403
+_SC = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "segment_config.py")
+if _os.path.exists(_SC):
+    exec(compile(open(_SC, encoding="utf-8").read(), _SC, "exec"))
 
 
 # ================= 以下是引擎：横竖两版共用 story_core.py =================

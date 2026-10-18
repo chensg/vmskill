@@ -86,6 +86,8 @@ _default("COVER_HEAVY", False)
 _default("SUB_MODE", "srt" if LAYOUT == "h" else "burn")
 _default("SUB_MAX_W", int(W * 0.77))             # 烧录时一行的像素宽上限
 _default("TITLE_CARD", None)                     # 开场标题字卡（烧进画面）
+_default("SUB_CUE", "‖")                         # 字幕换屏符：一条旁白的字幕分几屏先后出，每屏仍 ≤2 行（SUB_SEP 是屏内换行）
+_default("CUE_MIN", 1.0)                         # 换屏后每屏至少在屏几秒
 _default("SHOT_LABELS", {})                      # 画面角标 {镜号: 文字}
 
 # ---- 竖版平台安全区（抖音/小红书真机比出来的）。横版不适用：None = 不查 ----
@@ -1026,8 +1028,35 @@ def shot_of(t):
 def sub_lines(txt):
     """按手工断行符切。**每段都要 strip**：英文稿里写成 "a ｜ b" 是自然的，
     不 strip 的话第二行会顶着一个空格出现在 SRT 里 —— 中文稿看不出来
-    （没人在 ｜ 两边加空格），英文稿每一条都中。"""
-    return [q for q in (p.strip() for p in txt.split(SUB_SEP)) if q]
+    （没人在 ｜ 两边加空格），英文稿每一条都中。
+    换屏符 SUB_CUE 在这里也当断行 —— 只数字数、拼全文的地方不用关心分屏。"""
+    return [q for q in (p.strip() for p in txt.replace(SUB_CUE, SUB_SEP).split(SUB_SEP)) if q]
+
+
+def sub_cues(txt):
+    """一条字幕分成几屏（SUB_CUE 切）。每屏是一个仍可含 SUB_SEP 的串。
+
+    2026-10-18《海底四十小時》：16 分钟的长片，英文配音稿 33 句超过两行 × 48 字，
+    中文也有两句放不下两行。以前只能改稿砍字（英文砍了就得重配），或者把一行放宽到 31 字。
+    长句本来就该分屏 —— 电视上看外挂字幕，一屏两行、读完换下一屏，和说话节奏一致。"""
+    return [c.strip() for c in txt.split(SUB_CUE) if c.strip()]
+
+
+def cue_times(st, en, txt):
+    """[(起, 止, 这一屏的串)]。按每屏字数分 [st, en)，每屏至少 CUE_MIN 秒（不够就平分）。"""
+    cues = sub_cues(txt)
+    if len(cues) <= 1:
+        return [(st, en, txt)]
+    w = [max(1, len("".join(sub_lines(c)))) for c in cues]
+    span = en - st
+    if span < CUE_MIN * len(cues):
+        w = [1] * len(cues)
+    out, t = [], st
+    for k, c in enumerate(cues):
+        t1 = en if k == len(cues) - 1 else t + span * w[k] / float(sum(w))
+        out.append((t, t1, c))
+        t = t1
+    return out
 
 
 def text_w(s):
@@ -1038,9 +1067,9 @@ def text_w(s):
 
 def sub_box(txt, pad=8):
     """字幕在画面上的外接矩形（x0, x1, y0, y1），用来量它压着的底、判安全区。"""
-    parts = sub_lines(txt)
-    w = max(text_w(p) for p in parts)
-    top = SUB_BOT - len(parts) * SUB_LH
+    cues = [sub_lines(c) for c in sub_cues(txt)] or [sub_lines(txt)]
+    w = max(text_w(p) for parts in cues for p in parts)
+    top = SUB_BOT - max(len(parts) for parts in cues) * SUB_LH
     return (max(0, int(SUB_CX - w / 2 - pad)), min(W, int(SUB_CX + w / 2 + pad)),
             max(0, int(top - pad)), min(H, int(SUB_BOT + pad)))
 
@@ -1151,9 +1180,14 @@ def check_pace():
 def check_subs():
     bad = []
     for st, en, txt, _, _, vd in timeline()[0]:
+        for cue in sub_cues(txt):
+            if len(sub_lines(cue)) > 2:
+                bad.append("字幕『%s』有一屏断成了 %d 行，一屏最多两行 —— 长句用 %s 换屏"
+                           % (txt, len(sub_lines(cue)), SUB_CUE))
+        for t0, t1, cue in cue_times(st, en, txt)[:-1] if len(sub_cues(txt)) > 1 else []:
+            if t1 - t0 < CUE_MIN - 1e-6:
+                bad.append("字幕『%s』换屏后有一屏只在屏 %.1fs（< %.1fs）" % (cue, t1 - t0, CUE_MIN))
         parts = sub_lines(txt)
-        if len(parts) > 2:
-            bad.append("字幕『%s』断成了 %d 行，一屏最多两行" % (txt, len(parts)))
         for p in parts:
             # 烧录按**像素宽**判（字号是我们定的）；外挂按**字数**判
             # （播放器的字号我们管不着，像素宽这个判据在那边不成立）
@@ -1265,9 +1299,11 @@ def check_langs(quiet=False):
             # 中文那一路 check_subs 一直验着这一条，非默认语言这边漏了。
             # 2026-08-31《四十二年》：英文 VO_08 写了两个 ｜＝三行字幕，check 照样通过。
             # 一屏两行是硬约束（`SUB_MAX_CHARS_EN` 是按两行算的），三行会被播放器截掉或压扁。
-            if len(parts) > 2:
-                bad.append("%s 字幕『%s』断成了 %d 行，一屏最多两行 —— 一条里只能有一个 %s"
-                           % (info["name"], (x.get(lang) or "")[:30], len(parts), SUB_SEP))
+            # 长句用 SUB_CUE 换屏（2026-10-18），按**每屏**验。
+            for cue in sub_cues(x.get(lang) or ""):
+                if len(sub_lines(cue)) > 2:
+                    bad.append("%s 字幕『%s』有一屏断成了 %d 行，一屏最多两行 —— 屏内只能有一个 %s，长句用 %s 换屏"
+                               % (info["name"], cue[:30], len(sub_lines(cue)), SUB_SEP, SUB_CUE))
             for p in parts:
                 if len(p) > SUB_MAX_CHARS_EN:
                     bad.append("%s 字幕行『%s』%d 字，超过一行上限 %d —— 用 %s 手工断行"
@@ -1975,6 +2011,44 @@ def check_coldopen(lines):
     return []
 
 
+def title_window():
+    """片名字卡的 (t0, t1)。
+
+    `TITLE_CARD` 写 `before="VO_009"` 时**按时间轴推**：从那一句之前的静默开始（上一句说完 / 那一镜起点，
+    取晚的，+0.3s），到那一句出声前 0.3s。不写 before 就用手填的 t0/t1（老写法）。
+    2026-10-18《海底四十小時》：片名压在冷开场之后第 9 句前面，手填秒数要先 sync 一遍、
+    量出那句的落点再回填；改一次旁白就要再填一次 —— 和当初手写 est 是同一个病。
+    """
+    tc = TITLE_CARD
+    if not tc.get("before"):
+        return tc["t0"], tc["t1"]
+    lines, _, _, starts = timeline()
+    ks = [k for k, n in enumerate(NARR) if n["vo"] == tc["before"]]
+    if not ks:
+        sys.exit("!!! TITLE_CARD 的 before=%r 不在 NARR 里" % tc["before"])
+    k = ks[0]
+    vs, shot = lines[k][4], lines[k][3]
+    prev_end = (lines[k - 1][4] + lines[k - 1][5]) if k else 0.0
+    t0 = max(starts[shot - 1], prev_end) + 0.3
+    return t0, vs - 0.3
+
+
+def check_title(lines):
+    """片名字卡在屏够不够长、有没有压到旁白。烧进画面的字只有它，压字或一闪而过都要重渲整段。"""
+    if not TITLE_CARD or not lines:
+        return []
+    t0, t1 = title_window()
+    bad = []
+    if t1 - t0 < 2.5:
+        bad.append("片名字卡只在屏 %.1fs（%.2f~%.2f）—— 至少 2.5s；用 before= 挂的话，给那一句加大 pre"
+                   % (t1 - t0, t0, t1))
+    for st, en, txt, _, vs, vd in lines:
+        if vs < t1 and vs + vd > t0:
+            bad.append("片名字卡（%.2f~%.2f）压在旁白上：%s" % (t0, t1, txt.replace("｜", "")[:16]))
+            break
+    return bad
+
+
 # 「换项目必须清空」的清单。**以前它只活在注释里，于是漏过 SFX。**
 # 放在这里是为了让它被打印出来 —— 一张没人看得见的清单等于没有清单。
 # 每一项写成 (名字, 为什么危险)。check 每次都打，不判对错（对错只有人知道）。
@@ -2057,6 +2131,7 @@ def check_timeline():
     bad += check_video()
     bad += check_resolution()
     bad += check_coldopen(lines)
+    bad += check_title(lines)
     bad += check_endcard()
     bad += check_template_leftovers()
     bad += check_langs()
@@ -2218,14 +2293,23 @@ def langfit(lang="en"):
     if not os.path.isdir(vdir):
         sys.exit("!!! 没有 %s/ —— %s 旁白还没就位" % (vdir, lang))
     raw_dir = VO_RAW_OF.get(lang, "vo_%s_raw" % lang)
-    if not os.path.isdir(raw_dir):
-        os.makedirs(raw_dir)
-        for x in NARR:
-            src = vo_path(x, lang)
-            if os.path.exists(src):
-                subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-c", "copy",
-                                os.path.join(raw_dir, os.path.basename(src))], check=True)
+    # **按文件补，不只在目录不存在时整批备份**（2026-10-18《海底四十小時》）：
+    # 重配过的句子会把 raw 里的旧件删掉（el_tts.py gen），原来的写法看到目录在就不补，
+    # 于是 16 条新录音整批没进 langfit，只打一句「提示」，结尾照样说「全部塞得进」。
+    first = not os.path.isdir(raw_dir)
+    os.makedirs(raw_dir, exist_ok=True)
+    added = []
+    for x in NARR:
+        src = vo_path(x, lang)
+        raw = os.path.join(raw_dir, os.path.basename(src))
+        if os.path.exists(src) and not os.path.exists(raw):
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-c", "copy", raw], check=True)
+            added.append(x["vo"])
+    if first:
         print("原件已备份到 %s/（以后每次都从这里重新推导，压不会叠加）" % raw_dir)
+    elif added:
+        print("补备份 %d 条新原件到 %s/（重配过的句子）：%s%s"
+              % (len(added), raw_dir, " ".join(added[:8]), " ..." if len(added) > 8 else ""))
 
     slots = lang_slots()
     rows, missing = [], []
@@ -2297,6 +2381,9 @@ def langfit(lang="en"):
         print("\n   别把这活交给 atempo：听得出来的毛病换看不出来的错位，不是修好。")
         print("   要改的是英文稿，中文那条轨和画面一个字都不用动。")
         return False
+    if missing:
+        print("\n!! 还有 %d 条没处理（%s 里没有音频），**不算全部塞得进**" % (len(missing), vdir))
+        return False
     print("全部塞得进。**接着跑 check** —— 它会从磁盘上的文件再验一遍。")
     return True
 
@@ -2356,27 +2443,33 @@ def prep_plate(i, c, src):
 
     **不走 crop。** 走 crop 就等于承认要裁，而这条路的前提正是"这张不能裁"。
 
-    出的是**成片尺寸**的 imgNN.png，不是 PREP 尺寸 —— 所以用贴纸版式的片子
-    要把 PREP 设成成片尺寸，让 pass_a 的 static_vf 变成恒等重采样。
-    PREP 还留在 3840x2160 的话，pass_a 会把整张台纸再缩一半，图就只有半幅大。
-    check_resolution 会拦这个组合。
+    **出的是 PREP 尺寸的 imgNN.png**（2026-10-18 改）：台纸和图一起按 PREP/W 放大，
+    pass_a 的 static_vf 再把 PREP 缩回成片尺寸 —— 净效果仍是 plate_box 的「1:1 或缩小」，
+    中间那一来一回是 lanczos 往返，看不出差别。
+    原来出成片尺寸，check 要求 PREP＝成片尺寸，理由写的是「pass_a 会把台纸再缩一半」——
+    **那条理由不成立**：static_vf 按输入的相对尺寸裁（iw/z）再缩到成片，成片尺寸的输入是恒等的。
+    但那条拦截让**贴纸镜和运镜镜不能同片**：PREP 设成 1920x1080 运镜镜就从小图里推、全片发软
+    （《海底四十小時》档案照片 + 生成图缓推撞在这里，当时只好把台纸预合成成静帧绕开）。
+    现在 imgNN 全片同一个 PREP 尺寸，trace / 封面取图也不用再分两种尺寸。
     """
     d = img_dims(src)
     if not d:
         print("   跳过(读不出尺寸): " + c["src"]); return
     w, h = d
     tw, th, f = plate_box(w, h)
+    k = PREP[0] / float(W)                     # 台纸放大到 PREP；PREP 与成片同比例由 check_resolution 保证
+    tw, th = int(round(tw * k)) // 2 * 2, int(round(th * k)) // 2 * 2
     _parts = ["scale=%d:%d:flags=lanczos" % (tw, th)]
     if str(GRADE).strip():
         _parts.append(GRADE)
     if c.get("tweak"):
         _parts.append(c["tweak"])
-    _parts.append("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=%s" % (W, H, PLATE_COLOR))
+    _parts.append("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=%s" % (PREP[0], PREP[1], PLATE_COLOR))
     _parts.append("setsar=1")
     run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", ",".join(_parts),
          "-frames:v", "1", "img%02d.png" % i],
-        "prep %d/%d  %s  贴纸 %dx%d -> %dx%d (x%.2f)"
-        % (i, len(CLIPS), c["src"], w, h, tw, th, f))
+        "prep %d/%d  %s  贴纸 %dx%d -> 成片上 %dx%d (x%.2f)"
+        % (i, len(CLIPS), c["src"], w, h, int(round(tw / k)), int(round(th / k)), f))
 
 
 def prep_video(i, c):
@@ -2948,15 +3041,12 @@ def check_resolution():
     而它们做静帧完全够用。讲述片尤其吃这个：历史题材的真实图像常常只有这个分辨率。
     """
     bad, rows, warn_pp, vrows, prows = [], [], [], [], []
-    # **贴纸版式和 PREP 的组合会静默出错。** prep_plate 出的是成片尺寸的图，
-    # 而 pass_a 的 static_vf 会把 PREP 尺寸缩到成片尺寸 —— PREP 还是 3840x2160
-    # 时，那张已经是 1920x1080 的台纸会被再缩一半，成片上图只有半幅大而四周全是台纸。
-    # 渲得出来、不报错、退出码 0，只有真看画面才发现。
-    if any(c.get("fit") == "plate" for c in CLIPS) and tuple(PREP) != (W, H):
-        bad.append("有贴纸版式的镜，但 PREP=%s 不等于成片尺寸 %dx%d —— "
-                   "pass_a 会把台纸再缩一次，成片上图只有 %.0f%% 大小。"
-                   "用贴纸版式就要把 PREP 设成 (%d, %d)"
-                   % (tuple(PREP), W, H, W / float(PREP[0]) * 100, W, H))
+    # 贴纸镜出 PREP 尺寸的台纸（prep_plate），pass_a 再缩回成片 —— 这要求 PREP 与成片**同比例**，
+    # 否则台纸会被拉变形。2026-10-18 之前这里要求 PREP＝成片尺寸（理由「会再缩一半」其实不成立，
+    # static_vf 按相对尺寸裁），贴纸镜和运镜镜因此不能同片。
+    if any(c.get("fit") == "plate" for c in CLIPS) and abs(PREP[0] * H - PREP[1] * W) > max(W, H):
+        bad.append("有贴纸版式的镜，但 PREP=%s 和成片 %dx%d 不同比例 —— 台纸会被拉变形"
+                   % (tuple(PREP), W, H))
     for i, c in enumerate(CLIPS, 1):
         if c.get("video"):
             # **视频镜不走 pp 判据。** 档案影像天生就低分辨率 —— 640x480 铺到
@@ -3735,12 +3825,13 @@ def preview(lang=None):
                          int(H * 0.16) + k * int(PV_FS * 1.7), txt))
     # **逐行堆叠，不要挤成一条。** 排版要和成片一模一样，
     # 否则「字幕跟不跟得上」这一项验的就不是真东西了。
-    for st, en, txt, _, _, _ in lines:
-        parts = sub_lines(txt)
-        for j, q in enumerate(parts):
-            y = SUB_BOT - (len(parts) - 1 - j) * SUB_LH - SUB_FS // 2
-            ev.append("Dialogue: 1,%s,%s,M,,0,0,0,,{\\pos(%d,%d)}%s"
-                      % (ts(st), ts(en), SUB_CX, y, q))
+    for st0, en0, txt0, _, _, _ in lines:
+        for st, en, txt in cue_times(st0, en0, txt0):
+            parts = sub_lines(txt)
+            for j, q in enumerate(parts):
+                y = SUB_BOT - (len(parts) - 1 - j) * SUB_LH - SUB_FS // 2
+                ev.append("Dialogue: 1,%s,%s,M,,0,0,0,,{\\pos(%d,%d)}%s"
+                          % (ts(st), ts(en), SUB_CX, y, q))
     with open("_pv.ass", "w", encoding="utf-8-sig") as f:
         f.write("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\n"
                 "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n" % (W, H)
@@ -3809,8 +3900,9 @@ def make_srt(lang=None):
         if i + 1 < len(lines) and en > lines[i + 1][0] - 0.04:
             en = max(st + 0.4, lines[i + 1][0] - 0.04)
             fixed += 1
-        ev.append("%d\n%s --> %s\n%s\n" % (len(ev) + 1, srt_ts(st), srt_ts(en),
-                                           "\n".join(sub_lines(txt))))
+        for t0, t1, cue in cue_times(st, en, txt):       # 长句分屏：一屏一条 SRT
+            ev.append("%d\n%s --> %s\n%s\n" % (len(ev) + 1, srt_ts(t0), srt_ts(t1),
+                                               "\n".join(sub_lines(cue))))
     out = os.path.join(out_dir(), srt_name(lang))
     with open(out, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(ev))
@@ -3827,18 +3919,20 @@ def make_ass():
     lines, _, _, starts = timeline()
     ev = []
     if SUB_MODE == "burn":
-        for st, en, txt, _, _, _ in lines:
-            parts = sub_lines(txt)
-            for j, p in enumerate(parts):
-                y = SUB_BOT - (len(parts) - 1 - j) * SUB_LH - SUB_FS // 2
-                ev.append("Dialogue: 0,%s,%s,M,,0,0,0,,{\\pos(%d,%d)}{\\fad(200,200)}%s"
-                          % (ts(st), ts(en), SUB_CX, y, p))
+        for st0, en0, txt0, _, _, _ in lines:
+            for st, en, txt in cue_times(st0, en0, txt0):
+                parts = sub_lines(txt)
+                for j, p in enumerate(parts):
+                    y = SUB_BOT - (len(parts) - 1 - j) * SUB_LH - SUB_FS // 2
+                    ev.append("Dialogue: 0,%s,%s,M,,0,0,0,,{\\pos(%d,%d)}{\\fad(200,200)}%s"
+                              % (ts(st), ts(en), SUB_CX, y, p))
     if TITLE_CARD:
+        _t0, _t1 = title_window()
         ev.append("Dialogue: 0,%s,%s,T,,0,0,0,,{\\pos(%d,%d)}{\\fad(900,900)}%s"
-                  % (ts(TITLE_CARD["t0"]), ts(TITLE_CARD["t1"]),
+                  % (ts(_t0), ts(_t1),
                      W // 2, TITLE_CARD["y"], TITLE_CARD["head"]))
         ev.append("Dialogue: 0,%s,%s,TS,,0,0,0,,{\\pos(%d,%d)}{\\fad(900,900)}%s"
-                  % (ts(TITLE_CARD["t0"] + 0.6), ts(TITLE_CARD["t1"]),
+                  % (ts(_t0 + 0.6), ts(_t1),
                      W // 2, TITLE_CARD["y"] + 92, TITLE_CARD["sub"]))
     for _sn, _tx in sorted(SHOT_LABELS.items()):
         _i = _sn - 1
@@ -4577,13 +4671,19 @@ def vofit(target=None):
               % (rate, int(-(-short * rate // 1))))
         sys.exit("     别把这活交给 atempo：听得出来的毛病换看不出来的超时，不是修好。")
 
-    if not os.path.isdir(VO_RAW):
-        os.makedirs(VO_RAW)
-        for n in NARR:
-            src = vo_path(n)
-            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-c", "copy",
-                            os.path.join(VO_RAW, os.path.basename(src))], check=True)
+    first = not os.path.isdir(VO_RAW)
+    os.makedirs(VO_RAW, exist_ok=True)
+    added = []
+    for n in NARR:            # 按文件补：重配过的句子 raw 里没有（同 langfit，2026-10-18）
+        src = vo_path(n)
+        raw = os.path.join(VO_RAW, os.path.basename(src))
+        if os.path.exists(src) and not os.path.exists(raw):
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-c", "copy", raw], check=True)
+            added.append(n["vo"])
+    if first:
         print("  原件已备份到 %s/（以后每次都从这里重新推导）" % VO_RAW)
+    elif added:
+        print("  补备份 %d 条新原件到 %s/：%s" % (len(added), VO_RAW, " ".join(added[:8])))
 
     print("  倍率 %.3f（上限 %.2f）—— 逐条拉伸，不变调" % (factor, ATEMPO_MAX))
     for n in NARR:

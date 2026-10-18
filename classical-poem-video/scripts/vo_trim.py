@@ -27,6 +27,8 @@ import io
 import os
 import re
 import shutil
+import hashlib
+import json
 import subprocess
 import sys
 
@@ -102,6 +104,42 @@ def speech_span(path):
     return talk[0], min(talk[-1] + WIN, dur), dur
 
 
+LEDGER = "_trimmed.json"   # ORIG_DIR 里：{文件名: 剪完写进 VO_DIR 那份的 sha1}
+
+
+def sha1(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(1 << 16), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def is_fresh(src, orig, ledger, f, derived):
+    """VO_DIR 里这一条是不是**重新生成的新文件**。返回 True / False / None（拿不准，只警告）。
+
+    2026-10-18《海底四十小時》踩到的坑：幂等规则是「备份里有原件就从原件剪」，
+    于是重出过的句子只要忘了删 vo_orig/ 里的同名旧原件，apply 就会拿**旧录音**剪一刀、
+    再把**新录音覆盖掉** —— 不报错，量出来的时长还跟改稿前一模一样。
+
+    **只信账本，不猜。** 第一版按时长猜，当场就错：langfit 会用 atempo 改写 vo_en/，
+    时长对不上原件，于是 10 条压过速的英文被当成新录音、把压过的文件备份成了「原件」。
+      - 账本记着这一条、sha1 对得上 → 是上次剪出来的，照旧从原件重剪。
+      - 对不上、而且**没有下游在改写这个目录**（没有 _raw 目录：langfit / vofit 都没跑过）
+        → 一定是外面换进来的新录音，当原件重新备份。
+      - 对不上、但有 _raw 目录 → 可能是 langfit / vofit 的产物，也可能是新录音：不动，报出来。
+      - 账本里没有（账本之前剪的老项目）→ 维持老行为。
+    重出旁白的正路是 el_tts.py gen：它出完新录音会把 _orig / _raw 里的同名旧件一起删掉。
+    """
+    if not os.path.exists(orig):
+        return True
+    if f not in ledger:
+        return False
+    if sha1(src) == ledger[f]:
+        return False
+    return None if derived else True
+
+
 def main():
     global VO_DIR, ORIG_DIR
     mode = sys.argv[1] if len(sys.argv) > 1 else "measure"
@@ -127,8 +165,15 @@ def main():
     if not files:
         print("vo/ 里没有 VO_*.mp3"); return 1
 
+    ledger = {}
     if mode == "apply":
         os.makedirs(ORIG_DIR, exist_ok=True)
+        lp = os.path.join(ORIG_DIR, LEDGER)
+        if os.path.exists(lp):
+            ledger = json.load(open(lp, encoding="utf-8"))
+    # 有下游在从这个目录推导（langfit 用 vo_en_raw/，vofit 用 vo_raw/）时，sha1 对不上不一定是新录音
+    derived = os.path.isdir(VO_DIR + "_raw") or (os.path.basename(VO_DIR) == "vo" and os.path.isdir(os.path.join(os.path.dirname(VO_DIR) or ".", "vo_raw")))
+    fresh, unsure = [], []
 
     tot_cut = tot_dur = 0.0
     bad = []
@@ -138,7 +183,17 @@ def main():
         orig = os.path.join(ORIG_DIR, f)
         # 幂等：备份里已有原件就从原件剪，不在剪过的文件上再剪一刀、也不覆盖备份。
         # （2026-10-16《一杯水》：重跑 apply 每次多削 0.04~0.07s 字头字尾，还多一代编码。）
-        # 换了新文件要重剪：先删 ORIG_DIR 里的同名旧原件。
+        # **重新生成过的句子自动认出来**（is_fresh）：新文件当原件重新备份再剪，
+        # 不用再手动去删 ORIG_DIR 里的旧原件（2026-10-18 之前要删，忘了就静默用旧录音）。
+        if mode == "apply" and os.path.exists(orig):
+            fr = is_fresh(src, orig, ledger, f, derived)
+            if fr:
+                shutil.copy2(src, orig)
+                fresh.append(f)
+            elif fr is None:
+                unsure.append(f)
+                print("%-12s %8s  ?? 和上次剪的不一样、目录有下游在改写 —— 跳过，不动" % (f, ""))
+                continue
         inp = orig if (mode == "apply" and os.path.exists(orig)) else src
         a, b, dur = speech_span(inp)
         tot_dur += dur
@@ -171,6 +226,18 @@ def main():
                     os.remove(tmp)
             else:
                 os.replace(tmp, src)
+                ledger[f] = sha1(src)
+
+    if mode == "apply":
+        json.dump(ledger, open(os.path.join(ORIG_DIR, LEDGER), "w", encoding="utf-8"), indent=0, sort_keys=True)
+        if fresh:
+            print()
+            print("认出 %d 条重新生成的新文件，已当原件重新备份：%s" % (len(fresh), " ".join(fresh)))
+        if unsure:
+            print()
+            print("!! %d 条和上次剪出来的不一样，但这个目录有下游（_raw）在改写，没法断定是不是新录音，**没动**：%s"
+                  % (len(unsure), " ".join(unsure)))
+            print("   是重出的新录音 → 删掉 %s/ 和 _raw/ 里的同名旧件再跑（el_tts.py gen 会自动删）" % os.path.basename(ORIG_DIR))
 
     print()
     print("条数        : %d" % len(files))
@@ -187,7 +254,7 @@ def main():
         print("这是干量。要真剪：python vo_trim.py apply（原件备份到 vo_orig/）")
     else:
         print()
-        print("剪完了。原件在 vo_orig/。")
+        print("剪完了。原件在 %s/。" % os.path.basename(ORIG_DIR))
         print("现在 GAP_PRE/GAP_POST 填的就是**可听气口**，不用再折算。")
         print("接着跑：python make_story_v.py sync")
     return 0

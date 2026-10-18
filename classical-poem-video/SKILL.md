@@ -43,10 +43,12 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 有平台硬线时这个差额是致命的，而它只在这个窗口里看得见。
 详见 `references/storytelling.md` 第〇节。
 
-**旁白 TTS 有一套定死的配置，照抄别调参**（doubao / 渊博小叔 / storytelling /
-emotionScale 3 / **不设 speedRatio**），加一条统一的 `performancePrompt` 再挑十来句
-单独加写。"有 AI 味"九成是这几条没照做，尤其是「句尾略收不上扬」。
-见 `references/storytelling.md` 第八节。
+**旁白 TTS 用 `el_tts.py`（2026-10-18 起的默认）**：ElevenLabs `eleven_v4`，中文 Jerry Lin（台湾腔）、
+英文 David - Documentary；一句一条、只给 previous_text 不给 next_text；生成完 `el_tts.py asr` 转写核对 ——
+它按**上下文拼音**分类，同音写法和三声变调自动放行，只列多音字读错、读成别的字、乱码（《海底四十小時》
+138 条报警从 60 条降到 3 条，真读错的一条没漏）。项目差异（换字、换 seed）写 `build/tts_fix.json`，不改代码。
+没有语速旋钮，实测约 3.9 字/秒，写稿按这个数估。旧的豆包配置（渊博小叔 / performancePrompt）留在
+`references/storytelling.md` 第八节后半，换回豆包时照抄。
 
 **交付物不只是成片。** 还要附一份 `发布文案.md` —— 各平台的标题、简介、关键词，
 **复制粘贴就能用**。骨架 `python publish.py new 片名`，写完 `python publish.py check`
@@ -188,12 +190,22 @@ emotionScale 3 / **不设 speedRatio**），加一条统一的 `performancePromp
 
 ## 出图和配乐往往不在这个会话里
 
-不要假设当前会话有图像生成工具（ChatCut 连接器只有 music / video / voice / sound），
+不要假设当前会话有图像生成接口（ChatCut 连接器只有 music / video / voice / sound），
 配乐的下载接口也要用户的登录会话（Agent 直接取会 401）。
-**所以「写一份自包含的出图任务书交给用户」不是退路，它就是这条流水线的正常形态。**
+**所以「写一份自包含的出图任务书」不是退路，它就是这条流水线的正常形态。**
 任务书里的尺寸一律来自 `budget`，逐镜（或逐档）写；样图出两张把风格夹住
 （情绪核心那张 + 最满最亮、字幕带最难留空那张）。细则在 `references/sourcing.md` 末尾。
 在 Codex 里跑，先读 `references/codex.md`。
+
+**有浏览器面板时，任务书可以自己执行：ElevenLabs 网页版**（`el_web_image.py` + `el_web_image.js`）。
+任务书写成「固定开头＋一句画面＋固定结尾」，`el_web_image.py js` 出压缩的提示词，页面里逐张提交、
+逐张收 2K 原图、导出链接，`fetch` 下载。三条最容易白花额度/时间的：**任何 navigate 后设定会被重置**
+（提交前 `__checkSettings()`）；**面板隐藏时后台标签页的定时器被节流**（JS 里一律用 MessageChannel 等待）；
+**按提示词对上名字，拿到的仍可能是上一张**（下载完拼联络表逐张看）。见 `references/sourcing.md`「ElevenLabs 网页版」。
+
+**档案照片（海军、档案馆的 600~740px 线上图）**：`upscale.py` 先 EDSR ×2（CPU，单进程，别并行），
+再用贴纸版式 `fit="plate"` 整张贴台纸。**2026-10-18 起贴纸镜和运镜镜可以同片**（台纸按 PREP 出），
+不必再把 PREP 降到成片尺寸。
 
 ## 双语音轨（摘要，细则 `references/bilingual.md`）
 
@@ -284,7 +296,11 @@ emotionScale 3 / **不设 speedRatio**），加一条统一的 `performancePromp
 | `join.py` | 分段拼全片：一次全局响度归一、按实际段起点合并 SRT、接缝校验、多音轨 `-map 0` |
 | `make_v.py` | 诗词模式竖版 / MV，内含《雨霖铃》的完整配置 |
 | `lyric_sync.py` | MV 对轴：`probe` → `spans` / `snap` / `lrc` → `check` → `proof`（必须听一遍） |
-| `vo_trim.py` | 剪 TTS 每条头尾自带的静音。**讲述片下载完旁白、`sync` 之前必跑** |
+| `narr_build.py` | 讲述稿.md → narr.json（一句一条 VO）。表格版（`\| 句号 \| 旁白 \| 画面 \|`）和镜头段落版（`**鏡N**` + `> 甲｜乙`）都认 |
+| `el_tts.py` | ElevenLabs 旁白：`gen zh/en` 逐条生成（重出时自动清 _orig/_raw 旧件）、`asr zh/en` 转写分类核对、`credits` 查额度 |
+| `vo_trim.py` | 剪 TTS 每条头尾自带的静音。**讲述片下载完旁白、`sync` 之前必跑**。账本 `_trimmed.json` 认得出重出过的新录音（不再拿旧原件盖掉） |
+| `el_web_image.py` / `.js` | ElevenLabs 网页版出图：任务书 → 压缩提示词 → 页面里提交与收 2K 原图 → 下载 |
+| `upscale.py` | 档案照片 EDSR ×2 超分（OpenCV，CPU）。中文路径安全；单进程（OpenCV 自己吃满线程，多进程反而慢 3 倍） |
 | `vo_split.py` | 把一整条真人朗读切成一句一个文件 |
 | `music_index.py` / `sfx_index.py` | 素材库（`ani/_素材库/`）。`music_index.py find --dur <片长>` 是查库入口 |
 | `publish.py` | 发布文案骨架 + 量各平台标题截断位置 |
