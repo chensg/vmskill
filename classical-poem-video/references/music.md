@@ -122,6 +122,10 @@ yue2-music 技能的翻唱、改谱、换词、ABC 编辑这些 ComfyUI 做不�
 要自己建环境：`uv venv --python 3.12`（uv 0.13 在 Windows 建版本链接有 bug，设 `UV_PYTHON_INSTALL_DIR` 到 D 盘就绕过）
 → 从 `download.pytorch.org/whl/cu128` 装 `torch==2.10.0` → 再装 `requirements-inference.txt`。
 仓库要用 `core.eol=lf` 检出，否则 `verify_bundle.py` 因 CRLF 报「Missing/corrupt bundled file」。
+**Windows 还要打一个补丁**：Windows 版 torch 没编译 FlashAttention，而 yue2/cuda_graph.py 的 `auto` 只看算子在不在就选 flash，
+一生成就报「USE_FLASH_ATTENTION was not enabled for build」。跑一次 `scripts/yue2_patch_windows.py`（用运行时的 python；
+可重复执行），让它改看 `torch.backends.cuda.is_flash_attention_available()`，自动落到 cuDNN 注意力。
+打完后官方示例：44 秒生成 33 秒音频，`instrumental.py verify` 通过（10-21）。
 
 ## 二、公版 / 开放授权
 
