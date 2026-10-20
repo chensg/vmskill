@@ -37,7 +37,7 @@
 ==== 硬件红线（脚本会拦）====
   - 3090 是矿卡：功耗上限必须 ≤ 336W（Afterburner 90%），负载下显存频率应 ≈ 9000MHz（-500）。
     提交前查上限；跑的时候每 3 秒采一次，功耗 > 345W 或显存频率 > 9150MHz 就 /interrupt 并退出。
-  - 内存 32GB：图、影片、放大不能同时跑。提交前队列必须是空的（有别的任务就等）；
+  - 内存 32GB：图、影片、放大不能同时跑（CPU 上的 upscale.py/EDSR 也算，一张 10GB）。提交前队列必须是空的（有别的任务就等）；
     换一类模型前先 POST /free（记在 %TEMP%/comfy_gen_family.txt）。
 """
 import argparse
@@ -229,12 +229,25 @@ def run(key, wf, out_path, label):
     w = Watch()
     w.start()
     last = ""
+    dead = 0.0
     try:
         while True:
             time.sleep(5)
             if w.bad:
                 sys.exit("!!! %s：%s，已中断。先检查 Afterburner 再重跑。" % (label, w.bad))
-            h = _req("/history/" + pid).get(pid)
+            try:
+                h = _req("/history/" + pid, timeout=30).get(pid)
+                dead = 0.0
+            except Exception as e:
+                # 2026-10-20：CPU 上同时跑 EDSR（upscale.py，一张 10GB），32GB 内存被挤爆，
+                # ComfyUI 整个被换出到虚拟内存、HTTP 不响应，旧版在这里直接抛 TimeoutError 退出。
+                dead += 35
+                print("   ComfyUI %ds 没响应（%s）—— 多半是内存被别的进程挤爆、它被换出了；"
+                      "看任务管理器里有没有在跑 upscale.py / 别的大进程" % (dead, type(e).__name__), flush=True)
+                if dead >= 300:
+                    sys.exit("!!! %s：ComfyUI 5 分钟没响应。停掉吃内存的进程；还不行就重启 ComfyUI 再重跑"
+                             "（已出的不会重出）" % label)
+                continue
             if h:
                 st = h.get("status", {})
                 if st.get("status_str") == "error" or not st.get("completed", True):
