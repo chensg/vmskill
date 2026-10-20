@@ -7,11 +7,14 @@
     python comfy_gen.py show <档名> [▶档名]          # 打印完整提示词（影片那张表的写 ▶档名）
     python comfy_gen.py image [档名...] --fast [--variants N] [--seed N]   # 候选：4 步，进 候选/<档名>/
     python comfy_gen.py image [档名...] [--variants N] [--seed N]          # 50 步；--variants 也进候选
+    python comfy_gen.py image <档名> --trial [--size WxH]                  # 试验：50 步进候选，不盖定稿
     python comfy_gen.py promote <档名> [候选文件名|序号]                  # 选定的候选转正成 <档名>.png
     python comfy_gen.py sheet [档名...] | sheet --cand <档名>              # 拼联络表（带档名）
     python comfy_gen.py video [档名...] [--res 480|768] [--turbo] [--seed N]
     python comfy_gen.py strip <档名>                # 影片 6 帧条 + 切镜检测
     python comfy_gen.py upscale <档名...> [--seedvr2|--lanczos] [--to WxH]
+    python comfy_gen.py music <名> --style "…" [--secs 180] [--lyrics-file f]   # YuE2 配乐 → ../素材/配乐/（默认纯音乐）
+    python comfy_gen.py sfx <名> "<描述>" [--secs 5] [--kind SFX|One-shot] [--enhance]   # Stable Audio 3 → ../素材/音效/
     python comfy_gen.py notes                       # 素材/生成/生成记录.md（每个成品是怎么来的）
     python comfy_gen.py free                        # 卸模型、清显存/内存
 
@@ -41,7 +44,7 @@
 首幀写图的档名＝图生影片（先出图、再让它动，构图最可控）；写 - ＝文生影片。
 
 ==== 本机（实测，memory local-3090-model-licenses）====
-  图  Qwen-Image-2512（Apache-2.0）：50 步 928×1664 约 3.5 分钟 / 4 步 10~20 秒（冷启动 70 秒）
+  图  Qwen-Image-2512（Apache-2.0）：默认直出 1088×1920，50 步约 4.7 分钟（928×1664 是 3.5 分钟）/ 4 步 10~20 秒
   影片 MiniMax H3（20 步）：480p 约 1 分钟/秒成片；768p 约 5.3 分钟/秒成片（12 秒 67 分钟）
       **发布说明要写「MiniMax H3 生成」并勾 AI 披露**；美/欧/英/韩不在它的免费商用范围
   放大 SeedVR2 3B（Apache-2.0）：约 70 秒/秒成片（480 或 768 进都差不多），显存约 10GB
@@ -103,12 +106,26 @@ NODES = {
                    image=("114", "LoadImage"), save=("92", "SaveVideo")),
     "seedvr2": dict(video=("73", "LoadVideo"), mult=("66:57", "ResizeImageMaskNode"),
                     chunk=("66:105", "PrimitiveBoolean"), save=("76", "SaveVideo")),
+    # YuE2（ComfyUI 原生，int8）：33:24 写谱 → 33:30 开关（true＝用模型写的谱，false＝用 33:32 给的谱）→ 33:25 生成
+    "yue2": dict(ckpt=("33:15", "CheckpointLoaderSimple"), plan=("33:24", "YuE2GenerateABC"),
+                 preview=("33:14", "PreviewAny"), use_plan=("33:31", "PrimitiveBoolean"),
+                 abc=("33:32", "PrimitiveString"), gen=("33:25", "YuE2GenerateMusic"), seed=("33:34", "SeedNode"),
+                 style=("33:36", "PrimitiveStringMultiline"), lyrics=("33:37", "PrimitiveStringMultiline"),
+                 save=("10", "SaveAudioAdvanced")),
+    # Stable Audio 3 Medium：52:31 描述 →（52:35 true 时先过 52:28 的 LLM 改写，52:43 选 Music/Instrument/SFX/One-shot）
+    "stable_audio3": dict(text=("52:31", "PrimitiveStringMultiline"), enhance=("52:35", "PrimitiveBoolean"),
+                          kind=("52:43", "CustomCombo"), secs=("52:36", "PrimitiveFloat"),
+                          sampler=("52:3", "KSampler"), neg=("52:7", "CLIPTextEncode"), save=("57", "SaveAudioAdvanced")),
 }
-FAMILY = {"qwen2512": "image", "h3_t2v": "video", "h3_i2v": "video", "seedvr2": "upscale"}
+FAMILY = {"qwen2512": "image", "h3_t2v": "video", "h3_i2v": "video", "seedvr2": "upscale",
+          "yue2": "music", "stable_audio3": "sfx"}
+YUE2_SKILL = os.path.expanduser("~/.claude/skills/yue2-music/instrumental/scripts/instrumental.py")
+# 写谱用的曲式标签（不唱，只让模型排出段落、拉够长度）。官方纯音乐流程：模型写谱 → Vocal 音符挪到 Ins → 按谱生成。
+PLAN_TAGS = "[Intro]\n\n[Verse]\n\n[Chorus]\n\n[Verse]\n\n[Chorus]\n\n[Bridge]\n\n[Chorus]\n\n[Outro]"
 H3_SIZE = {480: (864, 480), 768: (1344, 768)}       # 横；竖版对调。都是 32 的倍数
 
 # 预计耗时（秒）的缺省值：2026-10-20 实测；项目里有记录时用本项目的中位数。
-ETA_DEFAULT = {("image", 50): 205, ("image", 4): 12, ("video", 480): 60, ("video", 768): 320,
+ETA_DEFAULT = {("image", 50): 280, ("image", 4): 12, ("video", 480): 60, ("video", 768): 320,
                ("upscale", "seedvr2"): 71}
 COLD = 70                    # 换模型后的首个任务多出来的加载时间
 
@@ -261,6 +278,24 @@ def load_wf(key):
 
 def run(key, wf, out_path, label):
     """交一个 prompt，等它跑完，把输出存到 out_path。返回 (秒, 峰值)。"""
+    h, sec, peak = submit(key, wf, label)
+    save = NODES[key]["save"][0]
+    files = [f for v in h["outputs"].get(save, {}).values() if isinstance(v, list)
+             for f in v if isinstance(f, dict) and f.get("filename")]
+    if not files:
+        sys.exit("!!! %s 跑完了但节点 %s 没有输出" % (label, save))
+    f = files[0]
+    q = urllib.parse.urlencode(dict(filename=f["filename"], subfolder=f.get("subfolder", ""),
+                                    type=f.get("type", "output")))
+    data = _req("/view?" + q, timeout=600)
+    _keep_old(out_path)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    open(out_path, "wb").write(data)
+    return sec, peak
+
+
+def submit(key, wf, label):
+    """交一个 prompt，等它跑完。返回 (history 那一条, 秒, 峰值)。输出是文本（PreviewAny）时直接读 history。"""
     guard_gpu()
     wait_idle()
     switch_family(FAMILY[key])
@@ -300,19 +335,7 @@ def run(key, wf, out_path, label):
                 last = el
     finally:
         w.stop.set()
-    save = NODES[key]["save"][0]
-    files = [f for v in h["outputs"].get(save, {}).values() if isinstance(v, list)
-             for f in v if isinstance(f, dict) and f.get("filename")]
-    if not files:
-        sys.exit("!!! %s 跑完了但节点 %s 没有输出" % (label, save))
-    f = files[0]
-    q = urllib.parse.urlencode(dict(filename=f["filename"], subfolder=f.get("subfolder", ""),
-                                    type=f.get("type", "output")))
-    data = _req("/view?" + q, timeout=600)
-    _keep_old(out_path)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    open(out_path, "wb").write(data)
-    return time.time() - t0, w.peak
+    return h, time.time() - t0, w.peak
 
 
 def _keep_old(p):
@@ -487,15 +510,18 @@ def _gen_image(n, steps, sd, w, h, out, wf0, label, extra=None):
     print("   存 %s（%.0f 秒，%s）" % (rec["out"], sec, _peak_txt(peak)))
 
 
-def cmd_image(names, fast, seed, size, variants):
+def cmd_image(names, fast, seed, size, variants, trial=False):
     rows = ew._brief()[4]
     todo = names or [n for n in rows if not os.path.exists(os.path.join(dst(), n + ".png"))]
     if size:
         w, h = map(int, size.lower().split("x"))
     else:
-        w, h = (928, 1664) if vertical() else (1664, 928)
+        # 2026-10-21 试验：1088×1920 直出和 928×1664 同种子比，没有变形/重复/分格，细节略好，慢 40%（280s vs 200s）；
+        # 换来的是成片尺寸以上 —— 不再需要每支都写 PP_ACCEPT_REASON 承认「静帧在放大」。
+        w, h = (1088, 1920) if vertical() else (1920, 1088)
     steps = 4 if fast else 50
-    to_cand = fast or variants > 1
+    to_cand = fast or variants > 1 or trial
+    tag = ("-%dx%d" % (w, h)) if size else ""
     k = max(1, variants)
     jobs = []
     for n in todo:
@@ -507,7 +533,7 @@ def cmd_image(names, fast, seed, size, variants):
         base = seed_of(n, seed)
         for j in range(k):
             sd = base + j
-            out = (os.path.join(cand_dir(n), "%ds-%d.png" % (steps, sd)) if to_cand
+            out = (os.path.join(cand_dir(n), "%ds-%d%s.png" % (steps, sd, tag)) if to_cand
                    else os.path.join(dst(), n + ".png"))
             if to_cand and os.path.exists(out):
                 continue                      # 同种子同步数的候选已经有了
@@ -542,7 +568,7 @@ def cmd_promote(name, pick):
     out = os.path.join(dst(), name + ".png")
     _keep_old(out)
     shutil.copyfile(src, out)
-    m = re.match(r"(\d+)s-(\d+)\.png$", pick)
+    m = re.match(r"(\d+)s-(\d+)(?:-\d+x\d+)?\.png$", pick)
     log(dict(kind="promote", name=name, src="候选/%s/%s" % (name, pick), out=name + ".png",
              steps=int(m.group(1)) if m else None, seed=int(m.group(2)) if m else None))
     print("转正 %s ← 候选/%s/%s" % (name + ".png", name, pick))
@@ -594,7 +620,7 @@ def _first_frame(ff, w, h):
     rows = ew._brief()[4]
     if ff not in rows:
         sys.exit("!!! 首幀 %s 不在图的任务书里" % ff)
-    fw, fh = (928, 1664) if h > w else (1664, 928)
+    fw, fh = (1088, 1920) if h > w else (1920, 1088)
     print("   首幀 %s 还没出 → 补一张 4 步版（只当首帧用，不用 50 步）" % ff)
     _gen_image(ff, 4, seed_of(ff, None), fw, fh, src, load_wf("qwen2512"), ff, dict(role="first_frame"))
     return src
@@ -721,6 +747,131 @@ def cmd_upscale(names, how, to):
         print("   存 %s  %sx%s %.2fs（%.0f 秒）" % (os.path.basename(out), ow, oh, odur, sec))
 
 
+def _audio_dir(sub):
+    return os.path.join(os.path.dirname(dst()), sub)
+
+
+def _text_out(h, nid):
+    """PreviewAny 的文本输出（history outputs 里通常是 {"text": [...]}）。"""
+    o = h.get("outputs", {}).get(nid, {})
+    for v in o.values():
+        if isinstance(v, list) and v and isinstance(v[0], str):
+            return v[0]
+    return None
+
+
+def cmd_music(name, style, secs, seed, lyrics_file):
+    """YuE2 本地配乐（ComfyUI 原生 int8）。默认纯音乐，照官方 yue2-music 纯音乐流程：
+    ① YuE2 按风格＋曲式标签写谱（ABC）② 官方 instrumental.py 把 Vocal 音符挪到 Ins（CPU）③ 按改好的谱生成。
+    给 --lyrics-file 就是带人声的歌（跳过 ②，直接用模型写的谱）。产出 ../素材/配乐/<名>.mp3（另留 .flac）。
+    授权：权重 CC BY-NC 4.0＋作者给个人创作者的变现许可（可变现、不收费，署名可选、鼓励写 YuE2）。"""
+    out_dir = _audio_dir("配乐")
+    work = os.path.join(out_dir, "_yue2_" + name)
+    if os.path.exists(work):
+        _keep_old(work)
+    os.makedirs(work)
+    sd = seed_of(name, seed)
+    lyrics = open(lyrics_file, encoding="utf-8").read() if lyrics_file else PLAN_TAGS
+    instrumental = not lyrics_file
+    say_eta(60 + secs * 1.0 + COLD, 2)
+    wf0 = load_wf("yue2")
+    N = NODES["yue2"]
+    # ① 只写谱：剪出 ckpt / 种子 / 风格 / 曲式 / 写谱 / 预览 六个节点
+    keep = [N[k][0] for k in ("ckpt", "seed", "style", "lyrics", "plan", "preview")]
+    plan = {k: json.loads(json.dumps(wf0[k])) for k in keep}
+    plan[N["preview"][0]]["inputs"]["source"] = [N["plan"][0], 0]
+    plan[N["style"][0]]["inputs"]["value"] = style
+    plan[N["lyrics"][0]]["inputs"]["value"] = lyrics
+    plan[N["seed"][0]]["inputs"]["seed"] = sd
+    print("① YuE2 写谱  seed=%d  %s" % (sd, "纯音乐" if instrumental else "带人声"))
+    h, sec1, peak = submit("yue2", plan, name + " 写谱")
+    abc = _text_out(h, N["preview"][0])
+    if not abc or "X:" not in abc:
+        sys.exit("!!! 写谱没拿到 ABC（%s）" % json.dumps(h.get("outputs", {}), ensure_ascii=False)[:300])
+    open(os.path.join(work, "plan.abc"), "w", encoding="utf-8").write(abc)
+    use_style, use_lyrics, use_abc = style, lyrics, abc
+    if instrumental:
+        # ② 官方脚本：Vocal → Ins，只用 CPU（给了 ABC 就不需要 GPU / 官方运行时）
+        if not os.path.exists(YUE2_SKILL):
+            sys.exit("!!! 找不到 yue2-music 技能（%s）：纯音乐要它把人声旋律挪到乐器声部" % YUE2_SKILL)
+        r = subprocess.run([sys.executable, YUE2_SKILL, "run", "--abc", os.path.join(work, "plan.abc"),
+                            "--style", style, "--empty-lyrics", "--prepare-only", "--output", os.path.join(work, "inst")],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        prep = os.path.join(work, "inst", "prepared")
+        if r.returncode != 0 or not os.path.exists(os.path.join(prep, "score.abc")):
+            sys.exit("!!! 转纯乐器谱失败：%s" % (r.stderr or r.stdout)[-800:])
+        use_abc = open(os.path.join(prep, "score.abc"), encoding="utf-8").read()
+        use_style = open(os.path.join(prep, "style.txt"), encoding="utf-8").read().strip()
+        use_lyrics = open(os.path.join(prep, "lyrics.txt"), encoding="utf-8").read()
+        print("② 人声旋律已挪到乐器声部（官方 instrumental.py，见 %s）" % prep)
+    # ③ 按谱生成
+    wf = json.loads(json.dumps(wf0))
+    wf[N["use_plan"][0]]["inputs"]["value"] = False
+    wf[N["abc"][0]]["inputs"]["value"] = use_abc
+    wf[N["style"][0]]["inputs"]["value"] = use_style
+    wf[N["lyrics"][0]]["inputs"]["value"] = use_lyrics
+    wf[N["seed"][0]]["inputs"]["seed"] = sd
+    wf[N["gen"][0]]["inputs"]["max_duration"] = float(secs)
+    wf[N["save"][0]]["inputs"]["filename_prefix"] = "vmskill/music_" + name
+    flac = os.path.join(out_dir, name + ".flac")
+    print("③ 按谱生成（上限 %d 秒）" % secs)
+    sec2, peak2 = run("yue2", wf, flac, name + " 生成")
+    mp3 = os.path.join(out_dir, name + ".mp3")
+    _keep_old(mp3)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", flac, "-c:a", "libmp3lame", "-q:a", "0", mp3], check=True)
+    _, _, dur = probe_audio(mp3)
+    log(dict(kind="music", name=name, model="YuE2-3B (ComfyUI int8)", instrumental=instrumental,
+             license="YuE2 权重 CC BY-NC 4.0＋个人创作者变现许可；署名可选（#YuE2）", style=style, seed=sd,
+             secs=secs, dur=round(dur, 2), out="../配乐/" + name + ".mp3", sec=round(sec1 + sec2), peak=peak2))
+    print("   存 配乐/%s.mp3  %.1f 秒（%.0f 秒，%s）—— **要人听**：有没有人声、有没有中段断掉" % (
+        name, dur, sec1 + sec2, _peak_txt(peak2)))
+
+
+def probe_audio(p):
+    o = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", p],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    return None, None, float(json.loads(o or "{}").get("format", {}).get("duration") or 0)
+
+
+def cmd_sfx(name, text, secs, seed, kind, enhance):
+    """Stable Audio 3 Medium 本地音效 → ../素材/音效/<名>.mp3。
+    授权：Stability AI Community License —— 年收入 <100 万美元免费商用；**商用前要在 Stability AI 登记**；
+    发布处要显著写「Powered by Stability AI」（publish.py check 会查）。"""
+    wf = load_wf("stable_audio3")
+    N = NODES["stable_audio3"]
+    sd = seed_of(name, seed)
+    wf[N["text"][0]]["inputs"]["value"] = text
+    wf[N["enhance"][0]]["inputs"]["value"] = bool(enhance)
+    combo = wf[N["kind"][0]]["inputs"]
+    opts = [combo.get("option%d" % i) for i in range(1, 6)]
+    if kind not in opts:
+        sys.exit("!!! --kind 只能是 %s" % "/".join(o for o in opts if o))
+    combo.update(choice=kind, index=opts.index(kind))
+    wf[N["secs"][0]]["inputs"]["value"] = float(secs)
+    wf[N["sampler"][0]]["inputs"]["seed"] = sd
+    wf[N["save"][0]]["inputs"]["filename_prefix"] = "vmskill/sfx_" + name
+    if not enhance:
+        # 不改写就把 LLM 那条支路整个剪掉：ComfyUI 会校验图里每个加载节点的文件，剪了才不依赖 4.5GB 的 qwen3.5_2b
+        pos = next(k for k, v in wf.items() if v["class_type"] == "CLIPTextEncode" and isinstance(v["inputs"].get("text"), list))
+        wf[pos]["inputs"]["text"] = [N["text"][0], 0]
+        for k in [k for k, v in wf.items() if v["class_type"] in ("TextGenerate", "StringReplace", "JsonExtractString",
+                                                                  "ComfySwitchNode", "ComfyMathExpression", "PreviewAny",
+                                                                  "CustomCombo", "PrimitiveBoolean")
+                  or (v["class_type"] == "CLIPLoader" and "qwen" in v["inputs"].get("clip_name", ""))]:
+            del wf[k]
+        if any(isinstance(x, list) and x[0] not in wf for v in wf.values() for x in v["inputs"].values()):
+            sys.exit("!!! 剪 LLM 支路后还有节点指向被删的节点 —— 模板变了，重新导出")
+    out = os.path.join(_audio_dir("音效"), name + ".mp3")
+    print("音效 %s  %g 秒  %s%s  seed=%d" % (name, secs, kind, "（LLM 改写提示词）" if enhance else "", sd))
+    sec, peak = run("stable_audio3", wf, out, name)
+    _, _, dur = probe_audio(out)
+    log(dict(kind="sfx", name=name, model="Stable Audio 3 Medium",
+             license="Stability AI Community（<$1M 免费；商用需登记；署 Powered by Stability AI）",
+             text=text, sfx_kind=kind, enhance=bool(enhance), seed=sd, secs=secs, dur=round(dur, 2),
+             out="../音效/" + name + ".mp3", sec=round(sec), peak=peak))
+    print("   存 音效/%s.mp3  %.1f 秒（%.0f 秒，%s）—— 要人听" % (name, dur, sec, _peak_txt(peak)))
+
+
 def cmd_notes():
     """每个成品文件是怎么来的（最后一次产出它的记录），写 素材/生成/生成记录.md。
     手写的「为什么这样选」仍写在项目根的 素材处理说明.md；这一份可以随时重跑覆盖。"""
@@ -749,6 +900,10 @@ def cmd_notes():
                 ("  **切镜 %s**" % r["cuts"]) if r.get("cuts") else "")
         elif k == "upscale":
             how = "放大 %s ← %s" % (r.get("how"), r.get("src"))
+        elif k == "music":
+            how = "YuE2 %s %.0f 秒：%s" % ("纯音乐" if r.get("instrumental") else "带人声", r.get("dur", 0), (r.get("style") or "")[:40])
+        elif k == "sfx":
+            how = "Stable Audio 3 %s %.1f 秒：%s" % (r.get("sfx_kind"), r.get("dur", 0), (r.get("text") or "")[:40])
         else:
             how = k
         L.append("| %s | %s | %s | %s |" % (out, how, r.get("seed", ""), ("%ds" % r["sec"]) if r.get("sec") else ""))
@@ -757,7 +912,8 @@ def cmd_notes():
     for r in rs:
         by[r["kind"]] = by.get(r["kind"], 0) + (r.get("sec") or 0)
     L += ["", "显卡时间合计 %.1f 小时：%s" % (tot / 3600, "，".join("%s %.0f 分钟" % (k, v / 60) for k, v in by.items() if v)), "",
-          "授权：Qwen-Image-2512 / SeedVR2 Apache-2.0；MiniMax H3 要在说明里署名「MiniMax H3 生成」并勾 AI 披露。"]
+          "授权：Qwen-Image-2512 / SeedVR2 Apache-2.0；MiniMax H3 要在说明里署名「MiniMax H3 生成」并勾 AI 披露；"
+          "YuE2 个人创作者可变现（署名可选，鼓励写 YuE2）；Stable Audio 3 要先在 Stability AI 登记，说明里写「Powered by Stability AI」。"]
     p = os.path.join(dst(), "生成记录.md")
     open(p, "w", encoding="utf-8").write("\n".join(L) + "\n")
     print("写好 %s（%d 个文件）" % (p, len(L) - 4))
@@ -770,6 +926,7 @@ def main():
     ap.add_argument("--proj")
     ap.add_argument("--fast", action="store_true")
     ap.add_argument("--variants", type=int, default=1)
+    ap.add_argument("--trial", action="store_true")      # 试验：50 步也进候选（不盖定稿），--size 会写进文件名
     ap.add_argument("--cand")
     ap.add_argument("--turbo", action="store_true")
     ap.add_argument("--seed", type=int)
@@ -778,6 +935,11 @@ def main():
     ap.add_argument("--seedvr2", action="store_const", const="seedvr2", dest="how")
     ap.add_argument("--lanczos", action="store_const", const="lanczos", dest="how")
     ap.add_argument("--to")
+    ap.add_argument("--style")
+    ap.add_argument("--secs", type=float)
+    ap.add_argument("--lyrics-file")
+    ap.add_argument("--kind", default="SFX")
+    ap.add_argument("--enhance", action="store_true")
     a = ap.parse_args()
     if a.proj:
         set_proj(os.path.abspath(a.proj))
@@ -792,7 +954,7 @@ def main():
             p = vprompt(n[1:]) if n.startswith("▶") else ew.prompt(n)
             print("== %s %d 字\n%s" % (n, len(p), p))
     elif a.cmd == "image":
-        cmd_image(a.names, a.fast, a.seed, a.size, a.variants)
+        cmd_image(a.names, a.fast, a.seed, a.size, a.variants, a.trial)
     elif a.cmd == "promote":
         if not a.names:
             sys.exit("!!! promote <档名> [候选文件名|序号]")
@@ -808,6 +970,14 @@ def main():
         if not a.names:
             sys.exit("!!! upscale 要点名（哪几镜用 SeedVR2、哪几镜用 lanczos 是逐镜判断的）")
         cmd_upscale(a.names, a.how or "lanczos", a.to)
+    elif a.cmd == "music":
+        if not a.names or not a.style:
+            sys.exit('!!! music <名> --style "风格描述" [--secs 180] [--lyrics-file 歌词.txt]')
+        cmd_music(a.names[0], a.style, a.secs or 180, a.seed, a.lyrics_file)
+    elif a.cmd == "sfx":
+        if len(a.names) < 2:
+            sys.exit('!!! sfx <名> "<描述>" [--secs 5] [--kind SFX|One-shot|Music|Instrument] [--enhance]')
+        cmd_sfx(a.names[0], " ".join(a.names[1:]), a.secs or 5, a.seed, a.kind, a.enhance)
     elif a.cmd == "notes":
         cmd_notes()
     elif a.cmd == "free":

@@ -127,7 +127,7 @@ def main():
     ok(key == "qwen2512", "用 Qwen-Image-2512 工作流")
     ok(wf[N["prompt"][0]]["inputs"]["text"] == cg.ew.prompt("01_船"), "提示词写进 CLIPTextEncode")
     lat = wf[N["latent"][0]]["inputs"]
-    ok((lat["width"], lat["height"]) == (928, 1664), "竖版 928×1664（实际 %sx%s）" % (lat["width"], lat["height"]))
+    ok((lat["width"], lat["height"]) == (1088, 1920), "竖版直出 1088×1920（实际 %sx%s）" % (lat["width"], lat["height"]))
     ok(wf[N["fast"][0]]["inputs"]["value"] is True, "--fast → Lightning 开关 true")
     ok(wf[N["sampler"][0]]["inputs"]["seed"] == 7, "--seed 7 写进 KSampler")
     ok(out.replace("\\", "/").endswith("候选/01_船/4s-7.png"), "--fast 进候选（候选/01_船/4s-7.png），不冒充定稿")

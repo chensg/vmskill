@@ -281,6 +281,16 @@ def check(path, bilingual=True, found=False):
         if h3 and "MiniMax H3" not in text:
             bad.append("素材/生成/comfy_log.jsonl 里有 %d 段 MiniMax H3 影片（%s），"
                        "说明里没写「MiniMax H3 生成」—— 它的授权要求署名" % (len(h3), "、".join(h3[:5])))
+        # Stable Audio 3（本机音效）：Stability AI Community License 要求在发布处显著写「Powered by Stability AI」，
+        # 商用前还要在 Stability AI 登记（登记查不了，只能提示）。
+        sa = sorted({r.get("name", "?") for r in recs if str(r.get("model", "")).startswith("Stable Audio")})
+        if sa and "Powered by Stability AI" not in text:
+            bad.append("comfy_log.jsonl 里有 %d 条 Stable Audio 音效（%s），说明里没写「Powered by Stability AI」"
+                       " —— Stability AI Community License 要求显著标注（商用前还要在 Stability AI 登记）"
+                       % (len(sa), "、".join(sa[:5])))
+        # YuE2 配乐：个人创作者可变现，署名可选，作者鼓励写 YuE2 —— 只提示不拦。
+        if any(str(r.get("model", "")).startswith("YuE2") for r in recs) and "YuE2" not in text:
+            warn.append("用了 YuE2 配乐：署名可选，作者鼓励在说明里写「配樂：YuE2 生成」或 #YuE2")
 
     print("")
     if counted == 0:
@@ -429,6 +439,17 @@ def selftest():
     r15 = check(p14)
     print("回归自测: 写了 MiniMax H3 → %s" % ("通过，对" if r15 else "**误报了**"))
     ok = ok and (not r14) and r15
+
+    # ---- Stable Audio 署名 ----
+    io.open(os.path.join(d2, "素材", "生成", "comfy_log.jsonl"), "a", encoding="utf-8").write(
+        json.dumps({"kind": "sfx", "name": "浪", "model": "Stable Audio 3 Medium"}) + "\n")
+    io.open(p14, "w", encoding="utf-8").write(FULL + "影片由 MiniMax H3 生成。\n")
+    r16 = check(p14)
+    print("回归自测: 有 Stable Audio 音效、没写 Powered by Stability AI → %s" % ("报警了，对" if not r16 else "**漏了**"))
+    io.open(p14, "w", encoding="utf-8").write(FULL + "影片由 MiniMax H3 生成。音效 Powered by Stability AI。\n")
+    r17 = check(p14)
+    print("回归自测: 写了 Powered by Stability AI → %s" % ("通过，对" if r17 else "**误报了**"))
+    ok = ok and (not r16) and r17
 
     print("\n回归自测总体: %s" % ("通过" if ok else "**有失效的检查**"))
     return ok

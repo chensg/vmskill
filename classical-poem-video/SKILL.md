@@ -210,6 +210,10 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 **图、影片、放大不同时跑**（队列不空就等，换模型前 /free）；**用了 H3 的片子说明里必须写「MiniMax H3 生成」**
 （`publish.py check` 读 `comfy_log.jsonl` 拦）。见 `references/sourcing.md`「本机生成」。
 
+**配乐和音效也能本机出**：`comfy_gen.py music`（YuE2，默认纯音乐：写谱 → 官方脚本把人声旋律挪到乐器 → 按谱生成，
+141 秒钢琴 55 秒出完）、`comfy_gen.py sfx`（Stable Audio 3，要先在 Stability AI 登记、说明里写 Powered by Stability AI，
+`publish.py check` 会拦）。见 `references/music.md`「一·五」。
+
 **档案照片（海军、档案馆的 600~740px 线上图）**：`upscale.py` 先 EDSR ×2（CPU，单进程，别并行），
 再用贴纸版式 `fit="plate"` 整张贴台纸。**2026-10-18 起贴纸镜和运镜镜可以同片**（台纸按 PREP 出），
 不必再把 PREP 降到成片尺寸。

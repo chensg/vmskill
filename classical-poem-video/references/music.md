@@ -88,6 +88,41 @@ python music_index.py add <mp3> --used "《XXX》"
 
 ---
 
+## 一·五、本机生成：YuE2 配乐、Stable Audio 3 音效（2026-10-21 起，有 3090 时可选）
+
+走 `comfy_gen.py`（和出图同一个 ComfyUI），不花额度、不用下载页。**图、影片、放大、配乐、音效同一时间只跑一类。**
+
+```
+python comfy_gen.py music 配乐_片名 --style "Instrumental, warm solo piano, slow and gentle, ... no vocals" [--secs 200]
+python comfy_gen.py sfx 浪 "Gentle ocean waves lapping against a concrete breakwater" --secs 8 [--kind SFX|One-shot] [--enhance]
+```
+
+**配乐（YuE2-3B，ComfyUI 原生 int8）默认是纯音乐**，照官方 yue2-music 技能的纯音乐流程分三步：
+① YuE2 按风格＋曲式标签写谱（ABC，有 Vocal 和 Ins 两个声部）→ ② 官方 `instrumental.py run --prepare-only`
+把 Vocal 的音符全挪到 Ins（纯 CPU，要装 yue2-music 技能）→ ③ 按改好的谱生成。给 `--lyrics-file` 就是带人声的歌。
+产出 `素材/配乐/<名>.mp3`（另留 .flac 和 `_yue2_<名>/` 里的原谱、转换后的谱），进片照 `MUSIC_MODE="generated"` 写 `MUSIC`。
+
+- **实测（2026-10-21）**：写谱＋生成 141 秒独奏钢琴，**一共 55 秒**（含换模型加载），峰值 331W / 57°C。
+- **长度由谱的段落数定，`--secs` 只是上限**：缺省 8 个曲式标签出了 141 秒。Shorts 要 ~180 秒就多给段落
+  （现在写死在 `PLAN_TAGS`，要更长先改它）。
+- **没有耳朵时的两道客观检查**：每 5 秒短时响度（中段掉到 −35 LUFS 以下＝断了）；ElevenLabs scribe 转写
+  （转出词＝混进了人声；纯音乐只会给「[outro jingle]」这类标签）。**仍然要人听。**
+- 授权：权重 CC BY-NC 4.0，作者另给**个人用户、内容创作者**变现许可（不收费、不分成，署名可选，鼓励写 YuE2）；
+  公司商用要另找作者。`publish.py check` 发现用了 YuE2 而说明里没写会提示（不拦）。
+
+**音效（Stable Audio 3 Medium）**：`--kind` 选 SFX / One-shot / Music / Instrument；8 秒海浪 20 秒出完。
+`--enhance` 先让 Qwen3.5-2B 改写提示词（要那个 4.5GB 文本编码器）；不加就把 LLM 支路从图里剪掉。
+- 授权：Stability AI Community License —— 年收入 <100 万美元免费商用；**商用前要在 Stability AI 登记（用户自己做）**；
+  发布处显著写「**Powered by Stability AI**」。`publish.py check` 读 comfy_log：用了 Stable Audio 而说明里没有这句就拦。
+- 原有的 ElevenLabs / ChatCut 音效仍可用；本机的好处是不用下载、能批量。
+
+**官方 YuE2 运行时**（`D:\yue2_runtime\.venv`，Python 3.12＋torch 2.10 cu128＋yue2-infer 0.1.5，模型在 `D:\yue2_runtime\models`）：
+yue2-music 技能的翻唱、改谱、换词、ABC 编辑这些 ComfyUI 做不了的用它。它要 20GB 空闲显存、24GB 空闲内存 —— **跑它之前先
+`comfy_gen.py free` 或关掉 ComfyUI**。Windows 上官方的 `setup_runtime.py install` 会从 PyPI 装到纯 CPU 版 torch，
+要自己建环境：`uv venv --python 3.12`（uv 0.13 在 Windows 建版本链接有 bug，设 `UV_PYTHON_INSTALL_DIR` 到 D 盘就绕过）
+→ 从 `download.pytorch.org/whl/cu128` 装 `torch==2.10.0` → 再装 `requirements-inference.txt`。
+仓库要用 `core.eol=lf` 检出，否则 `verify_bundle.py` 因 CRLF 报「Missing/corrupt bundled file」。
+
 ## 二、公版 / 开放授权
 
 ### 唯一必须先说清楚的一条：录音权和作品权是两回事
