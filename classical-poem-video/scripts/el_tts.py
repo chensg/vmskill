@@ -79,7 +79,9 @@ def lines(lang):
     narr = json.load(open(os.path.join(HERE, "narr.json"), encoding="utf-8"))
     cfg = fixes().get(lang, {})
     if lang == "zh":
-        out = [(n["vo"], cfg.get("fix", {}).get(n["vo"], n["txt"])) for n in narr]
+        # 年份「二〇一一」送 TTS 一律写成「二零一一」（字幕不变）：2026-10-20 豆包把「二〇一一年」读成「二千一一年」，
+        # 而转写会把两种读法都写成「2011年」，核对拦不住。ElevenLabs 读「零」也对，所以默认就换。
+        out = [(n["vo"], cfg.get("fix", {}).get(n["vo"], n["txt"].replace("〇", "零"))) for n in narr]
     else:
         en = dict(re.findall(r"^(\d{2,3}[a-g]?)\. (.+)$",
                              open(os.path.join(HERE, "..", "讲述稿_en.md"), encoding="utf-8").read(), re.M))
@@ -163,12 +165,13 @@ def _readings(ch, tone):
 
 
 def classify_zh(src, asr):
-    """返回 (类别, 说明)。类别：same / homophone / sandhi / number / tone / suspect / garbled。
+    """返回 (类别, 说明)。类别：same / homophone / sandhi / number / year / tone / suspect / garbled。
 
     逐字比读音：两边的字只要有一个共同读音（多音字全取、轻声和本调互通）就是同音写法；
     只差声调的看是不是 3-3 变调；读音完全不同、多读、漏读才算可疑。
     """
     import difflib
+    circle = "〇" in src            # 归一化会把「〇」换成「零」，要在这之前记下来（见下面 year 那条）
     try:
         import opencc
         src = opencc.OpenCC("t2s").convert(src)
@@ -189,15 +192,19 @@ def classify_zh(src, asr):
     if len(PA) != len(a) or len(PB) != len(b):      # 对不齐（不该发生）就退回逐字
         PA = [tone3(c)[0] for c in a]
         PB = [tone3(c)[0] for c in b]
-    rank = ["homophone", "sandhi", "number", "tone", "suspect"]
+    rank = ["homophone", "sandhi", "number", "year", "tone", "suspect"]
     worst, notes = "homophone", []
-    nums = set("零一二三四五六七八九十百千万两")
+    nums = set("零〇一二三四五六七八九十百千万两")
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
         if op == "equal":
             continue
         x, y = a[i1:i2], b[j1:j2]
         if re.search(r"[0-9]", x + y) or (x and set(x) <= nums and (not y or set(y) <= nums)):
-            cat = "number"
+            # 送进 TTS 的字里还有「〇」：豆包会把「二〇一一」读成「二千一一」，而转写两种读法都写成「2011」，
+            # 这一类转写**证明不了读音**，要人听（2026-10-20《我想回家》漏过一次）。lines() 现在默认换成「零」，
+            # 这条只在 tts_fix.json 手写了「〇」、或核对别处生成的旁白时才会响。只认「〇」：一九四三这类年份没出过事，
+            # 全报会让每支片子多十几条要人听的噪音。
+            cat = "year" if circle and "零" in x and re.search(r"\d", y) else "number"
         elif len(x) != len(y) or not x:
             cat = "suspect"                    # 多读 / 漏读 / 读串了
         else:
@@ -270,7 +277,7 @@ def asr(lang, names):
             continue
         cat, why = (classify_zh(r["tts"], r["asr"]) if lang == "zh" else classify_en(r["tts"], r["asr"]))
         counts[cat] = counts.get(cat, 0) + 1
-        if cat in ("suspect", "tone", "garbled"):
+        if cat in ("suspect", "tone", "garbled", "year"):
             shown += 1
             print("%s %-8s %s ｜ASR: %s" % (vo, cat, why, r["asr"]))
     print("分类：%s；要人看的 %d 条" % ("，".join("%s %d" % kv for kv in sorted(counts.items())), shown))
