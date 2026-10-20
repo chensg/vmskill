@@ -3,6 +3,7 @@
 
     python upscale.py <源目录> <输出目录> [模型.pb] [文件名 ...]
     python upscale.py ../素材/照片 ../素材/照片_x2                     # 模型默认 ../../EDSR_x2.pb（片库根）
+    ComfyUI 在跑或占着内存（剩 <16GB）时拒跑（加 --force 硬跑）：EDSR 一张约 10GB，同跑会把 32GB 挤爆
 
 海军历史中心、国会图书馆的线上图常只有 600~740px 宽，贴台纸（fit="plate"）铺 1080 高要放大 1.5 倍以上。
 EDSR ×2 之后再缩到画框里，比直接 lanczos 放大干净（字、缆绳、铆钉不糊成一片）。
@@ -32,9 +33,35 @@ except Exception:
     pass
 
 
+def comfy_busy(url="http://127.0.0.1:8188"):
+    """ComfyUI 在跑任务、或者它占着内存让剩余不到 16GB → 返回原因；没开或很空 → None。
+
+    2026-10-20：EDSR（928×1664 一张约 10GB）和 Qwen 出图同时跑，32GB 被挤爆，ComfyUI 整个换出到
+    虚拟内存、卡死，只能重启电脑。CPU 上的大内存任务和 ComfyUI 算同一类，不能同时跑。"""
+    import urllib.request
+    try:
+        q = json.loads(urllib.request.urlopen(url + "/queue", timeout=2).read())
+        s = json.loads(urllib.request.urlopen(url + "/system_stats", timeout=2).read())
+    except Exception:
+        return None
+    if q.get("queue_running") or q.get("queue_pending"):
+        return "ComfyUI 正在跑生成任务"
+    free = s["system"]["ram_free"] / 2 ** 30
+    if free < 16:
+        return "ComfyUI 开着、内存只剩 %.1fGB（EDSR 一张约 10GB）" % free
+    return None
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__); return 1
+    if "--force" in sys.argv:
+        sys.argv.remove("--force")
+    else:
+        why = comfy_busy()
+        if why:
+            print("!!! %s —— 先等它跑完或 `python comfy_gen.py free`；硬要跑加 --force" % why)
+            return 2
     src, dst = sys.argv[1], sys.argv[2]
     rest = sys.argv[3:]
     here = os.path.dirname(os.path.abspath(__file__))

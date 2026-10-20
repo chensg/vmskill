@@ -573,12 +573,63 @@ def probe_video(path):
     return (w, h, dur, fps)
 
 
+_FULL_CACHE = {}
+
+
 def video_seg(n):
-    """视频镜 n 声明的 (入点秒, 出点秒, 段长秒)。"""
+    """视频镜 n 声明的 (入点秒, 出点秒, 段长秒)。
+
+    `to="full"`＝用到源片结尾（本机生成的影片专用：秒数由 `vidplan` 写进出图任务书，
+    生成出来多长就用多长，配置里不再抄第二份数字 —— 2026-10-20《我想回家》两处各改了三轮）。"""
     c = CLIPS[n - 1]
     a = tc(c.get("ss", 0))
-    b = tc(c.get("to", 0))
+    if c.get("to") == "full":
+        path = os.path.join(SRC, c["video"])
+        if path not in _FULL_CACHE:
+            info = probe_video(path) if os.path.exists(path) else None
+            _FULL_CACHE[path] = info[2] if info else 0.0
+        b = _FULL_CACHE[path]
+    else:
+        b = tc(c.get("to", 0))
     return a, b, max(0.0, b - a)
+
+
+def vidplan(write=False):
+    """本机生成的影片（素材在 生成/ 下）该出几秒：镜长 + VIDEO_HEADROOM + 0.3，向上取到 0.5 秒。
+
+    镜长是 sync 量出来的，所以要在旁白定了之后跑。`vidplan write` 把秒数写回 ../出图任务书.md
+    的 ▶ 表（只改秒数那一格）；之后 `comfy_gen.py video` 照任务书出，CLIPS 写 `to="full"`。
+    MiniMax H3 训练上限约 15 秒，长于 12 秒的图生影片容易自己切镜头（《我想回家》镜20），会标出来。"""
+    durs = timeline()[1]
+    rows = []
+    for i in range(1, len(CLIPS) + 1):
+        if not is_video(i):
+            continue
+        m = re.match(r"生成/(.+?)(?:_1080|_480)?\.mp4$", CLIPS[i - 1]["video"].replace("\\", "/"))
+        if not m:
+            continue
+        need = durs[i - 1] + VIDEO_HEADROOM + 0.3
+        rows.append((i, m.group(1), durs[i - 1], int(need * 2 + 0.999) / 2.0))
+    if not rows:
+        print("没有本机生成的影片镜（CLIPS 里 video= 不在 生成/ 下）")
+        return True
+    print("\n=== 生成影片该出几秒（镜长 + %.1f 余量 + 0.3）===" % VIDEO_HEADROOM)
+    for i, name, d, secs in rows:
+        print("  镜%-3d %-14s 镜长 %5.2fs → 出 %4.1f 秒%s" % (
+            i, name, d, secs, "   !! 长于 12 秒，H3 容易自己切镜头：拆成两镜或改静帧" if secs > 12 else ""))
+    if not write:
+        print("（`vidplan write` 写回出图任务书的 ▶ 表）")
+        return True
+    p = os.path.join("..", "出图任务书.md")
+    md = open(p, encoding="utf-8").read()
+    n = 0
+    for _, name, _, secs in rows:
+        md, k = re.subn(r"(?m)^(\| ▶%s \| [^|]+ \| )[\d.]+( \|)" % re.escape(name),
+                        lambda m: m.group(1) + ("%g" % secs) + m.group(2), md)
+        n += k
+    open(p, "w", encoding="utf-8").write(md)
+    print("写回 %d / %d 行" % (n, len(rows)))
+    return n == len(rows)
 
 
 def video_fit_vf():
@@ -4811,6 +4862,8 @@ def main():
     if what == "vofit":
         vofit(float(sys.argv[2]) if len(sys.argv) > 2 else None)
         sys.exit(0)
+    if what == "vidplan":
+        sys.exit(0 if vidplan(write=len(sys.argv) > 2 and sys.argv[2] == "write") else 1)
     # `preview` 和 `budget` 都必须在**没有图**的时候跑得起来 —— 那正是它们的位置。
     arg = sys.argv[2] if len(sys.argv) > 2 else None
     if what in ("sync", "prep", "probe", "trace", "still", "measure", "cover",

@@ -307,7 +307,7 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 | `el_tts.py` | ElevenLabs 旁白：`gen zh/en` 逐条生成（重出时自动清 _orig/_raw 旧件）、`asr zh/en` 转写分类核对、`credits` 查额度 |
 | `vo_trim.py` | 剪 TTS 每条头尾自带的静音。**讲述片下载完旁白、`sync` 之前必跑**。账本 `_trimmed.json` 认得出重出过的新录音（不再拿旧原件盖掉） |
 | `el_web_image.py` / `.js` | ElevenLabs 网页版出图：任务书 → 压缩提示词 → 页面里提交与收 2K 原图 → 下载 |
-| `comfy_gen.py` + `comfy/*.api.json` | 本机 ComfyUI：`image` 静帧（Qwen-Image-2512）、`video` 影片（MiniMax H3，▶ 表）、`upscale` 到 1080（SeedVR2 / lanczos）、`check` 显卡与工作流节点。每次生成记进 `素材/生成/comfy_log.jsonl` |
+| `comfy_gen.py` + `comfy/*.api.json` | 本机 ComfyUI：`start`／`check`；`image`（`--fast`/`--variants` 进候选，`promote` 转正，`sheet` 联络表）；`video`（缺首帧自动补 4 步、硬切当场报，`strip` 帧条）；`upscale`（SeedVR2 / lanczos）；`notes` 生成记录。每次生成记进 `素材/生成/comfy_log.jsonl`。影片秒数用引擎的 `vidplan write` 算 |
 | `upscale.py` | 档案照片 EDSR ×2 超分（OpenCV，CPU）。中文路径安全；单进程（OpenCV 自己吃满线程，多进程反而慢 3 倍） |
 | `vo_split.py` | 把一整条真人朗读切成一句一个文件 |
 | `music_index.py` / `sfx_index.py` | 素材库（`ani/_素材库/`）。`music_index.py find --dur <片长>` 是查库入口 |

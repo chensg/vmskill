@@ -540,17 +540,26 @@ pp >= 1.00（可接受下限）->  z <= 1.42     <- 实际用的
 ## 流程
 
 ```
-python comfy_gen.py check                 # 服务、3090、功耗上限、四份工作流节点号
-python comfy_gen.py image --fast          # 4 步全出一遍看构图（出 _fast.png，不进片）
-python comfy_gen.py image                 # 50 步定稿（种子由档名定，重跑可复现；--seed 换）
-python comfy_gen.py video --res 480       # 影片试稿（_480.mp4）
-python comfy_gen.py video 01_x 03_y       # 定了的 768p 定稿
+python comfy_gen.py start                 # 重启电脑后：后台拉起 ComfyUI（不弹浏览器）
+python comfy_gen.py check                 # 服务、3090、功耗上限、温度、四份工作流节点号
+python comfy_gen.py image --fast          # 4 步全出一遍 → 候选/<档名>/4s-<种子>.png（不进片）
+python comfy_gen.py sheet --cand 06_x     # 看一张图的候选；`sheet` 看全部定稿
+python comfy_gen.py image 06_x --fast --variants 4   # 一张不行就多出几个种子（一张 10 秒）
+python comfy_gen.py promote 06_x 3        # 选定第 3 张转正成 06_x.png（日志记下步数和种子）
+python comfy_gen.py image                 # 只给真正上屏的静帧出 50 步定稿
+make_story_v.py vidplan write             # 旁白定了以后：影片秒数＝镜长＋余量，写回任务书 ▶ 表
+python comfy_gen.py video --res 480       # 影片试稿；首帧图没出会自己补 4 步版；有硬切当场报
+python comfy_gen.py strip 01_x            # 6 帧条＋切镜检测
+python comfy_gen.py video 01_x --res 768  # 只给开场/白天细节多的关键镜上 768p
 python comfy_gen.py upscale 01_x --seedvr2   # 关键镜
-python comfy_gen.py upscale 05_z --lanczos   # 过场
+python comfy_gen.py upscale 05_z --lanczos   # 暗、烟雾、过场
+python comfy_gen.py notes                 # 素材/生成/生成记录.md：每个成品怎么来的、显卡时间
 ```
 
-进片：`CLIPS` 里写 `dict(video="生成/01_x_1080.mp4", ss=0, to=<秒>)`（视频镜的判据见 `visuals.md`）。
-**影片秒数按镜长＋1 写**：`check_video` 要求素材段比镜长多出 `VIDEO_HEADROOM`（0.5s），旁白重出后镜长还会变。
+每个批次开跑前按本项目日志报预计耗时，超过一小时提示放晚上跑。
+
+进片：`CLIPS` 里写 `dict(video="生成/01_x_1080.mp4", ss=0, to="full")` —— **整段用，秒数只在任务书里有一份**
+（2026-10-20 任务书和 `to=` 各写一份，手改了三轮）。`check_video` 仍按实际时长拦「比镜长短」「余量不足 0.5 秒」。
 H3 把时长吸附到 24fps 的 17k+5 帧网格上，要 6 秒实得 6.58 秒（158 帧）。原声轨 prep 时丢掉（`-an`）。
 
 **2026-10-20 第一次实跑（《我想回家》鏡1，竖版）**：

@@ -109,11 +109,19 @@ def main():
 
     # ---- 交出去的 prompt：截住 run()，只看改了哪些节点 ----
     sent = []
-    cg.run = lambda key, wf, out, label: (sent.append((key, wf, out)), (1.0, dict(draw=0, memclk=0, used=0)))[1]
+
+    def fake_run(key, wf, out, label):          # 截住 run()：记下交了什么，图就落一张小 PNG（promote/sheet 要用）
+        sent.append((key, wf, out))
+        if out.endswith(".png"):
+            cg._keep_old(out)
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            ffmpeg_color(out, 90, 160)
+        return 1.0, dict(draw=0, memclk=0, used=0, temp=0)
+    cg.run = fake_run
     cg.upload = lambda p: "up_" + os.path.basename(p)
 
     print("== image")
-    cg.cmd_image(["01_船"], True, 7, None)
+    cg.cmd_image(["01_船"], True, 7, None, 1)
     key, wf, out = sent[-1]
     N = cg.NODES["qwen2512"]
     ok(key == "qwen2512", "用 Qwen-Image-2512 工作流")
@@ -122,12 +130,26 @@ def main():
     ok((lat["width"], lat["height"]) == (928, 1664), "竖版 928×1664（实际 %sx%s）" % (lat["width"], lat["height"]))
     ok(wf[N["fast"][0]]["inputs"]["value"] is True, "--fast → Lightning 开关 true")
     ok(wf[N["sampler"][0]]["inputs"]["seed"] == 7, "--seed 7 写进 KSampler")
-    ok(out.endswith("01_船_fast.png"), "--fast 出 _fast.png，不冒充定稿")
-    cg.cmd_image(["01_船"], False, None, None)
+    ok(out.replace("\\", "/").endswith("候选/01_船/4s-7.png"), "--fast 进候选（候选/01_船/4s-7.png），不冒充定稿")
+    ok(not os.path.exists(os.path.join(cg.dst(), "01_船.png")), "候选不会自己变成定稿")
+    n0 = len(sent)
+    cg.cmd_image(["01_船"], True, 7, None, 3)
+    ok([s[1][N["sampler"][0]]["inputs"]["seed"] for s in sent[n0:]] == [8, 9], "--variants 3：种子 7 已有跳过，只出 8、9")
+    ok("有 3 张候选" in (raises(lambda: cg.cmd_promote("01_船", None)) or ""), "三张候选不点名 promote → 拦")
+    cg.cmd_promote("01_船", "2")
+    ok(os.path.exists(os.path.join(cg.dst(), "01_船.png")), "promote 2 → 01_船.png")
+    pr = [r for r in cg.logs() if r["kind"] == "promote"][-1]
+    ok(pr["seed"] == 8 and pr["steps"] == 4, "promote 记下来源的步数和种子（%s）" % pr)
+    cg.cmd_sheet([], "01_船")
+    ok(os.path.exists(os.path.join(cg.cand_dir("01_船"), "_联络表.png")), "sheet --cand 出候选联络表")
+    cg.cmd_sheet([], None)
+    ok(os.path.exists(os.path.join(cg.dst(), "_联络表.png")), "sheet 出定稿联络表")
+    cg.cmd_image(["01_船"], False, None, None, 1)
     s1 = sent[-1][1][N["sampler"][0]]["inputs"]["seed"]
-    cg.cmd_image(["01_船"], False, None, None)
+    cg.cmd_image(["01_船"], False, None, None, 1)
     ok(sent[-1][1][N["sampler"][0]]["inputs"]["seed"] == s1, "不给 --seed 时种子由档名定（重跑可复现）")
-    ok(sent[-1][2].endswith("01_船.png"), "不加 --fast 出 <档名>.png")
+    ok(sent[-1][2].endswith("01_船.png") and "候选" not in sent[-1][2], "不加 --fast 出 <档名>.png（50 步定稿）")
+    ok(os.path.exists(os.path.join(cg.dst(), "01_船_v1.png")), "定稿重出时旧的改名 _v1")
 
     print("== video")
     ffmpeg_color(os.path.join(cg.dst(), "01_船.png"), 90, 160)
@@ -149,8 +171,34 @@ def main():
     # 横竖不一致的首幀要拦
     ffmpeg_color(os.path.join(cg.dst(), "01_船.png"), 160, 90)
     ok(raises(lambda: cg.cmd_video(["01_船"], 480, False, None)) is not None, "首幀是横的、影片是竖的 → 拦")
-    os.remove(os.path.join(cg.dst(), "01_船.png"))
-    ok("还没出" in (raises(lambda: cg.cmd_video(["01_船"], 480, False, None)) or ""), "首幀还没出 → 拦")
+    for f in os.listdir(cg.dst()):
+        if f.startswith("01_船") and f.endswith(".png"):
+            os.remove(os.path.join(cg.dst(), f))
+    n0 = len(sent)
+    cg.cmd_video(["01_船"], 480, False, None)
+    ks = [(s[0], s[1].get(cg.NODES["qwen2512"]["fast"][0], {}).get("inputs", {}).get("value")) for s in sent[n0:]]
+    ok(ks == [("qwen2512", True), ("h3_i2v", None)], "首幀没出 → 先补 4 步版再出影片（实际 %s）" % ks)
+    ff = [r for r in cg.logs() if r.get("role") == "first_frame"]
+    ok(ff and ff[-1]["steps"] == 4, "补的首帧在日志里标 role=first_frame、4 步")
+
+    print("== 切镜 / 帧条 / 记录")
+    cut = os.path.join(d, "cut.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x202020:s=160x288:d=1.5",
+                    "-f", "lavfi", "-i", "testsrc2=s=160x288:d=1.5", "-filter_complex", "[0][1]concat=n=2:v=1",
+                    "-pix_fmt", "yuv420p", cut], check=True)
+    smooth = os.path.join(d, "smooth.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x202020:s=160x288:d=3",
+                    "-vf", "fade=in:0:60", "-pix_fmt", "yuv420p", smooth], check=True)
+    c1, c2 = cg.cuts(cut), cg.cuts(smooth)
+    ok(len(c1) == 1 and abs(c1[0] - 1.5) < 0.1, "硬切在 1.5 秒被抓到（%s）" % c1)
+    ok(c2 == [], "慢慢淡入不算切镜（%s）" % c2)
+    shutil.copy(cut, os.path.join(cg.dst(), "05_切_480.mp4"))
+    cg.cmd_strip("05_切")
+    ok(os.path.exists(os.path.join(cg.dst(), "_帧条_05_切.png")), "strip 出帧条")
+    cg.cmd_notes()
+    md = open(os.path.join(cg.dst(), "生成记录.md"), encoding="utf-8").read()
+    ok("首帧专用" in md and "MiniMax H3" in md and "05_切" not in md.split("显卡时间")[0].replace("_帧条", ""),
+       "notes：每个文件按最后一次产出写（01_船.png 最后是补的首帧）、影片写明 H3")
 
     print("== 工作流节点核对")
     wd = tempfile.mkdtemp()
@@ -209,7 +257,7 @@ def main():
     ok(cg.probe(os.path.join(cg.dst(), "01_船_1080.mp4"))[:2] == (1080, 1920), "lanczos 出正好 1080×1920")
     ok(os.path.exists(os.path.join(cg.dst(), "01_船_1080_v1.mp4")), "重出时旧的改名 _v1，不覆盖")
     logs = [json.loads(l) for l in open(os.path.join(cg.dst(), "comfy_log.jsonl"), encoding="utf-8")]
-    ok({r["kind"] for r in logs} == {"image", "video", "upscale"}, "三类生成都记进 comfy_log.jsonl")
+    ok({"image", "video", "upscale", "promote"} <= {r["kind"] for r in logs}, "图/影片/放大/转正都记进 comfy_log.jsonl")
     ok(any(r.get("model") == "MiniMax H3" for r in logs), "影片记录写明 MiniMax H3（publish.py check 靠它要求署名）")
 
     print("\n%s" % ("全部通过" if not FAILS else "**%d 条失败**" % len(FAILS)))
