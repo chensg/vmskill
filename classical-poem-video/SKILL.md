@@ -203,6 +203,13 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 （提交前 `__checkSettings()`）；**面板隐藏时后台标签页的定时器被节流**（JS 里一律用 MessageChannel 等待）；
 **按提示词对上名字，拿到的仍可能是上一张**（下载完拼联络表逐张看）。见 `references/sourcing.md`「ElevenLabs 网页版」。
 
+**本机有 3090 时，任务书交给本机跑：`comfy_gen.py`（2026-10-20 起的默认）**。同一份出图任务书，
+图用 Qwen-Image-2512、影片用 MiniMax H3（图生影片：先出静帧当首帧）、放大用 SeedVR2 或 lanczos，
+全走 ComfyUI 的 HTTP API，不开浏览器、不花额度。影片在任务书里另一张表（档名前加 ▶）。
+三条硬线脚本自己拦：**矿卡功耗上限 ≤ 336W、负载下显存频率 ≈ 9000MHz**（越线就中断）；
+**图、影片、放大不同时跑**（队列不空就等，换模型前 /free）；**用了 H3 的片子说明里必须写「MiniMax H3 生成」**
+（`publish.py check` 读 `comfy_log.jsonl` 拦）。见 `references/sourcing.md`「本机生成」。
+
 **档案照片（海军、档案馆的 600~740px 线上图）**：`upscale.py` 先 EDSR ×2（CPU，单进程，别并行），
 再用贴纸版式 `fit="plate"` 整张贴台纸。**2026-10-18 起贴纸镜和运镜镜可以同片**（台纸按 PREP 出），
 不必再把 PREP 降到成片尺寸。
@@ -300,6 +307,7 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 | `el_tts.py` | ElevenLabs 旁白：`gen zh/en` 逐条生成（重出时自动清 _orig/_raw 旧件）、`asr zh/en` 转写分类核对、`credits` 查额度 |
 | `vo_trim.py` | 剪 TTS 每条头尾自带的静音。**讲述片下载完旁白、`sync` 之前必跑**。账本 `_trimmed.json` 认得出重出过的新录音（不再拿旧原件盖掉） |
 | `el_web_image.py` / `.js` | ElevenLabs 网页版出图：任务书 → 压缩提示词 → 页面里提交与收 2K 原图 → 下载 |
+| `comfy_gen.py` + `comfy/*.api.json` | 本机 ComfyUI：`image` 静帧（Qwen-Image-2512）、`video` 影片（MiniMax H3，▶ 表）、`upscale` 到 1080（SeedVR2 / lanczos）、`check` 显卡与工作流节点。每次生成记进 `素材/生成/comfy_log.jsonl` |
 | `upscale.py` | 档案照片 EDSR ×2 超分（OpenCV，CPU）。中文路径安全；单进程（OpenCV 自己吃满线程，多进程反而慢 3 倍） |
 | `vo_split.py` | 把一整条真人朗读切成一句一个文件 |
 | `music_index.py` / `sfx_index.py` | 素材库（`ani/_素材库/`）。`music_index.py find --dur <片长>` 是查库入口 |

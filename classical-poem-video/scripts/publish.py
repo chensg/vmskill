@@ -25,6 +25,7 @@
 自己读的时候完全看不出来），以及**AI 生成声明也得有英文的**。
 """
 import io
+import json
 import os
 import re
 import sys
@@ -271,6 +272,16 @@ def check(path, bilingual=True, found=False):
             bad.append("全文没有一句英文的 AI 生成声明（AI-generated …）—— "
                        "英文简介里没有，就等于对英文观众没有声明过")
 
+    # 本机 MiniMax H3 出的影片：授权条款要求署名（comfy_gen.py 每次生成都记进 comfy_log.jsonl）。
+    # 判据挂在日志上，不挂在「记得写」上 —— 有一条 H3 记录，说明里就必须出现 MiniMax H3。
+    clog = os.path.join(os.path.dirname(os.path.abspath(path)), "素材", "生成", "comfy_log.jsonl")
+    if os.path.exists(clog):
+        recs = [json.loads(l) for l in io.open(clog, encoding="utf-8") if l.strip()]
+        h3 = sorted({r.get("name", "?") for r in recs if r.get("model") == "MiniMax H3"})
+        if h3 and "MiniMax H3" not in text:
+            bad.append("素材/生成/comfy_log.jsonl 里有 %d 段 MiniMax H3 影片（%s），"
+                       "说明里没写「MiniMax H3 生成」—— 它的授权要求署名" % (len(h3), "、".join(h3[:5])))
+
     print("")
     if counted == 0:
         # **没量到 = 不算通过。** 一个在空文档上打印"全部通过"的检查等于没有检查。
@@ -404,6 +415,20 @@ def selftest():
     print("回归自测: 单个关键词超 %d 字符 → %s"
           % (YT_KEYWORD_MAX, "报警了，对" if not r12 else "**只量了总长没量单个**"))
     ok = ok and (not r12)
+
+    # ---- 本机 MiniMax H3 署名（判据挂在 comfy_log.jsonl 上）----
+    d2 = tempfile.mkdtemp()
+    os.makedirs(os.path.join(d2, "素材", "生成"))
+    io.open(os.path.join(d2, "素材", "生成", "comfy_log.jsonl"), "w", encoding="utf-8").write(
+        json.dumps({"kind": "video", "name": "01_x", "model": "MiniMax H3"}) + "\n")
+    p14 = os.path.join(d2, "发布文案.md")
+    io.open(p14, "w", encoding="utf-8").write(FULL)
+    r14 = check(p14)
+    print("回归自测: 有 H3 影片、说明没写 MiniMax H3 → %s" % ("报警了，对" if not r14 else "**漏了**"))
+    io.open(p14, "w", encoding="utf-8").write(FULL + "影片由 MiniMax H3 生成。\n")
+    r15 = check(p14)
+    print("回归自测: 写了 MiniMax H3 → %s" % ("通过，对" if r15 else "**误报了**"))
+    ok = ok and (not r14) and r15
 
     print("\n回归自测总体: %s" % ("通过" if ok else "**有失效的检查**"))
     return ok

@@ -522,3 +522,79 @@ pp >= 1.00（可接受下限）->  z <= 1.42     <- 实际用的
 肤质、笔性，后面每一张都要把它当参考图传进去），再出**全片最满最亮、
 字幕带留空最难的那一张**——它过了说明这套风格扛得住极端情况；
 只用最简的那张确认，等于没确认。这两张过了再出其余的，一次成、零返工。
+
+---
+
+# 本机生成（`comfy_gen.py`，2026-10-20 起有 3090 时的默认）
+
+本机 ComfyUI 便携版在 `D:\MiniMax-H3`（双击 `Start-MiniMax-H3.cmd`，http://127.0.0.1:8188）。
+同一份 `出图任务书.md`，换引擎不用改稿：图那张表沿用 ElevenLabs 那套格式，影片另起一张 ▶ 表。
+
+| 用途 | 模型（授权） | 实测（RTX 3090，20 步/50 步） |
+|---|---|---|
+| 静帧 | Qwen-Image-2512（Apache-2.0） | 50 步 1664×928 约 3.5 分钟；4 步 Lightning 15~20 秒（冷启动首张约 70 秒）；中文字渲染正确 |
+| 影片 | MiniMax H3（年收入 <$2000 万免费商用，**美/欧/英/韩除外**；要署名＋AI 披露） | 480p 5 秒≈3 分钟、8 秒≈7 分钟；768p 8 秒≈30 分钟；原生上限 1344×768（竖版 768×1344）；自带立体声，进片时丢掉 |
+| 放大 | SeedVR2 3B Int8（Apache-2.0） | 768p 8 秒 → 1080 约 9 分钟，显存约 10GB；锐、帧间不闪 |
+| 放大 | lanczos（ffmpeg） | 几秒；偏软、不加细节 |
+
+## 流程
+
+```
+python comfy_gen.py check                 # 服务、3090、功耗上限、四份工作流节点号
+python comfy_gen.py image --fast          # 4 步全出一遍看构图（出 _fast.png，不进片）
+python comfy_gen.py image                 # 50 步定稿（种子由档名定，重跑可复现；--seed 换）
+python comfy_gen.py video --res 480       # 影片试稿（_480.mp4）
+python comfy_gen.py video 01_x 03_y       # 定了的 768p 定稿
+python comfy_gen.py upscale 01_x --seedvr2   # 关键镜
+python comfy_gen.py upscale 05_z --lanczos   # 过场
+```
+
+进片：`CLIPS` 里写 `dict(video="生成/01_x_1080.mp4", ss=0, to=<秒>)`（视频镜的判据见 `visuals.md`）。
+**影片秒数按镜长＋1 写**：`check_video` 要求素材段比镜长多出 `VIDEO_HEADROOM`（0.5s），旁白重出后镜长还会变。
+H3 把时长吸附到 24fps 的 17k+5 帧网格上，要 6 秒实得 6.58 秒（158 帧）。原声轨 prep 时丢掉（`-an`）。
+
+**2026-10-20 第一次实跑（《我想回家》鏡1，竖版）**：
+- 4 步快速图 70 秒（含冷启动加载）；50 步定稿 928×1664 **210 秒**。功耗峰值 332W、显存频率 8999MHz（红线正常）。
+- 480p 图生 6 秒影片 **350 秒**（含换模型后的加载）；动作照做了（坐船舷→后仰翻身落水），
+  但**落水的水花是一圈不自然的「皇冠」**，「镜头不动」也只做到大半（有缓慢推移）。
+  → 动作句里别要求剧烈的物理（落水、爆炸、浪拍），给「慢、小、连续」的动作；要的话剪掉那半秒。
+- SeedVR2 480→1080（×2.2545 再裁）6.6 秒 **472 秒**（含加载）；同一帧 540×540 局部对比：
+  SeedVR2 拉链、调节器、扣环清楚，lanczos 一片软。和用户给的结论一致。
+长任务（影片 768p、整批 50 步）放晚上跑，`run_in_background` 交出去等通知。
+
+## 放大选哪个（逐镜判断，`upscale` 必须点名）
+
+- **SeedVR2**：主角特写、关键镜、开头/结尾、有文字或建筑线条的、封面截帧来源。
+- **lanczos**：过场/空镜、快速运动、大片烟雾或黑暗（SeedVR2 也加不出东西）、试稿、赶时间。
+- 拿不准：截一帧两种都放大并排看。EDSR（`upscale.py`）只给静态照片，逐帧跑视频会闪。
+
+## 硬件红线（脚本拦，别绕）
+
+- 3090 是矿卡：Afterburner **功耗 90%（上限 333W）＋显存 −500**。`comfy_gen` 提交前查上限（> 336W 不交），
+  跑的时候每 3 秒采一次：功耗 > 345W 或显存频率 > 9150MHz（−500 没生效时是 9500）就 `/interrupt` 退出。
+  正常负载读数是 **331~333W / 8999MHz**（2026-10-20 实测）。
+- 内存只有 32GB：**图、影片、放大不能同时跑**。提交前队列必须空（界面上有人点了任务就等），
+  换一类模型前 `POST /free`。虚拟内存固定 48~64GB（C 盘）。
+
+## 工作流节点号会随 ComfyUI 升级变
+
+`comfy/*.api.json` 是前端 `app.graphToPrompt()` 导出的 API 格式；脚本按节点号改参数，
+`check` 会核对每个节点的 `class_type`，对不上就拦。重新导出（浏览器面板开 8188，执行一次 JS）：
+
+```js
+const srcs = {h3_t2v:'/api/userdata/workflows%2Fvideo_minimax_h3_t2v.json',
+  h3_i2v:'/api/userdata/workflows%2Fvideo_minimax_h3_i2v.json',
+  qwen2512:'/templates/image_qwen_Image_2512.json',
+  seedvr2:'/templates/utility_seedvr2_3b_int8_upscale_video.json'};
+for (const [k,u] of Object.entries(srcs)) { await app.loadGraphData(await (await fetch(u)).json());
+  const p = (await app.graphToPrompt()).output;
+  await fetch('/api/userdata/api%2F'+k+'.json?overwrite=true',{method:'POST',body:JSON.stringify(p,null,1)}); }
+```
+
+存到 `ComfyUI/user/default/api/`，拷进仓库 `scripts/comfy/<名>.api.json`，节点号变了就改 `comfy_gen.py` 的 `NODES`。
+
+## 发布
+
+- 用了 H3 的片子，说明里写「影片由 MiniMax H3 生成」（中英各一句），YouTube 上传时勾「经过修改或合成的内容」。
+  `publish.py check` 读 `素材/生成/comfy_log.jsonl`：有 H3 记录而说明里没有 `MiniMax H3` 就报错。
+- Qwen-Image-2512 / SeedVR2 是 Apache-2.0，不要求署名；「画面为 AI 生成」那句照旧要写。

@@ -1,0 +1,220 @@
+"""回归：comfy_gen.py（本机 ComfyUI 出图/出影片/放大）——离线，不连 ComfyUI、不碰显卡。
+
+    python tests/test_comfy_gen.py
+
+验的是会静默出错的地方：
+  - 图和影片同名时，影片那张表（▶）不能把图的画面句盖掉；
+  - 交给 ComfyUI 的 prompt 改对了节点（提示词、尺寸、步数、种子、首幀、秒数）；
+  - 横竖不一致的首幀、节点号变了的工作流、功耗/显存频率越线 —— 都要拦；
+  - 放大到 1080 的倍率和裁切（SeedVR2 的后处理、lanczos）出来正好是目标尺寸。
+每条拦截都做了变异：把被检查的东西拿掉，确认它不再报（或报了），不是只验「现在通过」。
+"""
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+sys.stdout.reconfigure(encoding="utf-8")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS = os.environ.get("VMSKILL_SCRIPTS") or os.path.join(ROOT, "classical-poem-video", "scripts")
+FAILS = []
+
+BRIEF = """# 测试任务书
+
+## 固定開頭
+
+> 寫實電影劇照風格，豎構圖 9:16，海邊小鎮。
+
+## 固定結尾 A（有人）
+
+> 不要文字。人物只拍背影。
+
+## 固定結尾 E（沒有人）
+
+> 不要文字。沒有人。
+
+## 分鏡
+
+| 檔 | 鏡 | 結尾 | 畫面句 |
+|---|---|---|---|
+| 01_船 | 1 | A | 一艘白色小漁船，潛水員坐在船舷。 |
+| 02_海 | 2 | E | 平靜的海面。 |
+
+## 影片固定開頭
+
+> 寫實電影鏡頭。
+
+## 影片固定結尾
+
+> 沒有音樂。
+
+| 影片 | 首幀 | 秒 | 動作句 |
+|---|---|---|---|
+| ▶01_船 | 01_船 | 6 | 潛水員向後翻身落水。 |
+| ▶03_空 | - | 5 | 海鷗飛過。 |
+"""
+
+
+def ok(cond, what):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        FAILS.append(what)
+
+
+def raises(fn):
+    try:
+        fn()
+    except SystemExit as e:
+        return str(e)
+    return None
+
+
+def ffmpeg_color(path, w, h, dur=None):
+    args = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=%dx%d" % (w, h)]
+    args += (["-t", str(dur), "-pix_fmt", "yuv420p", path] if dur else ["-frames:v", "1", path])
+    subprocess.run(args, check=True)
+
+
+def load():
+    sys.path.insert(0, SCRIPTS)
+    spec = importlib.util.spec_from_file_location("comfy_gen", os.path.join(SCRIPTS, "comfy_gen.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def main():
+    cg = load()
+    d = tempfile.mkdtemp()
+    open(os.path.join(d, "出图任务书.md"), "w", encoding="utf-8").write(BRIEF)
+    cg.set_proj(d)
+    os.makedirs(cg.dst())
+
+    print("== 任务书")
+    rows = cg.ew._brief()[4]
+    ok(rows.get("01_船", ("", ""))[1].startswith("一艘白色小漁船"), "同名的影片行（▶01_船）没盖掉图的画面句")
+    vrows = cg.vbrief()[2]
+    ok(vrows.get("01_船") == ("01_船", 6.0, "潛水員向後翻身落水。"), "影片表：首幀、秒、動作句 %r" % (vrows.get("01_船"),))
+    ok(vrows.get("03_空", (1,))[0] is None, "首幀写 - ＝文生影片")
+    ok(cg.vertical(), "固定開頭写 9:16 → 竖版")
+    ok(cg.vprompt("01_船") == "寫實電影鏡頭。 潛水員向後翻身落水。 沒有音樂。", "影片提示词＝开头＋动作句＋结尾")
+    # 变异：去掉 ▶，影片行就会被当成图的那张表读走（这就是 ▶ 存在的理由）
+    open(os.path.join(d, "出图任务书.md"), "w", encoding="utf-8").write(BRIEF.replace("▶01_船", "01_船"))
+    ok(cg.ew._brief()[4]["01_船"][1] == "潛水員向後翻身落水。", "变异：不加 ▶ 时图的画面句确实被盖掉（▶ 不是摆设）")
+    open(os.path.join(d, "出图任务书.md"), "w", encoding="utf-8").write(BRIEF)
+
+    # ---- 交出去的 prompt：截住 run()，只看改了哪些节点 ----
+    sent = []
+    cg.run = lambda key, wf, out, label: (sent.append((key, wf, out)), (1.0, dict(draw=0, memclk=0, used=0)))[1]
+    cg.upload = lambda p: "up_" + os.path.basename(p)
+
+    print("== image")
+    cg.cmd_image(["01_船"], True, 7, None)
+    key, wf, out = sent[-1]
+    N = cg.NODES["qwen2512"]
+    ok(key == "qwen2512", "用 Qwen-Image-2512 工作流")
+    ok(wf[N["prompt"][0]]["inputs"]["text"] == cg.ew.prompt("01_船"), "提示词写进 CLIPTextEncode")
+    lat = wf[N["latent"][0]]["inputs"]
+    ok((lat["width"], lat["height"]) == (928, 1664), "竖版 928×1664（实际 %sx%s）" % (lat["width"], lat["height"]))
+    ok(wf[N["fast"][0]]["inputs"]["value"] is True, "--fast → Lightning 开关 true")
+    ok(wf[N["sampler"][0]]["inputs"]["seed"] == 7, "--seed 7 写进 KSampler")
+    ok(out.endswith("01_船_fast.png"), "--fast 出 _fast.png，不冒充定稿")
+    cg.cmd_image(["01_船"], False, None, None)
+    s1 = sent[-1][1][N["sampler"][0]]["inputs"]["seed"]
+    cg.cmd_image(["01_船"], False, None, None)
+    ok(sent[-1][1][N["sampler"][0]]["inputs"]["seed"] == s1, "不给 --seed 时种子由档名定（重跑可复现）")
+    ok(sent[-1][2].endswith("01_船.png"), "不加 --fast 出 <档名>.png")
+
+    print("== video")
+    ffmpeg_color(os.path.join(cg.dst(), "01_船.png"), 90, 160)
+    cg.cmd_video(["01_船"], 480, False, None)
+    key, wf, out = sent[-1]
+    N = cg.NODES["h3_i2v"]
+    g = wf[N["gen"][0]]["inputs"]
+    ok(key == "h3_i2v", "有首幀 → 图生影片")
+    ok((g["width"], g["height"]) == (480, 864), "竖版 480p＝480×864（实际 %sx%s）" % (g["width"], g["height"]))
+    ok(wf[N["secs"][0]]["inputs"]["value"] == 6.0, "秒数写进时长节点")
+    ok(wf[N["image"][0]]["inputs"]["image"] == "up_01_船.png", "首幀上传后写进 LoadImage")
+    ok(wf[N["turbo"][0]]["inputs"]["value"] is False, "默认 20 步（不 turbo）")
+    ok(out.endswith("01_船_480.mp4"), "480 试稿出 _480.mp4")
+    cg.cmd_video(["03_空"], 768, True, None)
+    key, wf, out = sent[-1]
+    g = wf[cg.NODES["h3_t2v"]["gen"][0]]["inputs"]
+    ok(key == "h3_t2v" and (g["width"], g["height"]) == (768, 1344), "首幀 - → 文生，768p＝768×1344")
+    ok(out.endswith("03_空.mp4"), "768 定稿出 <档名>.mp4")
+    # 横竖不一致的首幀要拦
+    ffmpeg_color(os.path.join(cg.dst(), "01_船.png"), 160, 90)
+    ok(raises(lambda: cg.cmd_video(["01_船"], 480, False, None)) is not None, "首幀是横的、影片是竖的 → 拦")
+    os.remove(os.path.join(cg.dst(), "01_船.png"))
+    ok("还没出" in (raises(lambda: cg.cmd_video(["01_船"], 480, False, None)) or ""), "首幀还没出 → 拦")
+
+    print("== 工作流节点核对")
+    wd = tempfile.mkdtemp()
+    for k in cg.NODES:
+        shutil.copy(os.path.join(SCRIPTS, "comfy", k + ".api.json"), wd)
+    old = cg.WF_DIRS
+    cg.WF_DIRS = [wd]
+    ok(all(cg.load_wf(k) for k in cg.NODES), "仓库里的四份 API 工作流节点号都对得上")
+    p = os.path.join(wd, "h3_i2v.api.json")
+    j = json.load(open(p, encoding="utf-8"))
+    j["114"]["class_type"] = "LoadImageMask"
+    json.dump(j, open(p, "w", encoding="utf-8"))
+    ok(raises(lambda: cg.load_wf("h3_i2v")) is not None, "变异：节点 class_type 变了 → 拦（不会把首幀塞错节点）")
+    cg.WF_DIRS = old
+
+    print("== 显卡红线")
+    base = dict(name="NVIDIA GeForce RTX 3090", limit=333.0, draw=300.0, memclk=8999.0, used=1, total=24576)
+    cg.gpu = lambda: dict(base)
+    ok(raises(cg.guard_gpu) is None, "333W 上限放行")
+    cg.gpu = lambda: dict(base, limit=370.0)
+    ok(raises(cg.guard_gpu) is not None, "上限 370W（没设 90%）→ 拦")
+    cg.gpu = lambda: dict(base, name="NVIDIA GeForce GT 710")
+    ok(raises(cg.guard_gpu) is not None, "不是 3090 → 拦")
+    calls = []
+    cg._req = lambda path, *a, **k: calls.append(path) or {}
+    cg.gpu = lambda: dict(base, memclk=9501.0)
+    w = cg.Watch()
+    w.run()
+    ok(w.bad and "显存频率" in w.bad and "/interrupt" in calls, "负载下显存 9501MHz（-500 没生效）→ 中断")
+    calls.clear()
+    cg.gpu = lambda: dict(base)
+    w = cg.Watch()
+    w.start()
+    time.sleep(3.6)
+    w.stop.set()
+    w.join()
+    ok(w.bad is None and not calls and w.peak["draw"] == 300.0, "正常读数（采到一次 300W）不误杀")
+
+    print("== upscale")
+    src = os.path.join(cg.dst(), "01_船_480.mp4")
+    ffmpeg_color(src, 480, 864, 0.5)
+
+    def fake_run(key, wf, out, label):        # 假装 SeedVR2：按工作流里的倍率放大
+        m = wf[cg.NODES["seedvr2"]["mult"][0]]["inputs"]["resize_type.multiplier"]
+        sent.append((key, wf, out))
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf",
+                        "scale=%d:%d" % (round(480 * m / 2) * 2, round(864 * m / 2) * 2), out], check=True)
+        return 1.0, None
+    cg.run = fake_run
+    cg.cmd_upscale(["01_船"], "seedvr2", None)
+    m = sent[-1][1][cg.NODES["seedvr2"]["mult"][0]]["inputs"]["resize_type.multiplier"]
+    ok(480 * m >= 1080 and 864 * m >= 1920, "SeedVR2 倍率 %.4f 两边都够 1080×1920" % m)
+    ok(cg.probe(os.path.join(cg.dst(), "01_船_1080.mp4"))[:2] == (1080, 1920), "SeedVR2 之后裁成正好 1080×1920")
+    ok(not os.path.exists(os.path.join(cg.dst(), "01_船_seedvr2_raw.mp4")), "中间件删掉了")
+    cg.cmd_upscale(["01_船"], "lanczos", None)
+    ok(cg.probe(os.path.join(cg.dst(), "01_船_1080.mp4"))[:2] == (1080, 1920), "lanczos 出正好 1080×1920")
+    ok(os.path.exists(os.path.join(cg.dst(), "01_船_1080_v1.mp4")), "重出时旧的改名 _v1，不覆盖")
+    logs = [json.loads(l) for l in open(os.path.join(cg.dst(), "comfy_log.jsonl"), encoding="utf-8")]
+    ok({r["kind"] for r in logs} == {"image", "video", "upscale"}, "三类生成都记进 comfy_log.jsonl")
+    ok(any(r.get("model") == "MiniMax H3" for r in logs), "影片记录写明 MiniMax H3（publish.py check 靠它要求署名）")
+
+    print("\n%s" % ("全部通过" if not FAILS else "**%d 条失败**" % len(FAILS)))
+    return 1 if FAILS else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
