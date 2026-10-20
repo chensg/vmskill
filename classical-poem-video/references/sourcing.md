@@ -550,7 +550,7 @@ python comfy_gen.py image                 # 只给真正上屏的静帧出 50 �
 make_story_v.py vidplan write             # 旁白定了以后：影片秒数＝镜长＋余量，写回任务书 ▶ 表
 python comfy_gen.py video --res 480       # 影片试稿；首帧图没出会自己补 4 步版；有硬切当场报
 python comfy_gen.py strip 01_x            # 6 帧条＋切镜检测
-python comfy_gen.py video 01_x --res 768  # 只给开场/白天细节多的关键镜上 768p
+python comfy_gen.py video 01_x --res 768  # 默认是 480p；768p 只给白天、细节多的关键镜（见下）
 python comfy_gen.py upscale 01_x --seedvr2   # 关键镜
 python comfy_gen.py upscale 05_z --lanczos   # 暗、烟雾、过场
 python comfy_gen.py notes                 # 素材/生成/生成记录.md：每个成品怎么来的、显卡时间

@@ -10,7 +10,7 @@
     python comfy_gen.py image <档名> --trial [--size WxH]                  # 试验：50 步进候选，不盖定稿
     python comfy_gen.py promote <档名> [候选文件名|序号]                  # 选定的候选转正成 <档名>.png
     python comfy_gen.py sheet [档名...] | sheet --cand <档名>              # 拼联络表（带档名）
-    python comfy_gen.py video [档名...] [--res 480|768] [--turbo] [--seed N]
+    python comfy_gen.py video [档名...] [--res 480|768] [--turbo] [--seed N]   # 默认 480p
     python comfy_gen.py strip <档名>                # 影片 6 帧条 + 切镜检测
     python comfy_gen.py upscale <档名...> [--seedvr2|--lanczos] [--to WxH]
     python comfy_gen.py music <名> --style "…" [--secs 180] [--lyrics-file f]   # YuE2 配乐 → ../素材/配乐/（默认纯音乐）
@@ -29,7 +29,9 @@
      （第一轮直接上 50 步，16 张里 8 张重出，白跑约 40 分钟）
   2. 只当影片首帧的图**不出 50 步**：`video` 发现首帧没出会自己补 4 步版（H3 会重新渲染首帧）
   3. 旁白定了先 `make_story_*.py vidplan write`，秒数由镜长算，别手抄
-  4. `video --res 480` 试稿 → `strip` 看帧条（切镜自动报）→ 只给开场/白天细节多的关键镜上 768p
+  4. `video`（默认 480p）→ `strip` 看帧条（切镜自动报）→ `upscale --seedvr2`。768p 要点名 `--res 768`：
+     10-21 盲比（同镜 768p+SeedVR2 vs 480p+SeedVR2）1:1 —— 白天细节多的 01 选 768p，暗的水下 15 选 480p；
+     768p 贵 4~5 倍，只给白天、细节多的关键镜
   5. 放大：关键镜 SeedVR2、暗/烟雾/过场 lanczos
 
 ==== 任务书（和 el_web_image 同一份 出图任务书.md，换引擎不用改稿）====
@@ -931,7 +933,7 @@ def main():
     ap.add_argument("--turbo", action="store_true")
     ap.add_argument("--seed", type=int)
     ap.add_argument("--size")
-    ap.add_argument("--res", type=int, default=768, choices=(480, 768))
+    ap.add_argument("--res", type=int, default=480, choices=(480, 768))   # 10-21 盲比 1:1，768p 改成点名才出
     ap.add_argument("--seedvr2", action="store_const", const="seedvr2", dest="how")
     ap.add_argument("--lanczos", action="store_const", const="lanczos", dest="how")
     ap.add_argument("--to")
