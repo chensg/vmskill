@@ -43,12 +43,12 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 有平台硬线时这个差额是致命的，而它只在这个窗口里看得见。
 详见 `references/storytelling.md` 第〇节。
 
-**旁白 TTS 用 `el_tts.py`（2026-10-18 起的默认）**：ElevenLabs `eleven_v4`，中文 Jerry Lin（台湾腔）、
-英文 David - Documentary；一句一条、只给 previous_text 不给 next_text；生成完 `el_tts.py asr` 转写核对 ——
-它按**上下文拼音**分类，同音写法和三声变调自动放行，只列多音字读错、读成别的字、乱码（《海底四十小時》
-138 条报警从 60 条降到 3 条，真读错的一条没漏）。项目差异（换字、换 seed）写 `build/tts_fix.json`，不改代码。
-没有语速旋钮，实测约 3.9 字/秒，写稿按这个数估。旧的豆包配置（渊博小叔 / performancePrompt）留在
-`references/storytelling.md` 第八节后半，换回豆包时照抄。
+**旁白 TTS（2026-10-19 用户定）：中文 ChatCut 豆包、英文 Fish。** 中文 `submit_voice`：
+`doubao / yuanboxiaoshu（渊博小叔）/ emotion storytelling / emotionScale 3 / speedRatio 不给`，
+逐句 `performancePrompt`（去重音底子）——配置与理由见 `references/storytelling.md` 第八节「定死的四项」；
+下载走链接页（`request_asset_download` 要登录会话）。英文 Fish Documentary 音色，进片前过提亮 EQ。
+一句一条（`narr_build.py` 拆），排片按豆包 0.29 秒/字估。
+`el_tts.py`（ElevenLabs v4）**不是默认**，只在用户点名时用；它的转写核对（`asr`）照样能拿来查任何一批中文旁白的读音。
 
 **交付物不只是成片。** 还要附一份 `发布文案.md` —— 各平台的标题、简介、关键词，
 **复制粘贴就能用**。骨架 `python publish.py new 片名`，写完 `python publish.py check`
