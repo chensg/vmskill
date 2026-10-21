@@ -52,6 +52,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -208,6 +209,21 @@ def parse_srt(path):
     return out
 
 
+def seg_name(d):
+    """这一段的段名：段目录里有 segment_config.py 就读它的 SEG_NAME，否则用目录名。
+
+    `c` 用 SEG_NAME 给段用 mp4 和 srt 起名，不是用目录名。2026-10-22《海圖上找不到的島》
+    段目录叫 build_s1、段名叫「段1_冷開場・第一章_兵變」（章名进了文件名），
+    按目录名找，六段全报「缺段用文件」。
+    """
+    cfg = os.path.join(d, "segment_config.py")
+    if os.path.exists(cfg):
+        m = re.search(r"""^SEG_NAME\s*=\s*["'](.+?)["']\s*$""", open(cfg, encoding="utf-8").read(), re.M)
+        if m:
+            return m.group(1)
+    return os.path.basename(os.path.normpath(d))
+
+
 def collect(seg_dirs):
     """找每段的段用 mp4 和各语言 srt，并核对编码参数、音轨条数与语言一致。"""
     segs, bad = [], []
@@ -215,7 +231,7 @@ def collect(seg_dirs):
         if not os.path.isdir(d):
             bad.append("目录不存在: " + d)
             continue
-        name = os.path.basename(os.path.normpath(d))
+        name = seg_name(d)
         # 段目录里找不到就回退到上一级 —— `c` 写的是 `../<段名>_段用.mp4`
         mp4 = os.path.join(d, "%s_段用.mp4" % name)
         if not os.path.exists(mp4):
@@ -613,11 +629,29 @@ def selftest_tracks():
     return ok
 
 
+def selftest_segname():
+    """回归：段目录名 ≠ SEG_NAME（段用文件写在上一级、以 SEG_NAME 命名）也要找得到。"""
+    work = tempfile.mkdtemp(prefix="joinname_")
+    d = _mkseg(work, "段9_某一章", ["zho"], [""])
+    proj = os.path.join(work, "proj")
+    sd = os.path.join(proj, "build_s9")
+    os.makedirs(sd)
+    for f in os.listdir(d):
+        shutil.move(os.path.join(d, f), os.path.join(proj, f))
+    with open(os.path.join(sd, "segment_config.py"), "w", encoding="utf-8") as f:
+        f.write('SEG_NAME = "段9_某一章"\nOUT_NAME = "%s_段用.mp4" % SEG_NAME\n')
+    segs, bad = collect([sd])
+    hit = not bad and len(segs) == 1 and set(segs[0]["srts"]) == {""}
+    print("\n段目录 build_s9、段名 段9_某一章 —— %s" % ("对，找到了段用文件和字幕" if hit else "**没找到** %s" % bad))
+    return hit
+
+
 def main():
     if "--selftest" in sys.argv:
         a = selftest()
         b = selftest_tracks()
-        sys.exit(0 if (a == 0 and b) else 1)
+        c = selftest_segname()
+        sys.exit(0 if (a == 0 and b and c) else 1)
     args = sys.argv[1:]
     if not args:
         sys.exit("用法: python join.py 段一 段二 ...   或   python join.py --selftest")
