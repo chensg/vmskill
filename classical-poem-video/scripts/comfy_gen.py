@@ -13,6 +13,7 @@
     python comfy_gen.py video [档名...] [--res 480|768] [--turbo] [--seed N]   # 默认 480p
     python comfy_gen.py strip <档名>                # 影片 6 帧条 + 切镜检测
     python comfy_gen.py upscale <档名...> [--seedvr2|--lanczos] [--to WxH]
+    python comfy_gen.py upscale --image <档名|图片路径...> [--lanczos] [--to WxH]   # 静帧，默认 SeedVR2 到 4K
     python comfy_gen.py music <名> --style "…" [--secs 180] [--lyrics-file f]   # YuE2 配乐 → ../素材/配乐/（默认纯音乐）
     python comfy_gen.py sfx <名> "<描述>" [--secs 5] [--kind SFX|One-shot] [--enhance]   # Stable Audio 3 → ../素材/音效/
     python comfy_gen.py notes                       # 素材/生成/生成记录.md（每个成品是怎么来的）
@@ -22,6 +23,7 @@
     图      <档名>.png（定稿）       候选/<档名>/<步数>s-<种子>.png（--fast / --variants）
     影片    <档名>.mp4 (768)   <档名>_480.mp4（试稿）
     放大    <档名>_1080.mp4    —— CLIPS 里写 dict(video="生成/<档名>_1080.mp4", ss=0, to="full")
+    静帧放大 <档名>_3840x2160.png（给路径时放在原图旁边）
 每一次生成都记进 ../素材/生成/comfy_log.jsonl（提示词、种子、步数、尺寸、耗时、功耗/温度峰值、切镜）。
 
 ==== 推荐顺序（2026-10-20《我想回家》复盘后定）====
@@ -51,6 +53,7 @@
       **发布说明要写「MiniMax H3 生成」并勾 AI 披露**；美/欧/英/韩不在它的免费商用范围
   放大 SeedVR2 3B（Apache-2.0）：约 70 秒/秒成片（480 或 768 进都差不多），显存约 10GB
       lanczos（ffmpeg）几秒，偏软。SeedVR2 给特写/关键镜/首尾/有线条文字的；lanczos 给过场、烟雾黑暗、试稿
+      静帧 `upscale --image`：1664×928 → 3840×2160 约 20 秒/张、显存 7.3GB（10-22）；脸、招牌字都补出细节
 
 ==== 硬件红线（脚本会拦）====
   - 3090 是矿卡：功耗上限必须 ≤ 336W（Afterburner 90%），负载下显存频率应 ≈ 9000MHz（-500）。
@@ -108,6 +111,9 @@ NODES = {
                    image=("114", "LoadImage"), save=("92", "SaveVideo")),
     "seedvr2": dict(video=("73", "LoadVideo"), mult=("66:57", "ResizeImageMaskNode"),
                     chunk=("66:105", "PrimitiveBoolean"), save=("76", "SaveVideo")),
+    # 静帧版：seedvr2 的 LoadVideo/拆帧/CreateVideo/SaveVideo 换成 LoadImage/SaveImage，中间节点不动
+    "seedvr2_image": dict(image=("73", "LoadImage"), mult=("66:57", "ResizeImageMaskNode"),
+                          chunk=("66:105", "PrimitiveBoolean"), save=("76", "SaveImage")),
     # YuE2（ComfyUI 原生，int8）：33:24 写谱 → 33:30 开关（true＝用模型写的谱，false＝用 33:32 给的谱）→ 33:25 生成
     "yue2": dict(ckpt=("33:15", "CheckpointLoaderSimple"), plan=("33:24", "YuE2GenerateABC"),
                  preview=("33:14", "PreviewAny"), use_plan=("33:31", "PrimitiveBoolean"),
@@ -120,7 +126,7 @@ NODES = {
                           sampler=("52:3", "KSampler"), neg=("52:7", "CLIPTextEncode"), save=("57", "SaveAudioAdvanced")),
 }
 FAMILY = {"qwen2512": "image", "h3_t2v": "video", "h3_i2v": "video", "seedvr2": "upscale",
-          "yue2": "music", "stable_audio3": "sfx"}
+          "seedvr2_image": "upscale", "yue2": "music", "stable_audio3": "sfx"}
 YUE2_SKILL = os.path.expanduser("~/.claude/skills/yue2-music/instrumental/scripts/instrumental.py")
 # 写谱用的曲式标签（不唱，只让模型排出段落、拉够长度）。官方纯音乐流程：模型写谱 → Vocal 音符挪到 Ins → 按谱生成。
 PLAN_TAGS = "[Intro]\n\n[Verse]\n\n[Chorus]\n\n[Verse]\n\n[Chorus]\n\n[Bridge]\n\n[Chorus]\n\n[Outro]"
@@ -128,7 +134,7 @@ H3_SIZE = {480: (864, 480), 768: (1344, 768)}       # 横；竖版对调。都�
 
 # 预计耗时（秒）的缺省值：2026-10-20 实测；项目里有记录时用本项目的中位数。
 ETA_DEFAULT = {("image", 50): 280, ("image", 4): 12, ("video", 480): 60, ("video", 768): 320,
-               ("upscale", "seedvr2"): 71}
+               ("upscale", "seedvr2"): 71, ("upscale", "seedvr2_image"): 20}   # 静帧是秒/张（10-22 1664×928→4K 20 秒）
 COLD = 70                    # 换模型后的首个任务多出来的加载时间
 
 
@@ -395,6 +401,8 @@ def eta(kind, key, secs=1.0):
             xs.append(r["sec"] / r["dur"])
         elif kind == "upscale" and r.get("how") == key and r.get("dur"):
             xs.append(r["sec"] / r["dur"])
+        elif kind == "upscale" and r.get("how") == key and r.get("image"):
+            xs.append(r["sec"])
     per = sorted(xs)[len(xs) // 2] if len(xs) >= 2 else ETA_DEFAULT.get((kind, key), 60)
     return per * (secs if kind != "image" else 1)
 
@@ -749,6 +757,51 @@ def cmd_upscale(names, how, to):
         print("   存 %s  %sx%s %.2fs（%.0f 秒）" % (os.path.basename(out), ow, oh, odur, sec))
 
 
+def cmd_upscale_image(names, how, to):
+    """静帧放大（默认到 4K：横 3840×2160、竖 2160×3840）。Qwen 直出 4K 会坏（训练约 1.6MP、显存已贴 23.6GB），
+    所以走原生尺寸出图再放大。名字是任务书档名（读 <档名>.png）或任意图片路径（输出放在它旁边）。"""
+    srcs = []
+    for n in names:
+        src = n if os.path.isfile(n) else os.path.join(dst(), n + ".png")
+        if not os.path.exists(src):
+            sys.exit("!!! 没有 %s（档名读 素材/生成/<档名>.png，或直接给图片路径）" % src)
+        srcs.append(src)
+    if how == "seedvr2":
+        say_eta(sum(eta("upscale", "seedvr2_image") for _ in srcs) + COLD, len(srcs))
+    for src in srcs:
+        w, h, _ = probe(src)
+        tw, th = map(int, to.lower().split("x")) if to else ((2160, 3840) if h > w else (3840, 2160))
+        stem = os.path.splitext(os.path.basename(src))[0]
+        out = os.path.join(os.path.dirname(os.path.abspath(src)), "%s_%dx%d.png" % (stem, tw, th))
+        t0 = time.time()
+        if how == "lanczos":
+            _keep_old(out)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", _fit_vf(w, h, tw, th), out], check=True)
+            peak = None
+        else:
+            wf = load_wf("seedvr2_image")
+            N = NODES["seedvr2_image"]
+            mult = max(tw / w, th / h) * 1.002          # 宁大一点，再裁
+            wf[N["image"][0]]["inputs"]["image"] = upload(src)
+            wf[N["mult"][0]]["inputs"]["resize_type.multiplier"] = round(mult, 4)
+            wf[N["chunk"][0]]["inputs"]["value"] = False  # 单帧不用分段
+            wf[N["save"][0]]["inputs"]["filename_prefix"] = "vmskill/" + stem + "_seedvr2"
+            raw = os.path.join(os.path.dirname(out), "_%s_seedvr2_raw.png" % stem)
+            print("upscale %s  %sx%s → ×%.4f → 裁 %dx%d（SeedVR2 静帧）" % (stem, w, h, mult, tw, th))
+            _, peak = run("seedvr2_image", wf, raw, stem)
+            rw, rh, _ = probe(raw)
+            _keep_old(out)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", raw, "-vf", _fit_vf(rw, rh, tw, th), out], check=True)
+            os.remove(raw)
+        ow, oh, _ = probe(out)
+        sec = time.time() - t0
+        if os.path.isdir(dst()):                      # 不在项目里（随手给的路径、仓库里直接跑）就不记日志
+            rel = os.path.relpath(out, dst()).replace("\\", "/")
+            log(dict(kind="upscale", name=stem, how=how + "_image", image=True, src=os.path.basename(src),
+                     size=[ow, oh], out=rel if not rel.startswith("..") else out, sec=round(sec), peak=peak))
+        print("   存 %s  %sx%s（%.0f 秒%s）" % (out, ow, oh, sec, "，" + _peak_txt(peak) if peak else ""))
+
+
 def _audio_dir(sub):
     return os.path.join(os.path.dirname(dst()), sub)
 
@@ -937,6 +990,7 @@ def main():
     ap.add_argument("--seedvr2", action="store_const", const="seedvr2", dest="how")
     ap.add_argument("--lanczos", action="store_const", const="lanczos", dest="how")
     ap.add_argument("--to")
+    ap.add_argument("--image", action="store_true")      # upscale 静帧（默认 SeedVR2 到 4K）
     ap.add_argument("--style")
     ap.add_argument("--secs", type=float)
     ap.add_argument("--lyrics-file")
@@ -971,7 +1025,10 @@ def main():
     elif a.cmd == "upscale":
         if not a.names:
             sys.exit("!!! upscale 要点名（哪几镜用 SeedVR2、哪几镜用 lanczos 是逐镜判断的）")
-        cmd_upscale(a.names, a.how or "lanczos", a.to)
+        if a.image:
+            cmd_upscale_image(a.names, a.how or "seedvr2", a.to)
+        else:
+            cmd_upscale(a.names, a.how or "lanczos", a.to)
     elif a.cmd == "music":
         if not a.names or not a.style:
             sys.exit('!!! music <名> --style "风格描述" [--secs 180] [--lyrics-file 歌词.txt]')

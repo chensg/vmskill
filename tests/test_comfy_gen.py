@@ -256,6 +256,49 @@ def main():
     cg.cmd_upscale(["01_船"], "lanczos", None)
     ok(cg.probe(os.path.join(cg.dst(), "01_船_1080.mp4"))[:2] == (1080, 1920), "lanczos 出正好 1080×1920")
     ok(os.path.exists(os.path.join(cg.dst(), "01_船_1080_v1.mp4")), "重出时旧的改名 _v1，不覆盖")
+
+    print("== upscale --image（静帧）")
+    still = os.path.join(cg.dst(), "01_船.png")
+    ffmpeg_color(still, 90, 160)
+
+    def fake_run_img(key, wf, out, label):    # 假装 SeedVR2 静帧：读 LoadImage 写的那张，按倍率放大
+        N = cg.NODES[key]
+        m = wf[N["mult"][0]]["inputs"]["resize_type.multiplier"]
+        sent.append((key, wf, out))
+        src_ = imgs[wf[N["image"][0]]["inputs"]["image"]]
+        w_, h_, _ = cg.probe(src_)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src_, "-vf",
+                        "scale=%d:%d" % (round(w_ * m), round(h_ * m)), out], check=True)
+        return 1.0, None
+    imgs = {}
+    cg.upload = lambda p: imgs.setdefault("up_" + os.path.basename(p), p) and "up_" + os.path.basename(p)
+    cg.run = fake_run_img
+    cg.cmd_upscale_image(["01_船"], "seedvr2", None)
+    key, wf, _ = sent[-1]
+    ok(key == "seedvr2_image", "静帧走 seedvr2_image 工作流（不是视频那份）")
+    ok(wf[cg.NODES["seedvr2_image"]["chunk"][0]]["inputs"]["value"] is False, "单帧不开分段")
+    out4k = os.path.join(cg.dst(), "01_船_2160x3840.png")
+    ok(cg.probe(out4k)[:2] == (2160, 3840), "竖图默认放大成正好 2160×3840（实际 %s）" % (cg.probe(out4k)[:2],))
+    ok(not [f for f in os.listdir(cg.dst()) if "seedvr2_raw" in f], "中间件删掉了")
+    r = [x for x in cg.logs() if x.get("image")][-1]
+    ok(r["how"] == "seedvr2_image" and r["out"] == "01_船_2160x3840.png", "日志记成静帧放大（%s）" % r)
+    ok(cg.eta("upscale", "seedvr2_image") == 20, "静帧 ETA：只有一条记录时用缺省 20 秒/张")
+    loose = os.path.join(d, "封面.png")                 # 任意路径：输出放在原图旁边
+    ffmpeg_color(loose, 166, 92)
+    cg.cmd_upscale_image([loose], "lanczos", "3840x2160")
+    ok(cg.probe(os.path.join(d, "封面_3840x2160.png"))[:2] == (3840, 2160), "给路径 + lanczos → 原图旁边出 3840×2160")
+    ok(raises(lambda: cg.cmd_upscale_image(["99_没有"], "seedvr2", None)) is not None, "档名没有图 → 拦")
+    # 变异：倍率不加余量（×1.0 正好对齐时 round 会少 1px）也必须靠最后的裁切补齐 —— 拿掉裁切，尺寸就会错
+    real_fit = cg._fit_vf
+    cg._fit_vf = lambda w, h, tw, th: "null"
+    cg.cmd_upscale_image(["01_船"], "seedvr2", None)
+    ok(cg.probe(out4k)[:2] != (2160, 3840), "变异：去掉裁切，输出不再是正好 2160×3840（裁切不是摆设）")
+    cg._fit_vf = real_fit
+    for s in (30, 40):
+        cg.log(dict(kind="upscale", how="seedvr2_image", image=True, sec=s))
+    ok(cg.eta("upscale", "seedvr2_image") == 40, "两条以上记录 → ETA 用本项目静帧记录的中位数（%s）"
+       % cg.eta("upscale", "seedvr2_image"))
+
     logs = [json.loads(l) for l in open(os.path.join(cg.dst(), "comfy_log.jsonl"), encoding="utf-8")]
     ok({"image", "video", "upscale", "promote"} <= {r["kind"] for r in logs}, "图/影片/放大/转正都记进 comfy_log.jsonl")
     ok(any(r.get("model") == "MiniMax H3" for r in logs), "影片记录写明 MiniMax H3（publish.py check 靠它要求署名）")
