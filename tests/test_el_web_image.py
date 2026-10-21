@@ -42,6 +42,7 @@ BRIEF = """# 出圖任務書 · 測試
 | ★01_火 | 1 | 夜 A | 雪夜，（主角）蹲在火前。 |
 | 04a_北狩 | 4 | A | 雪原上一列隊伍往北走。 |
 | 06b_鼎鑊 | 6 | E | 一口大鍋架在火上。 |
+| 102a_晚飯 | 102 | E | 長桌上點著一串堅果燈。 |
 """
 
 
@@ -66,9 +67,11 @@ def run(script_src):
             return r.returncode, r.stdout + r.stderr
 
         rc, out = call("list")
-        names = re.findall(r"(\d\d[a-z]?_\S+)", out)
+        names = re.findall(r"(\d{2,3}[a-z]?_\S+)", out)
         ok(rc == 0 and "01_火" in names, "list 读到普通档名 01_火")
         ok("04a_北狩" in names and "06b_鼎鑊" in names, "list 读到带字母后缀的档名（04a_北狩、06b_鼎鑊）")
+        # 2026-10-21《海圖上找不到的島》112 镜：镜号过百，102a_ 也被静默跳过（list 少 18 张）
+        ok("102a_晚飯" in names, "list 读到三位数镜号的档名（102a_晚飯）")
         rc, out = call("show", "04a_北狩")
         ok(rc == 0 and "雪原上一列隊伍往北走" in out and "人物不露正臉" in out, "show 04a_北狩：画面句 + 结尾 A")
         rc, out = call("show", "06b_鼎鑊")
@@ -86,7 +89,7 @@ def main():
     real = list(FAILS)
 
     print("== el_web_image：故意改坏（档名正则改回只认两位数字），这一段应当出 FAIL")
-    broken, n = re.subn(r"\\d\\d\[a-z\]\?_", r"\\d\\d_", src)
+    broken, n = re.subn(r"\\d\{2,3\}\[a-z\]\?_", r"\\d\\d_", src)
     ok(n >= 1, "改坏的副本确实改到了档名正则（替换 %d 处）" % n)
     before = len(FAILS)
     run(broken)

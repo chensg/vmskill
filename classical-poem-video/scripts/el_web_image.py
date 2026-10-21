@@ -63,7 +63,7 @@ def _brief():
     desc = dict(re.findall(r"- \*\*（(.+?)）\*\*：(.+)", md))
     rows = {}
     for line in md.split("\n"):
-        m = re.match(r"\| (★?)(\d\d[a-z]?_[^ |]+) \| [^|]+ \| ([^|]+) \| (.+) \|$", line)  # 04a_：拆镜补的图
+        m = re.match(r"\| (★?)(\d{2,3}[a-z]?_[^ |]+) \| [^|]+ \| ([^|]+) \| (.+) \|$", line)  # 04a_：拆镜补的图；102a_：长片三位数镜号
         if m:
             rows[m.group(2)] = (m.group(3).strip(), m.group(4).strip(), bool(m.group(1)))
     if not rows:

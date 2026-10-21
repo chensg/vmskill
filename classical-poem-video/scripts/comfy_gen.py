@@ -420,7 +420,7 @@ def vbrief():
 
     rows = {}
     for line in md.split("\n"):
-        m = re.match(r"\| ▶(\d\d[a-z]?_[^ |]+) \| ([^|]+) \| ([\d.]+) \| (.+) \|$", line)
+        m = re.match(r"\| ▶(\d{2,3}[a-z]?_[^ |]+) \| ([^|]+) \| ([\d.]+) \| (.+) \|$", line)   # 102a_：长片三位数镜号
         if m:
             ff = m.group(2).strip()
             rows[m.group(1)] = (None if ff in ("-", "—", "") else ff, float(m.group(3)), m.group(4).strip())
