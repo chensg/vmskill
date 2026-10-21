@@ -14,7 +14,7 @@
     python comfy_gen.py strip <档名>                # 影片 6 帧条 + 切镜检测
     python comfy_gen.py upscale <档名...> [--seedvr2|--lanczos] [--to WxH]
     python comfy_gen.py upscale --image <档名|图片路径...> [--lanczos] [--to WxH]   # 静帧，默认 SeedVR2 到 4K
-    python comfy_gen.py music <名> --style "…" [--secs 180] [--lyrics-file f]   # YuE2 配乐 → ../素材/配乐/（默认纯音乐）
+    python comfy_gen.py music <名> --style "…" [--secs 180] [--plan 10 | --abc 谱.abc] [--lyrics-file f]   # YuE2 配乐 → ../素材/配乐/（默认纯音乐）
     python comfy_gen.py sfx <名> "<描述>" [--secs 5] [--kind SFX|One-shot] [--enhance]   # Stable Audio 3 → ../素材/音效/
     python comfy_gen.py notes                       # 素材/生成/生成记录.md（每个成品是怎么来的）
     python comfy_gen.py free                        # 卸模型、清显存/内存
@@ -130,6 +130,19 @@ FAMILY = {"qwen2512": "image", "h3_t2v": "video", "h3_i2v": "video", "seedvr2": 
 YUE2_SKILL = os.path.expanduser("~/.claude/skills/yue2-music/instrumental/scripts/instrumental.py")
 # 写谱用的曲式标签（不唱，只让模型排出段落、拉够长度）。官方纯音乐流程：模型写谱 → Vocal 音符挪到 Ins → 按谱生成。
 PLAN_TAGS = "[Intro]\n\n[Verse]\n\n[Chorus]\n\n[Verse]\n\n[Chorus]\n\n[Bridge]\n\n[Chorus]\n\n[Outro]"
+
+
+def plan_tags(n=None):
+    """纯音乐的曲式标签。缺省 8 段（2026-10-21 实测 141 秒）；长度由段数定、--secs 只是上限，
+    要更长就加段：在 [Bridge] 前面按 Verse/Chorus 交替插，首尾的 [Intro] [Outro] 不动。"""
+    tags = PLAN_TAGS.split("\n\n")
+    if not n or n == len(tags):
+        return PLAN_TAGS
+    if n < len(tags):
+        return "\n\n".join(tags[:n - 1] + ["[Outro]"])
+    mid = [("[Verse]" if k % 2 == 0 else "[Chorus]") for k in range(n - len(tags))]
+    b = tags.index("[Bridge]")
+    return "\n\n".join(tags[:b] + mid + tags[b:])
 H3_SIZE = {480: (864, 480), 768: (1344, 768)}       # 横；竖版对调。都是 32 的倍数
 
 # 预计耗时（秒）的缺省值：2026-10-20 实测；项目里有记录时用本项目的中位数。
@@ -815,7 +828,7 @@ def _text_out(h, nid):
     return None
 
 
-def cmd_music(name, style, secs, seed, lyrics_file):
+def cmd_music(name, style, secs, seed, lyrics_file, plan_n=None, abc_file=None):
     """YuE2 本地配乐（ComfyUI 原生 int8）。默认纯音乐，照官方 yue2-music 纯音乐流程：
     ① YuE2 按风格＋曲式标签写谱（ABC）② 官方 instrumental.py 把 Vocal 音符挪到 Ins（CPU）③ 按改好的谱生成。
     给 --lyrics-file 就是带人声的歌（跳过 ②，直接用模型写的谱）。产出 ../素材/配乐/<名>.mp3（另留 .flac）。
@@ -826,7 +839,7 @@ def cmd_music(name, style, secs, seed, lyrics_file):
         _keep_old(work)
     os.makedirs(work)
     sd = seed_of(name, seed)
-    lyrics = open(lyrics_file, encoding="utf-8").read() if lyrics_file else PLAN_TAGS
+    lyrics = open(lyrics_file, encoding="utf-8").read() if lyrics_file else plan_tags(plan_n)
     instrumental = not lyrics_file
     say_eta(60 + secs * 1.0 + COLD, 2)
     wf0 = load_wf("yue2")
@@ -838,9 +851,14 @@ def cmd_music(name, style, secs, seed, lyrics_file):
     plan[N["style"][0]]["inputs"]["value"] = style
     plan[N["lyrics"][0]]["inputs"]["value"] = lyrics
     plan[N["seed"][0]]["inputs"]["seed"] = sd
-    print("① YuE2 写谱  seed=%d  %s" % (sd, "纯音乐" if instrumental else "带人声"))
-    h, sec1, peak = submit("yue2", plan, name + " 写谱")
-    abc = _text_out(h, N["preview"][0])
+    if abc_file:
+        # 给了谱就不写谱：改谱（重复段落加长、删段）后按同一份谱重生成，调性/配器都接得上
+        abc, sec1 = open(abc_file, encoding="utf-8").read(), 0
+        print("① 用给定的谱 %s（不写谱）" % abc_file)
+    else:
+        print("① YuE2 写谱  seed=%d  %s" % (sd, "纯音乐" if instrumental else "带人声"))
+        h, sec1, peak = submit("yue2", plan, name + " 写谱")
+        abc = _text_out(h, N["preview"][0])
     if not abc or "X:" not in abc:
         sys.exit("!!! 写谱没拿到 ABC（%s）" % json.dumps(h.get("outputs", {}), ensure_ascii=False)[:300])
     open(os.path.join(work, "plan.abc"), "w", encoding="utf-8").write(abc)
@@ -994,6 +1012,8 @@ def main():
     ap.add_argument("--style")
     ap.add_argument("--secs", type=float)
     ap.add_argument("--lyrics-file")
+    ap.add_argument("--abc")                            # music：直接用这份 ABC 谱（跳过写谱）
+    ap.add_argument("--plan", type=int)                 # music 纯音乐的曲式段数（缺省 8 段≈141 秒；Shorts 要 ~180 秒给 10）
     ap.add_argument("--kind", default="SFX")
     ap.add_argument("--enhance", action="store_true")
     a = ap.parse_args()
@@ -1031,8 +1051,8 @@ def main():
             cmd_upscale(a.names, a.how or "lanczos", a.to)
     elif a.cmd == "music":
         if not a.names or not a.style:
-            sys.exit('!!! music <名> --style "风格描述" [--secs 180] [--lyrics-file 歌词.txt]')
-        cmd_music(a.names[0], a.style, a.secs or 180, a.seed, a.lyrics_file)
+            sys.exit('!!! music <名> --style "风格描述" [--secs 180] [--plan 10 | --abc 谱.abc] [--lyrics-file 歌词.txt]')
+        cmd_music(a.names[0], a.style, a.secs or 180, a.seed, a.lyrics_file, a.plan, a.abc)
     elif a.cmd == "sfx":
         if len(a.names) < 2:
             sys.exit('!!! sfx <名> "<描述>" [--secs 5] [--kind SFX|One-shot|Music|Instrument] [--enhance]')
