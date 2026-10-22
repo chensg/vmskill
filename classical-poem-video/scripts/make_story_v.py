@@ -178,6 +178,15 @@ SRC = os.path.join("..", "素材")
 FONTS = os.path.join("..", "fonts")
 SUB_FONT = "Microsoft YaHei"        # 讲述是现代口吻，用黑体不用楷体
 
+# 诗句竖排烧字（2026-10-22《寒席》用户：「提到诗句的时候，要竖着用毛笔字体写在屏幕右侧靠上」）。
+# {"VO_xxx": "每望昏入門，寒席無主"}：那一句念出来时上屏，留到这一镜结束；逗号分列，从右往左排。
+# 字体放 ../fonts/，POEM_FONT 填字体的 family 名（不是文件名）。外挂字幕的片子这是唯一跟着画面走的字，英文轨也看得到。
+POEM_CARDS = {}
+POEM_FONT = ""                      # 空＝跟 SUB_FONT
+POEM_FS = 84
+POEM_TOP = 120                      # 第一个字的上沿（px）
+POEM_RIGHT = 70                     # 最右一列离右边（px）
+
 # ================= 运动：运镜还是静帧 =================
 # 全片默认，任何一镜可写 motion="static" / "kenburns" 覆盖。
 #   "kenburns"  每张图缓推缓摇（这一支，以及此前交付的每一支）

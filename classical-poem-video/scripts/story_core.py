@@ -3776,7 +3776,7 @@ def measure_loudness(path):
 
 
 # ================= 字幕 =================
-def _style(name, size, pol, spacing=0, align=5, heavy=False):
+def _style(name, size, pol, spacing=0, align=5, heavy=False, font=None):
     # **第 4 个位置参数是字距，第 5 个才是对齐。**
     # 传 _style(..., 3) 想要右下对齐，实际设的是字距 3、对齐仍是默认的 5（居中），
     # 于是 \pos 变成以该点为中心，一半文字跑出画面 —— 而且渲得出来，不报错。
@@ -3788,7 +3788,7 @@ def _style(name, size, pol, spacing=0, align=5, heavy=False):
     if heavy:               # 封面大字：粗体、描边 10、阴影 5（_default COVER_HEAVY）
         bold, ol, sh = -1, 10, 5
     return ("Style: %s,%s,%d,%s,%s,%s,%s,%d,0,0,0,100,100,%d,0,1,%d,%d,%d,20,20,0,1"
-            % (name, SUB_FONT, size, pri, pri, out, out, bold, spacing, ol, sh, align))
+            % (name, font or SUB_FONT, size, pri, pri, out, out, bold, spacing, ol, sh, align))
 
 
 def styles_block():
@@ -3801,7 +3801,8 @@ def styles_block():
                         _style("CT", 88, COVER_POLARITY or TITLE_POLARITY, 6, heavy=COVER_HEAVY),
                         _style("CTS", 44, COVER_POLARITY or TITLE_POLARITY, 8, heavy=COVER_HEAVY),
                         _style("M", SUB_FS, POLARITY, 2),
-                        _style("L", 26, POLARITY, 0, 3)]) + "\n"
+                        _style("L", 26, POLARITY, 0, 3),
+                        _style("P", POEM_FS, TITLE_POLARITY, 0, 8, font=POEM_FONT or SUB_FONT)]) + "\n"
 
 
 def ts(t):
@@ -4003,6 +4004,7 @@ def make_ass():
             continue
         ev.append("Dialogue: 0,%s,%s,L,,0,0,0,,{\\an3\\pos(%d,%d)}{\\fad(400,400)}%s"
                   % (ts(_a), ts(_b), W - 40, H - 44, _tx))
+    ev += poem_events(lines, starts)
     if ENDCARD:
         t0 = starts[-1] + ENDCARD["t0"]
         t1 = min(starts[-1] + ENDCARD["t1"], total_len())
@@ -4019,6 +4021,35 @@ def make_ass():
     print("已生成 sub.ass（%d 条%s）"
           % (len(ev), "" if SUB_MODE == "burn" else "，只有标题/角标/尾板，正文字幕走 SRT"))
     return bool(ev)
+
+
+def poem_events(lines, starts):
+    """POEM_CARDS：念到这句诗时，在画面右上竖排烧字，留到这一镜结束（下一镜起点前 0.25s 淡出）。
+    逗号/句号分列，从右往左；一列一个 \\an8 的 Dialogue，字之间用 \\N 竖排。
+    竖版右侧 x>929、y 864~1632 是平台操作栏 —— 字列往下伸进去就报出来（只报不拦，改 POEM_FS / POEM_TOP）。"""
+    ev = []
+    by_vo = {n["vo"]: n for n in NARR}
+    for vo, tx in POEM_CARDS.items():
+        n = by_vo.get(vo)
+        if not n:
+            sys.exit("!!! POEM_CARDS 里的 %s 不在 NARR 里" % vo)
+        hit = [l for l in lines if l[2] == n["txt"]]
+        if not hit:
+            sys.exit("!!! POEM_CARDS：%s 在时间轴上找不到" % vo)
+        _, _, _, sh, vs, _ = hit[0]
+        a = max(0.0, vs - 0.15)
+        b = (starts[sh] if sh < len(starts) else total_len()) - 0.25
+        cols = [c for c in re.split(r"[，,。、；;：:\s]+", tx) if c]
+        step = int(POEM_FS * 1.35)
+        for ci, col in enumerate(cols):
+            x = W - POEM_RIGHT - POEM_FS // 2 - ci * step
+            bottom = POEM_TOP + len(col) * POEM_FS * 1.2
+            if H > W and x + POEM_FS // 2 > 929 and bottom > 864:
+                print("   提示：%s 第 %d 列伸到 y=%d，压进右侧操作栏（y>864）—— 收 POEM_FS 或上提 POEM_TOP"
+                      % (vo, ci + 1, bottom))
+            ev.append("Dialogue: 1,%s,%s,P,,0,0,0,,{\\an8\\pos(%d,%d)}{\\fad(600,500)}%s"
+                      % (ts(a), ts(b), x, POEM_TOP, "\\N".join(col)))
+    return ev
 
 
 def make_scrim():
