@@ -3474,7 +3474,12 @@ def credits(dry=False):
     if not music_on():
         lines.append("无背景音乐（MUSIC_MODE='none'）。")
     elif MUSIC_MODE == "generated":
-        lines.append("生成（ChatCut submit_music），无第三方权利。")
+        # 生成不止一条路：ChatCut mureka、本机 YuE2（权重 CC BY-NC＋创作者许可）—— 填了 MUSIC_CREDIT 就照实写，
+        # 2026-10-22《寒席》用 YuE2，这里却写着 ChatCut submit_music。
+        who = str(MUSIC_CREDIT.get("performer", "")).strip()
+        lic = str(MUSIC_CREDIT.get("license", "")).strip()
+        lines.append("生成（%s）%s" % (who or "ChatCut submit_music",
+                                       "，授权：%s。" % lic if lic else "，无第三方权利。"))
     elif MUSIC_MODE == "library" and any(str(MUSIC_CREDIT.get(k, "")).strip()
                                          for k in ("license", "performer", "url")):
         # 库里的曲子**不一定是自生成的**：找来的 CC BY 录音进库之后也走 library。
