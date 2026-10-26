@@ -151,6 +151,72 @@ def main():
     ok(sent[-1][2].endswith("01_船.png") and "候选" not in sent[-1][2], "不加 --fast 出 <档名>.png（50 步定稿）")
     ok(os.path.exists(os.path.join(cg.dst(), "01_船_v1.png")), "定稿重出时旧的改名 _v1")
 
+    print("== image --engine moss")
+    n0 = len(sent)
+    cg.cmd_image(["02_海"], False, 5, None, 1, engine="moss")
+    key, wf, out = sent[-1]
+    N = cg.NODES["moss_image"]
+    ok(key == "moss_image" and len(sent) == n0 + 1, "--engine moss 用 MOSS 工作流")
+    ok(wf[N["prompt"][0]]["inputs"]["text"] == cg.ew.prompt("02_海") and wf[N["neg"][0]]["inputs"]["text"] == "",
+       "MOSS：提示词进正向、负向留空（卡片默认）")
+    ok(wf[N["sampler"][0]]["inputs"]["steps"] == 50 and wf[N["sampler"][0]]["inputs"]["seed"] == 5, "MOSS 50 步、种子写进 KSampler")
+    ok(out.replace("\\", "/").endswith("候选/02_海/m50s-5.png"), "MOSS 不加 --variants 也只进候选（m50s-5.png）：它不守禁令，要人挑")
+    ok(not os.path.exists(os.path.join(cg.dst(), "02_海.png")), "MOSS 不会直接出定稿")
+    ok(raises(lambda: cg.cmd_image(["02_海"], True, 5, None, 1, engine="moss")) is not None, "MOSS 没有 --fast（4 步）→ 拦")
+    cg.cmd_promote("02_海", "1")
+    pr = [r for r in cg.logs() if r["kind"] == "promote"][-1]
+    ok(pr.get("engine") == "moss" and pr["steps"] == 50 and pr["seed"] == 5, "promote MOSS 候选：记 engine=moss、步数、种子（%s）" % pr)
+    cg.cmd_notes()
+    md = open(os.path.join(cg.dst(), "生成记录.md"), encoding="utf-8").read()
+    ok("MOSS-Image" in md, "notes 里写明 MOSS-Image")
+
+    print("== tts（MOSS-TTS）")
+    b = os.path.join(d, "build")
+    os.makedirs(b, exist_ok=True)
+    json.dump([{"vo": "VO_001", "txt": "一八〇八年，南太平洋。"}, {"vo": "VO_002", "txt": "船長手上｜有一本書。"}],
+              open(os.path.join(b, "narr.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    real = cg.run
+
+    def fake_tts(key, wf, out, label):
+        if out.endswith(".flac"):
+            sent.append((key, wf, out))
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=220:d=2", "-ar", "24000", out], check=True)
+            return 1.0, dict(draw=0, memclk=0, used=0, temp=0)
+        return real(key, wf, out, label)
+    cg.run = fake_tts
+    ok("没有参考音" in (raises(lambda: cg.cmd_tts("zh", [], None, None)) or ""), "没有参考音 → 拦（音色一致靠它）")
+    cg.cmd_tts_ref("溫暖男聲", "zh", 2, None)
+    ref_sent = [s for s in sent if s[0] == "moss_tts_ref"]
+    ok(len(ref_sent) == 2 and [s[1]["2"]["inputs"]["seed"] for s in ref_sent] == [7, 8], "tts-ref 出两个候选（种子 7、8）")
+    ok(ref_sent[0][1]["2"]["inputs"]["instruction"] == "溫暖男聲", "音色描述写进 instruction")
+    cg.cmd_tts_ref_pick("2", "zh")
+    ok(os.path.exists(cg._ref_path("zh")), "pick 2 → 素材/配音/参考音_zh.flac")
+    n0 = len(sent)
+    cg.cmd_tts("zh", [], 4.5, None)
+    t = [s for s in sent[n0:] if s[0] == "moss_tts"]
+    g = t[0][1][cg.NODES["moss_tts"]["gen"][0]]["inputs"]
+    ok(len(t) == 2, "两条旁白各出一次")
+    ok(g["text"] == "一八零八年，南太平洋。", "送进 TTS 的字走 el_tts.lines（〇→零）：%s" % g["text"])
+    ok(t[1][1]["3"]["inputs"]["text"] == "船長手上有一本書。", "｜分屏符不进 TTS")
+    ok(g["target_tokens"] == round(9 / 4.5 * 12.5), "--cps 4.5：9 个字 → %d 帧（实际 %s）" % (round(9 / 4.5 * 12.5), g["target_tokens"]))
+    ok(t[0][1][cg.NODES["moss_tts"]["ref"][0]]["inputs"]["audio"] == "up_参考音_zh.flac", "每条都克隆同一段参考音")
+    mp3 = os.path.join(b, "vo", "VO_001.mp3")
+    ok(os.path.exists(mp3) and not os.path.exists(os.path.join(b, "vo", "_VO_001.flac")), "落到 build/vo/VO_001.mp3，中间 flac 删掉")
+    ok(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=sample_rate", "-of", "csv=p=0", mp3],
+                      capture_output=True, text=True).stdout.strip() == "44100", "mp3 是 44.1k（和 el_tts 出的一样）")
+    n0 = len(sent)
+    cg.cmd_tts("zh", [], None, None)
+    ok(len(sent) == n0, "都出过了 → 不重出")
+    os.makedirs(os.path.join(b, "vo_orig"), exist_ok=True)
+    open(os.path.join(b, "vo_orig", "VO_002.mp3"), "w").write("old")
+    cg.cmd_tts("zh", ["VO_002"], None, None)
+    g = sent[-1][1]["3"]["inputs"]
+    ok(sent[-1][0] == "moss_tts" and g["target_tokens"] == 0, "点名重出；不给 --cps → target_tokens 0（模型自定）")
+    ok(not os.path.exists(os.path.join(b, "vo_orig", "VO_002.mp3")), "重出时删 vo_orig 里的旧原件（否则 vo_trim 剪回旧录音）")
+    ok(any(r["kind"] == "tts" and r["name"] == "VO_002" for r in cg.logs()), "tts 记进 comfy_log")
+    cg.run = real
+
     print("== video")
     ffmpeg_color(os.path.join(cg.dst(), "01_船.png"), 90, 160)
     cg.cmd_video(["01_船"], 480, False, None)

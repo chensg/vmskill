@@ -4,6 +4,7 @@
     python el_tts.py gen zh [VO_001 ...]     # 不给名字＝只补 vo/ 里缺的；给名字＝重出这几条
     python el_tts.py gen en [VO_001 ...]     # 英文：读 ../讲述稿_en.md 的「NNN. 文本」或「NNx. 文本」
     python el_tts.py asr zh|en [VO_001 ...]  # 转写，存 vo_asr.json / vo_en_asr.json，只列要人看的
+    python el_tts.py asr zh|en --local       # 同上，但用本机 Whisper（不花 ElevenLabs 额度；MOSS-TTS 出的旁白用这个）
     python el_tts.py credits                 # 账户剩多少额度
 
 之后：python vo_trim.py apply（英文 apply vo_en）→ make_story_*.py sync / langfit。
@@ -257,7 +258,29 @@ def classify_en(src, asr):
     return worst, "；".join(notes)
 
 
-def asr(lang, names):
+_WHISPER = []
+
+
+def whisper(path, lang):
+    """本机 Whisper（faster-whisper large-v3-turbo，CPU int8）——ElevenLabs 没额度、或旁白是本机出的时候用。
+    转出来也是简体＋阿拉伯数字，和 scribe 同一套分类（10-26 MOSS-TTS 六条：只有同音写法差）。
+    CPU int8 约 2GB 内存；**别和 ComfyUI 上的大任务同时跑**（memory local-3090-model-licenses 10-20 那次）。"""
+    import subprocess
+    import numpy as np
+    if not _WHISPER:
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            sys.exit("!!! 没装 faster-whisper：pip install faster-whisper")
+        _WHISPER.append(WhisperModel("large-v3-turbo", device="cpu", compute_type="int8", cpu_threads=8))
+    # 自己用 ffmpeg 解码：faster-whisper 1.2.1 配新版 PyAV 会报 open() 不认 metadata_errors
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+                         capture_output=True).stdout
+    segs, _ = _WHISPER[0].transcribe(np.frombuffer(raw, np.int16).astype(np.float32) / 32768, language=lang)
+    return "".join(s.text for s in segs).strip()
+
+
+def asr(lang, names, local=False):
     vo_dir = DIRS[lang][0]
     src = dict(lines(lang))
     narr_txt = {n["vo"]: n["txt"].replace("｜", "") for n in json.load(open(os.path.join(HERE, "narr.json"), encoding="utf-8"))}
@@ -267,7 +290,8 @@ def asr(lang, names):
         f = os.path.join(HERE, vo_dir, vo + ".mp3")
         if (names and vo not in names) or not os.path.exists(f):
             continue
-        res[vo] = dict(src=narr_txt[vo] if lang == "zh" else src[vo], tts=src[vo], asr=scribe(f, lang))
+        res[vo] = dict(src=narr_txt[vo] if lang == "zh" else src[vo], tts=src[vo],
+                       asr=whisper(f, lang) if local else scribe(f, lang), by="whisper" if local else "scribe")
     json.dump(res, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     shown, counts = 0, {}
     if lang == "zh" and _readings("测", False) is None:
@@ -293,4 +317,8 @@ if __name__ == "__main__":
     lang = sys.argv[2] if len(sys.argv) > 2 else "zh"
     if lang not in ("zh", "en"):
         sys.exit("!!! 语言只有 zh / en")
-    (gen if sys.argv[1] == "gen" else asr)(lang, sys.argv[3:])
+    rest = [x for x in sys.argv[3:] if x != "--local"]
+    if sys.argv[1] == "gen":
+        gen(lang, rest)
+    else:
+        asr(lang, rest, local="--local" in sys.argv)

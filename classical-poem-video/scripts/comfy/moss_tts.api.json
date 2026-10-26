@@ -1,0 +1,55 @@
+{
+ "1": {
+  "class_type": "MossTTSV15_LoadModel",
+  "inputs": {
+   "model": "MOSS-TTS-v1.5 (8B, 24kHz)",
+   "dtype": "bf16",
+   "attention": "sdpa",
+   "download_if_missing": false
+  }
+ },
+ "2": {
+  "class_type": "LoadAudio",
+  "inputs": {
+   "audio": ""
+  }
+ },
+ "3": {
+  "class_type": "MossTTSV15_VoiceClone",
+  "inputs": {
+   "language": "Chinese",
+   "instruction": "",
+   "audio_temperature": 1.7,
+   "audio_top_p": 0.8,
+   "audio_top_k": 25,
+   "audio_repetition_penalty": 1.0,
+   "text_temperature": 1.0,
+   "text_top_p": 1.0,
+   "text_top_k": 50,
+   "target_tokens": 0,
+   "max_new_tokens": 2048,
+   "do_sample": true,
+   "seed": 42,
+   "mosstts_model": [
+    "1",
+    0
+   ],
+   "reference_audio": [
+    "2",
+    0
+   ],
+   "text": ""
+  }
+ },
+ "4": {
+  "class_type": "SaveAudioAdvanced",
+  "inputs": {
+   "audio": [
+    "3",
+    0
+   ],
+   "filename_prefix": "vmskill/tts",
+   "format": "flac"
+  }
+ }
+}

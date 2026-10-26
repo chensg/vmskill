@@ -8,6 +8,7 @@
     python comfy_gen.py image [档名...] --fast [--variants N] [--seed N]   # 候选：4 步，进 候选/<档名>/
     python comfy_gen.py image [档名...] [--variants N] [--seed N]          # 50 步；--variants 也进候选
     python comfy_gen.py image <档名> --trial [--size WxH]                  # 试验：50 步进候选，不盖定稿
+    python comfy_gen.py image [档名...] --engine moss [--variants N]       # MOSS-Image：50 步约 75 秒（Qwen 的 1/4），只进候选
     python comfy_gen.py promote <档名> [候选文件名|序号]                  # 选定的候选转正成 <档名>.png
     python comfy_gen.py sheet [档名...] | sheet --cand <档名>              # 拼联络表（带档名）
     python comfy_gen.py video [档名...] [--res 480|768] [--turbo] [--seed N]   # 默认 480p
@@ -16,6 +17,9 @@
     python comfy_gen.py upscale --image <档名|图片路径...> [--lanczos] [--to WxH]   # 静帧，默认 SeedVR2 到 4K
     python comfy_gen.py music <名> --style "…" [--secs 180] [--plan 10 | --abc 谱.abc] [--lyrics-file f]   # YuE2 配乐 → ../素材/配乐/（默认纯音乐）
     python comfy_gen.py sfx <名> "<描述>" [--secs 5] [--kind SFX|One-shot] [--enhance]   # Stable Audio 3 → ../素材/音效/
+    python comfy_gen.py tts-ref "<音色描述>" [--lang zh|en] [--variants 3]   # MOSS-TTS 出参考音候选 → ../素材/配音/参考音候选/
+    python comfy_gen.py tts-ref pick <序号|文件名> [--lang zh|en]          # 选定 → ../素材/配音/参考音_<lang>.flac
+    python comfy_gen.py tts [zh|en] [VO_001 ...] [--cps 4.5] [--seed N]   # MOSS-TTS 克隆参考音逐条出旁白 → vo/（同 el_tts gen）
     python comfy_gen.py notes                       # 素材/生成/生成记录.md（每个成品是怎么来的）
     python comfy_gen.py free                        # 卸模型、清显存/内存
 
@@ -55,6 +59,12 @@
       lanczos（ffmpeg）几秒，偏软。SeedVR2 给特写/关键镜/首尾/有线条文字的；lanczos 给过场、烟雾黑暗、试稿
       静帧 `upscale --image`：1664×928 → 3840×2160 约 20 秒/张、显存 7.3GB（10-22）；脸、招牌字都补出细节
 
+  图  MOSS-Image SFT int8（Apache-2.0）：1920×1088 50 步 75 秒。真实感好、拉丁字母刺青字对，
+      但**不守任务书的禁令**（10-26 皮特凯恩三镜：2/3 露正脸/侧脸，Qwen 1/3 半侧）→ 只当快速候选引擎，不默认
+  旁白 MOSS-TTS v1.5 8B（Apache-2.0）：逐条克隆一段参考音（音色才一致）；~2 倍实时（9 秒一条 20 秒）；
+      中文约 4.1 字/秒（豆包 4.5）——要对齐用 --cps；10-26 Whisper 核读六条无漏字增字
+  影片 SANA-Video 2.0 没进技能：中文提示词读不懂、图生影片不照动作句做、没有声音（见 sourcing.md）
+
 ==== 硬件红线（脚本会拦）====
   - 3090 是矿卡：功耗上限必须 ≤ 336W（Afterburner 90%），负载下显存频率应 ≈ 9000MHz（-500）。
     提交前查上限；跑的时候每 3 秒采一次，功耗 > 345W 或显存频率 > 9150MHz 就 /interrupt 并退出。
@@ -72,6 +82,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -124,9 +135,19 @@ NODES = {
     "stable_audio3": dict(text=("52:31", "PrimitiveStringMultiline"), enhance=("52:35", "PrimitiveBoolean"),
                           kind=("52:43", "CustomCombo"), secs=("52:36", "PrimitiveFloat"),
                           sampler=("52:3", "KSampler"), neg=("52:7", "CLIPTextEncode"), save=("57", "SaveAudioAdvanced")),
+    # MOSS-Image SFT（照 OpenMOSS 卡片：50 步、CFG 3、负向分支跳第 22 层；负向提示词默认空）
+    "moss_image": dict(prompt=("4", "CLIPTextEncode"), neg=("5", "CLIPTextEncode"), latent=("6", "EmptyFlux2LatentImage"),
+                       sampler=("8", "KSampler"), save=("10", "SaveImage")),
+    # MOSS-TTS v1.5：参考音（LoadAudio）→ VoiceClone。参考音由 moss_tts_ref（GenerateSpeech＋音色描述）出
+    "moss_tts": dict(ref=("2", "LoadAudio"), gen=("3", "MossTTSV15_VoiceClone"), save=("4", "SaveAudioAdvanced")),
+    "moss_tts_ref": dict(gen=("2", "MossTTSV15_GenerateSpeech"), save=("4", "SaveAudioAdvanced")),
 }
 FAMILY = {"qwen2512": "image", "h3_t2v": "video", "h3_i2v": "video", "seedvr2": "upscale",
-          "seedvr2_image": "upscale", "yue2": "music", "stable_audio3": "sfx"}
+          "seedvr2_image": "upscale", "yue2": "music", "stable_audio3": "sfx", "moss_image": "image_moss",
+          "moss_tts": "tts", "moss_tts_ref": "tts"}
+TTS_LANG = {"zh": "Chinese", "en": "English"}
+TTS_REF_TEXT = {"zh": "這座島，在海圖上找不到。十八年來，沒有一艘船靠近過它。",
+                "en": "This island is not on any chart. For eighteen years, no ship came near it."}
 YUE2_SKILL = os.path.expanduser("~/.claude/skills/yue2-music/instrumental/scripts/instrumental.py")
 # 写谱用的曲式标签（不唱，只让模型排出段落、拉够长度）。官方纯音乐流程：模型写谱 → Vocal 音符挪到 Ins → 按谱生成。
 PLAN_TAGS = "[Intro]\n\n[Verse]\n\n[Chorus]\n\n[Verse]\n\n[Chorus]\n\n[Bridge]\n\n[Chorus]\n\n[Outro]"
@@ -146,14 +167,14 @@ def plan_tags(n=None):
 H3_SIZE = {480: (864, 480), 768: (1344, 768)}       # 横；竖版对调。都是 32 的倍数
 
 # 预计耗时（秒）的缺省值：2026-10-20 实测；项目里有记录时用本项目的中位数。
-ETA_DEFAULT = {("image", 50): 280, ("image", 4): 12, ("video", 480): 60, ("video", 768): 320,
+ETA_DEFAULT = {("image", 50): 280, ("image", 4): 12, ("image", "moss"): 75, ("tts", None): 2.2, ("video", 480): 60, ("video", 768): 320,
                ("upscale", "seedvr2"): 71, ("upscale", "seedvr2_image"): 20}   # 静帧是秒/张（10-22 1664×928→4K 20 秒）
 COLD = 70                    # 换模型后的首个任务多出来的加载时间
 
 
 # ---------------------------------------------------------------- 路径
 def proj():
-    return os.path.dirname(os.path.dirname(os.path.abspath(ew.BRIEF)))
+    return os.path.dirname(os.path.abspath(ew.BRIEF))       # BRIEF 是 <项目>/出图任务书.md（10-26 前多套了一层，没人调用所以没露）
 
 
 def dst():
@@ -334,6 +355,15 @@ def submit(key, wf, label):
             try:
                 h = _req("/history/" + pid, timeout=30).get(pid)
                 dead = 0.0
+            except urllib.error.URLError as e:
+                # 2026-10-26：ComfyUI 进程没了时连接是瞬间被拒，旧版照样每 5 秒记 35 秒，45 秒就报「5 分钟没响应」
+                if isinstance(getattr(e, "reason", None), ConnectionRefusedError) and not alive(5):
+                    sys.exit("!!! %s：ComfyUI 进程没了（连接被拒）。python comfy_gen.py start 再重跑（已出的不会重出）" % label)
+                dead += 35
+                print("   ComfyUI %ds 没响应（%s）" % (dead, type(e).__name__), flush=True)
+                if dead >= 300:
+                    sys.exit("!!! %s：ComfyUI 5 分钟没响应。停掉吃内存的进程；还不行就重启 ComfyUI 再重跑" % label)
+                continue
             except Exception as e:
                 # 2026-10-20：CPU 上同时跑 EDSR（upscale.py，一张 10GB），32GB 内存被挤爆，
                 # ComfyUI 整个被换出到虚拟内存、HTTP 不响应，旧版在这里直接抛 TimeoutError 退出。
@@ -408,7 +438,7 @@ def eta(kind, key, secs=1.0):
     for r in logs():
         if r.get("kind") != kind or not r.get("sec"):
             continue
-        if kind == "image" and r.get("steps") == key:
+        if kind == "image" and (r.get("engine") == "moss") == (key == "moss") and (key == "moss" or r.get("steps") == key):
             xs.append(r["sec"])
         elif kind == "video" and min([x for x in (r.get("size") or []) if x] or [0]) == key and r.get("dur"):
             xs.append(r["sec"] / r["dur"])
@@ -515,17 +545,22 @@ def cmd_list():
                   " ".join((s or "_768") for s in have))
 
 
-def _gen_image(n, steps, sd, w, h, out, wf0, label, extra=None):
+def _gen_image(n, steps, sd, w, h, out, wf0, label, extra=None, engine="qwen"):
     wf = json.loads(json.dumps(wf0))
     p = ew.prompt(n)
-    N = NODES["qwen2512"]
+    key = "moss_image" if engine == "moss" else "qwen2512"
+    N = NODES[key]
     wf[N["prompt"][0]]["inputs"]["text"] = p
     wf[N["latent"][0]]["inputs"].update(width=w, height=h)
-    wf[N["fast"][0]]["inputs"]["value"] = steps == 4
+    if engine == "moss":
+        wf[N["sampler"][0]]["inputs"]["steps"] = steps
+    else:
+        wf[N["fast"][0]]["inputs"]["value"] = steps == 4
     wf[N["sampler"][0]]["inputs"]["seed"] = sd
     wf[N["save"][0]]["inputs"]["filename_prefix"] = "vmskill/" + n
-    sec, peak = run("qwen2512", wf, out, label)
-    rec = dict(kind="image", name=n, model="Qwen-Image-2512", license="Apache-2.0", steps=steps,
+    sec, peak = run(key, wf, out, label)
+    rec = dict(kind="image", name=n, model="MOSS-Image-SFT" if engine == "moss" else "Qwen-Image-2512",
+               engine=engine, license="Apache-2.0", steps=steps,
                size=[w, h], seed=sd, prompt=p, out=os.path.relpath(out, dst()).replace("\\", "/"),
                sec=round(sec), peak=peak)
     rec.update(extra or {})
@@ -533,7 +568,7 @@ def _gen_image(n, steps, sd, w, h, out, wf0, label, extra=None):
     print("   存 %s（%.0f 秒，%s）" % (rec["out"], sec, _peak_txt(peak)))
 
 
-def cmd_image(names, fast, seed, size, variants, trial=False):
+def cmd_image(names, fast, seed, size, variants, trial=False, engine="qwen"):
     rows = ew._brief()[4]
     todo = names or [n for n in rows if not os.path.exists(os.path.join(dst(), n + ".png"))]
     if size:
@@ -542,9 +577,14 @@ def cmd_image(names, fast, seed, size, variants, trial=False):
         # 2026-10-21 试验：1088×1920 直出和 928×1664 同种子比，没有变形/重复/分格，细节略好，慢 40%（280s vs 200s）；
         # 换来的是成片尺寸以上 —— 不再需要每支都写 PP_ACCEPT_REASON 承认「静帧在放大」。
         w, h = (1088, 1920) if vertical() else (1920, 1088)
+    if engine == "moss" and fast:
+        sys.exit("!!! MOSS 没有 4 步版：--engine moss 本身就是快的那档（50 步约 75 秒）")
+    if engine == "moss" and (w % 16 or h % 16):
+        sys.exit("!!! MOSS 宽高要是 16 的倍数")
     steps = 4 if fast else 50
-    to_cand = fast or variants > 1 or trial
+    to_cand = fast or variants > 1 or trial or engine == "moss"   # MOSS 不守禁令（露脸），一律进候选、人挑过才转正
     tag = ("-%dx%d" % (w, h)) if size else ""
+    pre = "m" if engine == "moss" else ""
     k = max(1, variants)
     jobs = []
     for n in todo:
@@ -556,16 +596,17 @@ def cmd_image(names, fast, seed, size, variants, trial=False):
         base = seed_of(n, seed)
         for j in range(k):
             sd = base + j
-            out = (os.path.join(cand_dir(n), "%ds-%d%s.png" % (steps, sd, tag)) if to_cand
+            out = (os.path.join(cand_dir(n), "%s%ds-%d%s.png" % (pre, steps, sd, tag)) if to_cand
                    else os.path.join(dst(), n + ".png"))
             if to_cand and os.path.exists(out):
                 continue                      # 同种子同步数的候选已经有了
             jobs.append((n, sd, out))
-    say_eta(sum(eta("image", steps) for _ in jobs) + COLD, len(jobs))
-    wf0 = load_wf("qwen2512")
+    say_eta(sum(eta("image", "moss" if engine == "moss" else steps) for _ in jobs) + COLD, len(jobs))
+    wf0 = load_wf("moss_image" if engine == "moss" else "qwen2512")
     for i, (n, sd, out) in enumerate(jobs, 1):
-        print("[%d/%d] 图 %s  %dx%d  %d 步  seed=%d%s" % (i, len(jobs), n, w, h, steps, sd, "  → 候选" if to_cand else ""))
-        _gen_image(n, steps, sd, w, h, out, wf0, n)
+        print("[%d/%d] 图 %s  %s %dx%d  %d 步  seed=%d%s" % (i, len(jobs), n, engine, w, h, steps, sd,
+                                                         "  → 候选" if to_cand else ""))
+        _gen_image(n, steps, sd, w, h, out, wf0, n, engine=engine)
     if to_cand and jobs:
         print("看候选：python comfy_gen.py sheet --cand <档名>；选定：python comfy_gen.py promote <档名> <序号>")
 
@@ -591,8 +632,9 @@ def cmd_promote(name, pick):
     out = os.path.join(dst(), name + ".png")
     _keep_old(out)
     shutil.copyfile(src, out)
-    m = re.match(r"(\d+)s-(\d+)(?:-\d+x\d+)?\.png$", pick)
+    m = re.match(r"m?(\d+)s-(\d+)(?:-\d+x\d+)?\.png$", pick)
     log(dict(kind="promote", name=name, src="候选/%s/%s" % (name, pick), out=name + ".png",
+             engine="moss" if pick.startswith("m") else "qwen",
              steps=int(m.group(1)) if m else None, seed=int(m.group(2)) if m else None))
     print("转正 %s ← 候选/%s/%s" % (name + ".png", name, pick))
 
@@ -945,6 +987,100 @@ def cmd_sfx(name, text, secs, seed, kind, enhance):
     print("   存 音效/%s.mp3  %.1f 秒（%.0f 秒，%s）—— 要人听" % (name, dur, sec, _peak_txt(peak)))
 
 
+def _ref_dir():
+    return _audio_dir("配音")
+
+
+def _ref_path(lang):
+    return os.path.join(_ref_dir(), "参考音_%s.flac" % lang)
+
+
+def cmd_tts_ref(voice, lang, variants, seed):
+    """出参考音候选：GenerateSpeech＋音色描述（MOSS-VoiceGenerator 没装，VoiceDesign 节点用不了）。
+    同一段描述每次音色都不一样 —— 所以整片只用一段参考音、逐条克隆，音色才一致。"""
+    wf0 = load_wf("moss_tts_ref")
+    N = NODES["moss_tts_ref"]
+    d = os.path.join(_ref_dir(), "参考音候选")
+    base = seed if seed is not None else 7
+    for j in range(max(1, variants)):
+        sd = base + j
+        wf = json.loads(json.dumps(wf0))
+        wf[N["gen"][0]]["inputs"].update(text=TTS_REF_TEXT[lang], instruction=voice, language=TTS_LANG[lang], seed=sd)
+        wf[N["save"][0]]["inputs"]["filename_prefix"] = "vmskill/ttsref_%s" % lang
+        out = os.path.join(d, "%s_%d.flac" % (lang, sd))
+        sec, peak = run("moss_tts_ref", wf, out, "参考音 %s seed=%d" % (lang, sd))
+        log(dict(kind="tts_ref", lang=lang, voice=voice, seed=sd, out=os.path.relpath(out, dst()).replace("\\", "/"),
+                 sec=round(sec), dur=round(probe_audio(out)[2], 2), peak=peak))
+        print("   存 %s（%.0f 秒）" % (out, sec))
+    print("**要人听**，选一条：python comfy_gen.py tts-ref pick <序号> --lang %s" % lang)
+
+
+def cmd_tts_ref_pick(pick, lang):
+    d = os.path.join(_ref_dir(), "参考音候选")
+    cs = sorted(f for f in os.listdir(d) if f.startswith(lang + "_") and f.endswith(".flac")) if os.path.isdir(d) else []
+    if not cs:
+        sys.exit("!!! 没有 %s 的参考音候选（先 tts-ref \"<音色描述>\"）" % lang)
+    f = cs[int(pick) - 1] if pick.isdigit() and int(pick) <= len(cs) else pick
+    if f not in cs:
+        sys.exit("!!! 候选：%s" % "  ".join("%d=%s" % (i, c) for i, c in enumerate(cs, 1)))
+    out = _ref_path(lang)
+    _keep_old(out)
+    shutil.copyfile(os.path.join(d, f), out)
+    print("参考音 ← %s（%s）。之后 tts %s 全片都克隆它；换参考音＝全片重出" % (f, out, lang))
+
+
+def cmd_tts(lang, names, cps, seed):
+    """MOSS-TTS 逐条克隆参考音出旁白，落到和 el_tts gen 一样的位置（build/vo/VO_xxx.mp3，44.1k mp3），
+    后面照旧 el_tts asr → vo_trim apply → make_story_*.py sync。
+    稿子、tts_fix.json 的 fix / seed 都和 el_tts 共用（import el_tts.lines）。"""
+    import el_tts
+    el_tts.HERE = os.path.join(proj(), "build")
+    ref = _ref_path(lang)
+    if not os.path.exists(ref):
+        sys.exit("!!! 没有参考音 %s：先 tts-ref \"<音色描述>\" --lang %s，听过再 tts-ref pick" % (ref, lang))
+    cfg = el_tts.fixes().get(lang, {})
+    vo_dir, orig_dir, raw_dir = el_tts.DIRS[lang]
+    rows = [(v, t) for v, t in el_tts.lines(lang)
+            if ((v in names) if names else not os.path.exists(os.path.join(el_tts.HERE, vo_dir, v + ".mp3")))]
+    if not rows:
+        print("没有要出的（vo/ 都在；重出要点名）")
+        return
+    say_eta(sum(len(t) / 4.2 * eta("tts", None) for _, t in rows) + COLD, len(rows))
+    wf0 = load_wf("moss_tts")
+    N = NODES["moss_tts"]
+    up = upload(ref)
+    os.makedirs(os.path.join(el_tts.HERE, vo_dir), exist_ok=True)
+    for i, (vo, txt) in enumerate(rows, 1):
+        if names:                       # 重出：旧的 _orig/_raw 一起删，否则 vo_trim / langfit 会把旧录音写回来
+            for d in (orig_dir, raw_dir):
+                old = os.path.join(el_tts.HERE, d, vo + ".mp3")
+                if os.path.exists(old):
+                    os.remove(old)
+        sd = cfg.get("seed", {}).get(vo, seed if seed is not None else 42)
+        wf = json.loads(json.dumps(wf0))
+        # target_tokens：12.5 帧/秒。给 --cps 就按字数定长（标点不算字）；0＝模型自己决定
+        n_chars = len(re.sub(r"[\W_]", "", txt)) if lang == "zh" else len(txt.split())
+        tgt = int(round(n_chars / cps * 12.5)) if cps else 0
+        wf[N["ref"][0]]["inputs"]["audio"] = up
+        wf[N["gen"][0]]["inputs"].update(text=txt, language=TTS_LANG[lang], seed=sd, target_tokens=tgt)
+        wf[N["save"][0]]["inputs"]["filename_prefix"] = "vmskill/tts_" + vo
+        flac = os.path.join(el_tts.HERE, vo_dir, "_" + vo + ".flac")
+        sec, peak = run("moss_tts", wf, flac, vo)
+        out = os.path.join(el_tts.HERE, vo_dir, vo + ".mp3")
+        if os.path.exists(out):
+            os.remove(out)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", flac, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", out],
+                       check=True)
+        os.remove(flac)
+        d = probe_audio(out)[2]
+        log(dict(kind="tts", name=vo, lang=lang, model="MOSS-TTS v1.5 8B", license="Apache-2.0",
+                 ref=os.path.basename(ref), seed=sd, cps=cps, target_tokens=tgt, chars=n_chars, dur=round(d, 2),
+                 out="../../build/%s/%s.mp3" % (vo_dir, vo), sec=round(sec), peak=peak))
+        print("[%d/%d] %s  %.2f 秒  %.2f %s/秒（%.0f 秒）" % (i, len(rows), vo, d, n_chars / max(d, 0.01),
+                                                       "字" if lang == "zh" else "词", sec), flush=True)
+    print("下一步：python el_tts.py asr %s --local（本机 Whisper 核读）→ vo_trim.py apply" % lang)
+
+
 def cmd_notes():
     """每个成品文件是怎么来的（最后一次产出它的记录），写 素材/生成/生成记录.md。
     手写的「为什么这样选」仍写在项目根的 素材处理说明.md；这一份可以随时重跑覆盖。"""
@@ -963,10 +1099,14 @@ def cmd_notes():
             continue                                   # 候选不进表，转正的那条 promote 会写来源
         k = r["kind"]
         if k == "image":
-            how = "Qwen-Image-2512 %d 步 %s%s" % (r["steps"], "×".join(map(str, r["size"])),
+            how = "%s %d 步 %s%s" % (r.get("model", "Qwen-Image-2512"), r["steps"], "×".join(map(str, r["size"])),
                                                   "（首帧专用）" if r.get("role") == "first_frame" else "")
         elif k == "promote":
-            how = "候选转正：%s（%s 步）" % (r["src"], r.get("steps"))
+            how = "候选转正：%s（%s%s 步）" % (r["src"], "MOSS-Image " if r.get("engine") == "moss" else "", r.get("steps"))
+        elif k == "tts":
+            how = "MOSS-TTS v1.5 克隆 %s %.1f 秒" % (r.get("ref"), r.get("dur", 0))
+        elif k == "tts_ref":
+            how = "MOSS-TTS v1.5 参考音候选：%s" % (r.get("voice") or "")[:40]
         elif k == "video":
             how = "MiniMax H3 %s %s %g 秒（首帧 %s）%s" % (
                 r.get("mode"), "×".join(map(str, r["size"])), r.get("secs", 0), r.get("first_frame") or "—",
@@ -985,7 +1125,7 @@ def cmd_notes():
     for r in rs:
         by[r["kind"]] = by.get(r["kind"], 0) + (r.get("sec") or 0)
     L += ["", "显卡时间合计 %.1f 小时：%s" % (tot / 3600, "，".join("%s %.0f 分钟" % (k, v / 60) for k, v in by.items() if v)), "",
-          "授权：Qwen-Image-2512 / SeedVR2 Apache-2.0；MiniMax H3 要在说明里署名「MiniMax H3 生成」并勾 AI 披露；"
+          "授权：Qwen-Image-2512 / MOSS-Image / MOSS-TTS / SeedVR2 Apache-2.0；MiniMax H3 要在说明里署名「MiniMax H3 生成」并勾 AI 披露；"
           "YuE2 个人创作者可变现（署名可选，鼓励写 YuE2）；Stable Audio 3 要先在 Stability AI 登记，说明里写「Powered by Stability AI」。"]
     p = os.path.join(dst(), "生成记录.md")
     open(p, "w", encoding="utf-8").write("\n".join(L) + "\n")
@@ -1016,6 +1156,9 @@ def main():
     ap.add_argument("--plan", type=int)                 # music 纯音乐的曲式段数（缺省 8 段≈141 秒；Shorts 要 ~180 秒给 10）
     ap.add_argument("--kind", default="SFX")
     ap.add_argument("--enhance", action="store_true")
+    ap.add_argument("--engine", default="qwen", choices=("qwen", "moss"))   # image 用哪个模型
+    ap.add_argument("--lang", default="zh", choices=("zh", "en"))          # tts-ref
+    ap.add_argument("--cps", type=float)                # tts：目标语速（中文字/秒、英文词/秒），不给＝模型自己定
     a = ap.parse_args()
     if a.proj:
         set_proj(os.path.abspath(a.proj))
@@ -1030,7 +1173,7 @@ def main():
             p = vprompt(n[1:]) if n.startswith("▶") else ew.prompt(n)
             print("== %s %d 字\n%s" % (n, len(p), p))
     elif a.cmd == "image":
-        cmd_image(a.names, a.fast, a.seed, a.size, a.variants, a.trial)
+        cmd_image(a.names, a.fast, a.seed, a.size, a.variants, a.trial, a.engine)
     elif a.cmd == "promote":
         if not a.names:
             sys.exit("!!! promote <档名> [候选文件名|序号]")
@@ -1057,6 +1200,16 @@ def main():
         if len(a.names) < 2:
             sys.exit('!!! sfx <名> "<描述>" [--secs 5] [--kind SFX|One-shot|Music|Instrument] [--enhance]')
         cmd_sfx(a.names[0], " ".join(a.names[1:]), a.secs or 5, a.seed, a.kind, a.enhance)
+    elif a.cmd == "tts-ref":
+        if a.names[:1] == ["pick"] and len(a.names) == 2:
+            cmd_tts_ref_pick(a.names[1], a.lang)
+        elif len(a.names) == 1:
+            cmd_tts_ref(a.names[0], a.lang, a.variants if a.variants > 1 else 3, a.seed)
+        else:
+            sys.exit('!!! tts-ref "<音色描述>" [--lang zh|en] [--variants 3]  |  tts-ref pick <序号> [--lang zh|en]')
+    elif a.cmd == "tts":
+        lang = a.names[0] if a.names[:1] in (["zh"], ["en"]) else "zh"
+        cmd_tts(lang, [n for n in a.names if n not in ("zh", "en")], a.cps, a.seed)
     elif a.cmd == "notes":
         cmd_notes()
     elif a.cmd == "free":
