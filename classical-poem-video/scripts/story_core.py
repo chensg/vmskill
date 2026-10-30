@@ -107,6 +107,10 @@ _default("EST_RATE", 4.24)
 # ---- 音效目标响度的锚 ----
 _default("SFX_ANCHOR", VO_TARGET)
 
+# ---- POEM_CARDS 排在哪一侧（10-30 韩愈女挐：图把留白放在左上，右侧中下段是操作栏）----
+_default("POEM_SIDE", "right")   # "right"＝右上（原行为），"left"＝左上
+_default("POEM_LEFT", 70)        # POEM_SIDE="left" 时，最左一列离左边（px）
+
 # ---- 显式承认的妥协：**必须写理由**，理由每次 check 都打印 ----
 _default("PP_ACCEPT_REASON", "")
 _default("PP_ACCEPTED", None)       # 可选：pp 的硬地板。填了理由也不许低于它
@@ -4024,7 +4028,7 @@ def make_ass():
 
 
 def poem_events(lines, starts):
-    """POEM_CARDS：念到这句诗时，在画面右上竖排烧字，留到这一镜结束（下一镜起点前 0.25s 淡出）。
+    """POEM_CARDS：念到这句诗时，在画面右上（POEM_SIDE="left" 则左上）竖排烧字，留到这一镜结束（下一镜起点前 0.25s 淡出）。
     逗号/句号分列，从右往左；一列一个 \\an8 的 Dialogue，字之间用 \\N 竖排。
     竖版右侧 x>929、y 864~1632 是平台操作栏 —— 字列往下伸进去就报出来（只报不拦，改 POEM_FS / POEM_TOP）。"""
     ev = []
@@ -4042,7 +4046,10 @@ def poem_events(lines, starts):
         cols = [c for c in re.split(r"[，,。、；;：:\s]+", tx) if c]
         step = int(POEM_FS * 1.35)
         for ci, col in enumerate(cols):
-            x = W - POEM_RIGHT - POEM_FS // 2 - ci * step
+            if POEM_SIDE == "left":     # 仍是从右往左读：第一列在最右，最后一列贴左边
+                x = POEM_LEFT + POEM_FS // 2 + (len(cols) - 1 - ci) * step
+            else:
+                x = W - POEM_RIGHT - POEM_FS // 2 - ci * step
             bottom = POEM_TOP + len(col) * POEM_FS * 1.2
             if H > W and x + POEM_FS // 2 > 929 and bottom > 864:
                 print("   提示：%s 第 %d 列伸到 y=%d，压进右侧操作栏（y>864）—— 收 POEM_FS 或上提 POEM_TOP"
