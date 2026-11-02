@@ -46,7 +46,7 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 **旁白 TTS（2026-10-19 用户定）：中文 ChatCut 豆包、英文 Fish。** 中文 `submit_voice`：
 `doubao / yuanboxiaoshu（渊博小叔）/ emotion storytelling / emotionScale 3 / speedRatio 不给`，
 逐句 `performancePrompt`（去重音底子）——配置与理由见 `references/storytelling.md` 第八节「定死的四项」；
-下载走链接页（`request_asset_download` 要登录会话）。英文 Fish Documentary 音色，进片前过提亮 EQ。
+下载走链接页（`request_asset_download` 要登录会话）：`chatcut_dl.py page` 出页，`chatcut_dl.py wait` 在后台等齐、归位。英文 Fish Documentary 音色，进片前过提亮 EQ。
 一句一条（`narr_build.py` 拆），排片按豆包 0.29 秒/字估。
 `el_tts.py`（ElevenLabs v4）**不是默认**，只在用户点名时用；它的转写核对（`asr`）照样能拿来查任何一批中文旁白的读音。
 
@@ -317,5 +317,7 @@ description: 用静帧 + 可选 Ken Burns 运镜 + 烧录字幕 + 可选配乐�
 | `music_index.py` / `sfx_index.py` | 素材库（`ani/_素材库/`）。`music_index.py find --dur <片长>` 是查库入口 |
 | `publish.py` | 发布文案骨架 + 量各平台标题截断位置 |
 | `sort_downloads.py` | 把浏览器下载来的一堆文件归到脚本要找的位置 |
+| `chatcut_dl.py` | ChatCut 生成物落地：`page` 出下载页（`<a>` 点击，首条后停 4 秒等授权）＋清单 `.json`（记出页时刻）；`wait` 只收出页之后落地、大小已稳定的文件（认 ` (N)`、`.mp3.mp3`），齐了复制进项目，久等不齐自动出**只含缺件**的补下载页 |
+| `runlog.py` | **长任务一律用它跑**（渲染、等下载、重渲全片）：步骤文件 `== 步骤名` 分段，一步失败即停；主日志记时间/成败/每步末几行，末行 `RUNLOG DONE/FAILED/STOPPED`；`.pid` 锁防同一件事起两份；`stop` 连子进程整棵树停（TaskStop 只停外层 shell，2026-11-02 旧脚本因此自己跑完、覆盖了全片）；`status` 看进度 |
 
 横版诗词模板 `make_h.py` 2026-09-25 退役。回归测试在仓库根 `tests/`。
