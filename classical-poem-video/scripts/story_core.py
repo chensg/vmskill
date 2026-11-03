@@ -112,6 +112,8 @@ _default("POEM_SIDE", "right")   # "right"＝右上（原行为），"left"＝�
 _default("POEM_LEFT", 70)        # POEM_SIDE="left" 时，最左一列离左边（px）
 # 浅底镜头（宣纸、白墙）上的诗句改深字：填镜号集合（1 起）。缺省空＝全片跟 TITLE_POLARITY（11-03《愚夫撰銘》：拓本暗底＋生成图浅底混用）
 _default("POEM_DARK_SHOTS", set())
+# 封面底图不用片里那一镜时填图片路径（相对 build/，要 W:H 同比例）；None＝img<COVER_FROM>.png（11-03《愚夫撰銘》封面专用生成图）
+_default("COVER_SRC", None)
 
 # ---- 显式承认的妥协：**必须写理由**，理由每次 check 都打印 ----
 _default("PP_ACCEPT_REASON", "")
@@ -4446,7 +4448,7 @@ def cover(lang=None):
                 "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n" % (W, H)
                 + styles_block() + "\n[Events]\nFormat: Layer,Start,End,Style,Name,"
                 "MarginL,MarginR,MarginV,Effect,Text\n" + "\n".join(ev) + "\n")
-    src = "img%02d.png" % COVER_FROM
+    src = COVER_SRC or "img%02d.png" % COVER_FROM
     if not os.path.exists(src):
         sys.exit("!!! 缺 " + src + "，先跑 prep")
     out = os.path.join(out_dir(), COVER_NAME if lang == DEFAULT_LANG
