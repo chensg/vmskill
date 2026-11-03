@@ -110,6 +110,8 @@ _default("SFX_ANCHOR", VO_TARGET)
 # ---- POEM_CARDS 排在哪一侧（10-30 韩愈女挐：图把留白放在左上，右侧中下段是操作栏）----
 _default("POEM_SIDE", "right")   # "right"＝右上（原行为），"left"＝左上
 _default("POEM_LEFT", 70)        # POEM_SIDE="left" 时，最左一列离左边（px）
+# 浅底镜头（宣纸、白墙）上的诗句改深字：填镜号集合（1 起）。缺省空＝全片跟 TITLE_POLARITY（11-03《愚夫撰銘》：拓本暗底＋生成图浅底混用）
+_default("POEM_DARK_SHOTS", set())
 
 # ---- 显式承认的妥协：**必须写理由**，理由每次 check 都打印 ----
 _default("PP_ACCEPT_REASON", "")
@@ -3806,7 +3808,8 @@ def styles_block():
                         _style("CTS", 44, COVER_POLARITY or TITLE_POLARITY, 8, heavy=COVER_HEAVY),
                         _style("M", SUB_FS, POLARITY, 2),
                         _style("L", 26, POLARITY, 0, 3),
-                        _style("P", POEM_FS, TITLE_POLARITY, 0, 8, font=POEM_FONT or SUB_FONT)]) + "\n"
+                        _style("P", POEM_FS, TITLE_POLARITY, 0, 8, font=POEM_FONT or SUB_FONT),
+                        _style("PD", POEM_FS, "dark_on_light", 0, 8, font=POEM_FONT or SUB_FONT)]) + "\n"
 
 
 def ts(t):
@@ -4054,8 +4057,8 @@ def poem_events(lines, starts):
             if H > W and x + POEM_FS // 2 > 929 and bottom > 864:
                 print("   提示：%s 第 %d 列伸到 y=%d，压进右侧操作栏（y>864）—— 收 POEM_FS 或上提 POEM_TOP"
                       % (vo, ci + 1, bottom))
-            ev.append("Dialogue: 1,%s,%s,P,,0,0,0,,{\\an8\\pos(%d,%d)}{\\fad(600,500)}%s"
-                      % (ts(a), ts(b), x, POEM_TOP, "\\N".join(col)))
+            ev.append("Dialogue: 1,%s,%s,%s,,0,0,0,,{\\an8\\pos(%d,%d)}{\\fad(600,500)}%s"
+                      % (ts(a), ts(b), "PD" if sh in POEM_DARK_SHOTS else "P", x, POEM_TOP, "\\N".join(col)))
     return ev
 
 
