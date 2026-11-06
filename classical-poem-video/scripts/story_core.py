@@ -86,6 +86,11 @@ _default("COVER_HEAVY", False)
 _default("SUB_MODE", "srt" if LAYOUT == "h" else "burn")
 _default("SUB_MAX_W", int(W * 0.77))             # 烧录时一行的像素宽上限
 _default("TITLE_CARD", None)                     # 开场标题字卡（烧进画面）
+# 顶部常驻标题条（2026-11-07 Short 新做法：竞品 3/6 有，中途刷进来的人一眼知道在讲什么）。
+# {"lines": ["第一行", "第二行"], "y": 第一行中心 y, "fs": (64, 52), "gap": 两行中心距}。烧进画面、全片常驻。
+_default("TOP_BAR", None)
+# 配乐高通（Hz）：手机喇叭放不出 150Hz 以下，配乐那段低频只占响度（2026-11-07 拆片：我们 <150Hz 占 36~39%，竞品 1~16%）
+_default("MUSIC_HP", None)
 _default("SUB_CUE", "‖")                         # 字幕换屏符：一条旁白的字幕分几屏先后出，每屏仍 ≤2 行（SUB_SEP 是屏内换行）
 _default("CUE_MIN", 1.0)                         # 换屏后每屏至少在屏几秒
 _default("SHOT_LABELS", {})                      # 画面角标 {镜号: 文字}
@@ -3688,6 +3693,7 @@ def build_audio(lang=None):
     if music_on():
         ins += ["-i", MUSIC]
         parts.append("[0:a]aresample=48000,aformat=fltp:cl=stereo,"
+                     + ("highpass=f=%d:p=2," % MUSIC_HP if MUSIC_HP else "") +
                      "atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS,volume=%.1fdB,"
                      "apad,atrim=0:%.3f,afade=t=in:st=0:d=%.2f,afade=t=out:st=%.3f:d=3[m]"
                      % (MUSIC_IN, MUSIC_IN + total, MUSIC_GAIN, total,
@@ -3811,7 +3817,19 @@ def styles_block():
                         _style("M", SUB_FS, POLARITY, 2),
                         _style("L", 26, POLARITY, 0, 3),
                         _style("P", POEM_FS, TITLE_POLARITY, 0, 8, font=POEM_FONT or SUB_FONT),
-                        _style("PD", POEM_FS, "dark_on_light", 0, 8, font=POEM_FONT or SUB_FONT)]) + "\n"
+                        _style("PD", POEM_FS, "dark_on_light", 0, 8, font=POEM_FONT or SUB_FONT)]
+                       + _topbar_styles()) + "\n"
+
+
+def _topbar_styles():
+    """顶部标题条两行：BorderStyle 3（底框）。libass 用 OutlineColour 画框、BackColour 画阴影，两个都给同一个半透明黑。"""
+    if not TOP_BAR:
+        return []
+    fs1, fs2 = TOP_BAR.get("fs", (64, 52))
+    box = "&H40000000"
+    fmt = "Style: %s,%s,%d,%s,%s,%s,%s,-1,0,0,0,100,100,2,0,3,%d,0,5,20,20,0,1"
+    return [fmt % ("TB1", SUB_FONT, fs1, "&H00FFFFFF", "&H00FFFFFF", box, box, 14),
+            fmt % ("TB2", SUB_FONT, fs2, "&H0000E1FF", "&H0000E1FF", box, box, 12)]
 
 
 def ts(t):
@@ -4002,6 +4020,12 @@ def make_ass():
         ev.append("Dialogue: 0,%s,%s,TS,,0,0,0,,{\\pos(%d,%d)}{\\fad(900,900)}%s"
                   % (ts(_t0 + 0.6), ts(_t1),
                      W // 2, TITLE_CARD["y"] + 92, TITLE_CARD["sub"]))
+    if TOP_BAR:
+        _y = TOP_BAR.get("y", 250)
+        _g = TOP_BAR.get("gap", 96)
+        for _j, _tx in enumerate(TOP_BAR["lines"]):
+            ev.append("Dialogue: 1,%s,%s,TB%d,,0,0,0,,{\\pos(%d,%d)}%s"
+                      % (ts(0), ts(total_len() + 1), min(_j + 1, 2), W // 2, _y + _j * _g, _tx))
     for _sn, _tx in sorted(SHOT_LABELS.items()):
         _i = _sn - 1
         if not (0 <= _i < len(starts)):
