@@ -91,6 +91,10 @@ _default("TITLE_CARD", None)                     # 开场标题字卡（烧进�
 _default("TOP_BAR", None)
 # 配乐高通（Hz）：手机喇叭放不出 150Hz 以下，配乐那段低频只占响度（2026-11-07 拆片：我们 <150Hz 占 36~39%，竞品 1~16%）
 _default("MUSIC_HP", None)
+# 紧节奏（2026-11-07 用户定 Short 新做法：0 秒开口、人声占 90% 以上，竞品都是边说边切镜）。
+# True = 放行「冷开场要留 1.2s」和「转场要落在两句之间的静默里」两条检查 —— 它们守的是旧节奏，
+# 和新做法正面冲突。缺省 False，旧片照旧拦。
+_default("TIGHT_PACING", False)
 _default("SUB_CUE", "‖")                         # 字幕换屏符：一条旁白的字幕分几屏先后出，每屏仍 ≤2 行（SUB_SEP 是屏内换行）
 _default("CUE_MIN", 1.0)                         # 换屏后每屏至少在屏几秒
 _default("SHOT_LABELS", {})                      # 画面角标 {镜号: 文字}
@@ -2065,7 +2069,7 @@ def check_coldopen(lines):
     判据：第一条旁白的**出声点**必须落在 FADE_IN 之后，且留 0.2s 余量。
     出声点 = 第一条字幕起点 + 0.10（字幕比声音早 0.10s 起，见 timeline()）。
     """
-    if not SEG_FIRST or FADE_IN <= 0 or not lines:
+    if TIGHT_PACING or not SEG_FIRST or FADE_IN <= 0 or not lines:
         return []
     vs = lines[0][4]                      # 第一条旁白的落点
     if vs < FADE_IN + 0.2:
@@ -2202,7 +2206,7 @@ def check_timeline():
     bad += check_sfx()
 
     for st, en, txt, _, _, _ in lines:
-        for c in cuts:
+        for c in ([] if TIGHT_PACING else cuts):
             if st - 0.25 < c < en + 0.25:
                 bad.append("转场 %.1fs 压到了字幕『%s』" % (c, txt))
         if en > total + 1e-6:
