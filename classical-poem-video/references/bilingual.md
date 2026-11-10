@@ -58,4 +58,8 @@ vofit 会把所有的槽改短，反过来做，langfit 的结果会被作废而
 3. **两条轨各自归一** —— 说话密度不同，整合响度天生不同；共用一个测量值会差出台阶，
    而观众正是在切换音轨的那一刻听见它
 
-细则、流程、还没实测的四个数，见 `references/storytelling.md` 第十节。
+细则、流程、还没实测的四个数，见 `references/bilingual-detail.md`。
+
+---
+
+**细则**（槽怎么算、逐句怎么压、两份 SRT、两处会静默出错的地方、竖版顺序）：`references/bilingual-detail.md`。

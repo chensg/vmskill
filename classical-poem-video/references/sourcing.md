@@ -663,3 +663,63 @@ for (const [k,u] of Object.entries(srcs)) { await app.loadGraphData(await (await
 - 用了 H3 的片子，说明里写「影片由 MiniMax H3 生成」（中英各一句），YouTube 上传时勾「经过修改或合成的内容」。
   `publish.py check` 读 `素材/生成/comfy_log.jsonl`：有 H3 记录而说明里没有 `MiniMax H3` 就报错。
 - Qwen-Image-2512 / SeedVR2 是 Apache-2.0，不要求署名；「画面为 AI 生成」那句照旧要写。
+
+---
+
+# 总纲里原来的两节
+
+> 2026-11-11 从 SKILL.md 原样挪来（总纲只留摘要）。
+
+## 图从哪儿来：任务书 or 自己找
+
+`IMG_SOURCE` 两个值，选哪个**改的是流水线的方向**：
+
+| | `generated`（默认） | `found` |
+|---|---|---|
+| 做法 | 写一份自包含的出图任务书交给用户去生成 | 从公版开放数据、图库里找现成的 |
+| 方向 | **图跟着分镜走**——"右侧留白"这类硬要求提得出来 | **分镜跟着图走**——一张宋画的留白位置改不了 |
+| 主要工作量 | 写提示词、保持风格统一 | 检索、核对、定裁切（`zoom`/`cx`/`cy`） |
+| 字幕极性 | 全局定一个，`FLIP_SHOTS` 通常为空 | **多半要一镜一议**，`FLIP_SHOTS` 会真的用上 |
+| 分辨率 | 生成时按 `budget` 分档逐镜写 | 常卡在 pp 1.0 上下——**这正是静帧模式的用处** |
+| 交付 | 无第三方权利 | **每张登记来源与授权**，`check` 会拦，`credits` 导出 |
+
+具体怎么找、去哪儿找、怎么核对，见 `references/sourcing.md`。
+两条容易想反的：
+
+- **`found` 不是省事的那一条。** 省掉的是等出图，换来的是检索和核对，
+  而核对那一步有个已经踩过的坑：**永远不要根据文件名、alt 文本或搜索结果的描述
+  判断一张图是什么**（见「看过再说」那一节）。
+- **"公有领域"是对**作品**说的，不一定对**这一张翻拍/这一次录音**成立。**
+  和配乐那条是同一个道理。填不出 `CREDITS` 的五项就是还没查清楚。
+
+> 2026-11-11 更正：下面「ChatCut 连接器只有 music / video / voice / sound」已过时，ChatCut 现在有 `submit_image`，会话里可以直接出图。
+
+## 出图和配乐往往不在这个会话里（SKILL.md 那一版，含各条出图路线的摘要）
+
+不要假设当前会话有图像生成接口（ChatCut 连接器只有 music / video / voice / sound），
+配乐的下载接口也要用户的登录会话（Agent 直接取会 401）。
+**所以「写一份自包含的出图任务书」不是退路，它就是这条流水线的正常形态。**
+任务书里的尺寸一律来自 `budget`，逐镜（或逐档）写；样图出两张把风格夹住
+（情绪核心那张 + 最满最亮、字幕带最难留空那张）。细则在 `references/sourcing.md` 末尾。
+在 Codex 里跑，先读 `references/codex.md`。
+
+**有浏览器面板时，任务书可以自己执行：ElevenLabs 网页版**（`el_web_image.py` + `el_web_image.js`）。
+任务书写成「固定开头＋一句画面＋固定结尾」，`el_web_image.py js` 出压缩的提示词，页面里逐张提交、
+逐张收 2K 原图、导出链接，`fetch` 下载。三条最容易白花额度/时间的：**任何 navigate 后设定会被重置**
+（提交前 `__checkSettings()`）；**面板隐藏时后台标签页的定时器被节流**（JS 里一律用 MessageChannel 等待）；
+**按提示词对上名字，拿到的仍可能是上一张**（下载完拼联络表逐张看）。见 `references/sourcing.md`「ElevenLabs 网页版」。
+
+**本机有 3090 时，任务书交给本机跑：`comfy_gen.py`（2026-10-20 起的默认）**。同一份出图任务书，
+图用 Qwen-Image-2512、影片用 MiniMax H3（图生影片：先出静帧当首帧）、放大用 SeedVR2 或 lanczos，
+全走 ComfyUI 的 HTTP API，不开浏览器、不花额度。影片在任务书里另一张表（档名前加 ▶）。
+三条硬线脚本自己拦：**矿卡功耗上限 ≤ 336W、负载下显存频率 ≈ 9000MHz**（越线就中断）；
+**图、影片、放大不同时跑**（队列不空就等，换模型前 /free）；**用了 H3 的片子说明里必须写「MiniMax H3 生成」**
+（`publish.py check` 读 `comfy_log.jsonl` 拦）。见 `references/sourcing.md`「本机生成」。
+
+**配乐和音效也能本机出**：`comfy_gen.py music`（YuE2，默认纯音乐：写谱 → 官方脚本把人声旋律挪到乐器 → 按谱生成，
+141 秒钢琴 55 秒出完）、`comfy_gen.py sfx`（Stable Audio 3，要先在 Stability AI 登记、说明里写 Powered by Stability AI，
+`publish.py check` 会拦）。见 `references/music.md`「一·五」。
+
+**档案照片（海军、档案馆的 600~740px 线上图）**：`upscale.py` 先 EDSR ×2（CPU，单进程，别并行），
+再用贴纸版式 `fit="plate"` 整张贴台纸。**2026-10-18 起贴纸镜和运镜镜可以同片**（台纸按 PREP 出），
+不必再把 PREP 降到成片尺寸。

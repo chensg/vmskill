@@ -242,7 +242,7 @@ python make_v.py c
 ## 五、旁白 TTS：**照抄这套配置，别自己调参**
 
 Codex 生成的旁白"有 AI 味"，九成是这几条没照做。完整版和踩坑记录在
-`references/storytelling.md` 第八节，这里只给能直接抄的。
+`references/tts.md`，这里只给能直接抄的。
 
 ```
 provider      doubao
