@@ -4935,6 +4935,11 @@ def main():
                  "  有片长硬线（HARD_LIMIT）时配音齐了先跑 vofit，再 langfit"
                  % (os.path.basename(sys.argv[0]), JOBS))
     what = sys.argv[1]
+    # 预设刚铺下来、镜头表还没填时，除了 gates 什么都跑不了 —— 以前是在 timeline() 里
+    # 掉一个 IndexError（D[-1]），看不出是「还没填」。只拦 CLIPS 为空：没有旁白的段是合法的。
+    if what != "gates" and not CLIPS:
+        sys.exit("!!! CLIPS%s 还是空的 —— 先把旁白和镜头表填进配置（segment_config.py）"
+                 % ("" if NARR else " 和 NARR"))
     if what == "vofit":
         vofit(float(sys.argv[2]) if len(sys.argv) > 2 else None)
         sys.exit(0)

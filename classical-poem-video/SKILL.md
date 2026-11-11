@@ -30,6 +30,13 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 - **MV**（用户给一条带演唱的成品歌）：`make_v.py` + `MUSIC_MODE="song"`，见 `references/mv.md`。
 - 横版长片分段做，`join.py` 拼全片。
 
+**现行两个片型**，开片用 `python episode.py new <项目目录> --type short|long`：
+
+- **Short 新做法七条** → `references/format-short-v2.md`（带 `segment_config` 预设，模板不用改）
+- **横版长片分章节＋章节卡** → `references/format-long-chapters.md`
+
+**接手一支做到一半的片子，先跑 `python episode.py status <项目目录>`**，二十行以内告诉你稿子、门禁、旁白、素材、交付物各到哪一步，别先去读一堆文档。
+
 ## 两道门禁（讲述片，出图之前）
 
 两个都要**人**点头，不是检查通过：
@@ -136,7 +143,8 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 - 封面：`cover` / `cover en`，跑完自己量文字底下的对比度。横版字号用户定过，见 `references/storytelling.md`「封面」。
   封面帧要手动 remux 嵌进 mp4（`-disposition:v:1 attached_pic`，`-c copy`）。
 - **用了找来的素材（图或音乐），`credits` 导出的素材来源表是交付物的一部分**，署名要跟着片子走。
-- 交付前对一遍 `references/checklist.md`。
+- 交付前先跑 **`python episode.py deliver <项目目录>`**：封装、响度、片长、字幕、英文轨、封面、发布文案、
+  章节时间码、门禁，只打印没过的。它过了，再对 `references/checklist.md` 里要人判的那些。
 
 交付时要**主动说**：哪几处是妥协的；哪几处和原计划不同、为什么；还留了什么可以改的口子
 （换某张图只需重跑哪几趟）；三条轴各取了什么值。
@@ -155,6 +163,8 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 
 | 什么时候 | 读哪份 |
 |---|---|
+| 做 Short（新做法七条、`TOP_BAR` / `TIGHT_PACING` / `MUSIC_HP`） | `references/format-short-v2.md` |
+| 做横版长片（分章、章节卡、简介时间码） | `references/format-long-chapters.md` |
 | 做讲述片：门禁、事实分级、时间轴与气口、字幕、转场、侧链、封面 | `references/storytelling.md` |
 | 生成旁白、剪静音、排片长、核读音 | `references/tts.md`（先看速查） |
 | 四趟的全部命令、中间件对账 | `references/pipeline.md` |
@@ -189,6 +199,7 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 - 旁白：`narr_build.py`（稿子拆成一句一条）、`vo_trim.py`（剪静音）、`vo_split.py`（切真人朗读）、`el_tts.py`
 - 出图与生成：`comfy_gen.py` + `comfy/`、`el_web_image.py` / `.js`、`upscale.py`
 - 素材与下载：`chatcut_dl.py`、`sort_downloads.py`、`music_index.py`、`sfx_index.py`
+- 开片 / 看状态 / 交付检查：`episode.py`（预设在 `presets/`）
 - 发布与长任务：`publish.py`、`runlog.py`
 
 每个脚本的命令和注意事项见 `references/scripts.md`。回归测试在仓库根 `tests/`。
