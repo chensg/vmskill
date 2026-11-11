@@ -224,8 +224,19 @@ def test_new(tmp):
     p2 = os.path.join(tmp, "新长片")
     r = subprocess.run([sys.executable, EP, "new", p2, "--type", "long"], capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
-    ok(os.path.isfile(os.path.join(p2, "build", "make_story_h.py")) and os.path.isfile(os.path.join(p2, "build", "join.py"))
-       and not os.path.isfile(os.path.join(p2, "build", "segment_config.py")), "长片：铺横版模板和 join，不放预设")
+    b2 = os.path.join(p2, "build")
+    ok(all(os.path.isfile(os.path.join(b2, f)) for f in ("film.py", "film_config.py", "vid_prompts.py", "music_prompts.py",
+                                                         "run_pika.py", "pika_seedvr2.py", "mm_music.py"))
+       and os.path.isfile(os.path.join(b2, "comfy", "video_pika_h3_i2v_8step_hd.json"))
+       and not os.path.isfile(os.path.join(b2, "segment_config.py")) and not os.path.isfile(os.path.join(b2, "story_core.py")),
+       "长片：铺 film.py、三份预设、生成工具和工作流，不铺讲述引擎")
+    c = subprocess.run([sys.executable, "film.py", "check"], cwd=b2, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    ok("Traceback" not in c.stdout + c.stderr and "vo_lines.json" in c.stdout + c.stderr or "缺" in c.stdout + c.stderr,
+       "长片骨架上跑 film.py check：读得到稿子骨架，说缺什么，不崩")
+    v = subprocess.run([sys.executable, "vid_prompts.py"], cwd=b2, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    ok(v.returncode == 0 and "0 条" in v.stdout, "vid_prompts.py 预设能跑")
+    s = subprocess.run([sys.executable, EP, "status", p2], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    ok("film_config.py" in s, "status 认得长片配置")
 
 
 def main():

@@ -5,8 +5,9 @@
     python episode.py status <项目目录>
     python episode.py deliver <项目目录> [--video 成片.mp4] [--type short|long] [--mono] [-v]
 
-new      建 <项目>/build/ 和 素材/，从本脚本所在的 scripts/ 复制模板、引擎和常用工具；
-         Short 另放一份 segment_config.py 预设（presets/）；生成讲述稿 / 查证记录 / 素材处理说明的骨架；
+new      建 <项目>/build/ 和 素材/，从本脚本所在的 scripts/ 复制常用工具和预设（presets/）：
+         Short＝讲述模板 + 引擎 + segment_config.py；长片＝film.py + 生成工具 + film_config.py / vid_prompts.py /
+         music_prompts.py。再生成讲述稿 / 查证记录 / 素材处理说明的骨架；
          记下引擎的提交号。**已有的文件一个都不覆盖。**
 status   二十行左右：稿子、门禁、旁白、素材、中间件、交付物各到哪一步了。接手一支片先跑它。
 deliver  交付前能用机器验的那些：封装、响度、片长、字幕、英文轨、封面、发布文案、章节时间码、门禁。
@@ -32,9 +33,16 @@ IMG_EXT = (".png", ".jpg", ".jpeg", ".webp")
 AUD_EXT = (".mp3", ".wav", ".m4a")
 # 这些名字的 mp4 不是上传件：留档件、检查片、段用文件、草稿
 SKIP_VIDEO = re.compile(r"多音轨|预览|預覽|检查|檢查|草稿|分部|段用|480p|_tmp|check", re.I)
-COMMON = ["story_core.py", "vo_trim.py", "publish.py", "runlog.py", "chatcut_dl.py", "narr_build.py",
+COMMON = ["vo_trim.py", "publish.py", "runlog.py", "chatcut_dl.py", "narr_build.py",
           "comfy_gen.py", "el_web_image.py", "el_web_image.js", "upscale.py"]
-BY_TYPE = {"short": ["make_story_v.py"], "long": ["make_story_h.py", "join.py"]}
+# Short 走讲述引擎（模板 + story_core）；长片走 film.py（整片合成）+ longfilm/ 里的生成工具
+BY_TYPE = {"short": ["story_core.py", "make_story_v.py"],
+           "long": ["film.py"] + ["longfilm/" + f for f in ("pika_seedvr2.py", "run_pika.py", "mm_music.py", "sep_vocals.py",
+                                                           "frame_strips.py", "fish_en.py")]}
+# 预设：(presets/ 里的文件, 落到 build/ 里叫什么)
+PRESETS = {"short": [("segment_config_short_v2.py", "segment_config.py")],
+           "long": [("film_config_long.py", "film_config.py"), ("vid_prompts.py", "vid_prompts.py"),
+                    ("music_prompts.py", "music_prompts.py")]}
 SIZE = {"short": (1080, 1920), "long": (1920, 1080)}
 COVER_MAX = 2 * 1024 * 1024          # YouTube 缩略图上限 2MB
 LUFS_TARGET, LUFS_TOL = -15.0, 1.0   # 平台标准 −14~−16
@@ -201,6 +209,16 @@ DOCS = {
 }
 
 
+LONG_DOCS = {
+    "讲述稿.md": "# {title}\n\n> 片型：横版长片。写完交给用户读一遍（门禁一）。做法见 references/long-film.md。\n"
+                 "> 镜头行写成 `**镜号** [标签] 画面说明`，旁白另起一行写在下面；引诗的镜在行尾加 ＋[詩]。\n"
+                 "> 标签：[生·影片] 生成短片｜[推] 静帧慢推｜[實] 实拍或照片｜[檔＋動畫] 档案页｜[動畫] 地图路线｜[卡] 片名卡、章節卡、字卡。\n"
+                 "> 正文从「## 冷開場」到「## 片名候選」，film.py 只读这一段。\n\n"
+                 "## 冷開場\n\n**01** [生·影片] 画面说明。\n\n旁白。\n\n## 第一章　章名\n\n"
+                 "## 片名候選（不寫進稿）\n\n## 來源與待核\n",
+}
+
+
 def cmd_new(proj, kind, title):
     proj = os.path.abspath(proj)
     if is_library_root(proj):
@@ -219,16 +237,16 @@ def cmd_new(proj, kind, title):
     for f in COMMON + BY_TYPE[kind]:
         src = os.path.join(HERE, f)
         if os.path.isfile(src):
-            put(os.path.join(build, f), lambda d, s=src: shutil.copyfile(s, d))
+            put(os.path.join(build, os.path.basename(f)), lambda d, s=src: shutil.copyfile(s, d))
     if os.path.isdir(os.path.join(HERE, "comfy")):
         put(os.path.join(build, "comfy"), lambda d: shutil.copytree(os.path.join(HERE, "comfy"), d))
-    preset = os.path.join(HERE, "presets", "segment_config_%s.py" % ("short_v2" if kind == "short" else "long"))
-    if os.path.isfile(preset):
-        text = open(preset, encoding="utf-8").read().replace("__TITLE__", title)
-        put(os.path.join(build, "segment_config.py"),
-            lambda d: open(d, "w", encoding="utf-8", newline="\n").write(text))
-    fmt = "format-short-v2.md" if kind == "short" else "format-long-chapters.md"
-    for name, body in DOCS.items():
+    for src, dst in PRESETS[kind]:
+        preset = os.path.join(HERE, "presets", src)
+        if os.path.isfile(preset):
+            text = open(preset, encoding="utf-8").read().replace("__TITLE__", title)
+            put(os.path.join(build, dst), lambda d, t=text: open(d, "w", encoding="utf-8", newline="\n").write(t))
+    fmt = "format-short-v2.md" if kind == "short" else "long-film.md"
+    for name, body in dict(DOCS, **(LONG_DOCS if kind == "long" else {})).items():
         text = body.format(title=title, kind="Short（竖版）" if kind == "short" else "横版长片", fmt=fmt)
         put(os.path.join(proj, name), lambda d, t=text: open(d, "w", encoding="utf-8", newline="\n").write(t))
     try:
@@ -243,8 +261,7 @@ def cmd_new(proj, kind, title):
     if kept:
         print("已存在、没动 %d 个：%s" % (len(kept), short_list(kept, 8)))
     if kind == "long":
-        print("长片没有 segment_config 预设：章节卡、档案页、路线图这些成镜目前每支各写各的，"
-              "规矩和两条现成的路见 references/format-long-chapters.md")
+        print("长片走 film.py：填 build/film_config.py，然后 python film.py check。流程见 references/long-film.md")
     print("下一步：写 查证记录.md → 讲述稿.md → 门禁一。做法见 references/%s" % fmt)
 
 
@@ -270,8 +287,10 @@ def cmd_status(proj):
     if not docs:
         nxt.append("写讲述稿")
 
-    if not cfgs:
-        print("配置    没有 segment_config.py（这一支不走引擎，或还没开工）")
+    if os.path.isfile(os.path.join(proj, "build", "film_config.py")):
+        print("配置    build/film_config.py（长片，走 film.py）：逐镜缺什么跑 `python film.py check --proj <项目目录>`")
+    elif not cfgs:
+        print("配置    没有 segment_config.py / film_config.py（这一支用自己的脚本，或还没开工）")
     for d, c in cfgs:
         tag = os.path.relpath(d, proj)
         g1, g2 = str(c.get("GATE_SCRIPT_OK", "")).strip(), str(c.get("GATE_PREVIEW_OK", "")).strip()

@@ -44,3 +44,20 @@
 | `deliver <项目目录> [--video 成片] [--type short\|long] [--mono] [-v]` | 封装（H.264、单音轨、AAC 48k 立体声、画面尺寸）、响度 −15±1、Short ≤180s、中英 SRT 不超片长、英文轨与画面等长、封面 ≤2MB（长片要英文那张）、`publish.py check`、长片章节时间码、门禁签字。只打印没过的，全过退出码 0 |
 
 回归 `tests/test_episode.py`（约一分钟）：造齐全的假片子不该报，逐条弄坏必须报那一项。
+
+## `film.py` 和 `longfilm/`（2026-11-11）
+
+横版长片的合成和生成工具，细则 `long-film.md`。`episode.py new --type long` 会把它们铺进 `build/`。
+
+| 脚本 | 做什么 |
+|---|---|
+| `film.py` | `check`（逐镜画面从哪来、缺什么）、`tsv`、`srt`、`gate2`（门禁二片）、`shots <镜号…>`、`part N`、`final`、`en [check]`。画面按帧网格对齐；整片归一 −15 LUFS；缺画面时 `final` 拒绝；成品比配置和源文件都新才沿用 |
+| `presets/film_config_long.py` | `film.py` 的配置模板：常数、`SPEC`（kb / page / route / labels / clips / seq）、`CARD_BG`、英文卡字 |
+| `presets/vid_prompts.py` / `music_prompts.py` | 影片镜动作提示词、各段配乐描述的模板 |
+| `longfilm/run_pika.py` + `pika_seedvr2.py` | 本机 Pika 8 步 HD → SeedVR2 1080p，按 `vid_prompts.py` 逐条跑，已有成品跳过。工作流在 `comfy/video_pika_h3_*.json`。**收进来后没联机跑过** |
+| `longfilm/mm_music.py` | 本机 MiniMax Music3 出纯音乐，读 `music_prompts.py`。**收进来后没联机跑过** |
+| `longfilm/frame_strips.py` | 影片每条抽 6 帧拼成一行，再叠成总表 |
+| `longfilm/sep_vocals.py` | HDemucs 报配乐里的人声占比，出去人声版（用 ComfyUI 的 python 跑） |
+| `longfilm/fish_en.py` | 英文旁白：Fish s2-pro，过提亮 EQ |
+
+回归 `tests/test_film.py`（两三分钟）。
