@@ -56,8 +56,9 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 **这三条不要替用户默认**，问一句就够，不用摆候选。三条都有自检，`check` 会跑。
 
 - 运动 → `references/visuals.md`「静帧模式」
-- 配乐 → `references/music.md`（先要长度再倒推片长、maximin 切入点、公版那一路）
-- 素材来源 → `references/sourcing.md`。`found` 不是省事的那条：省掉等出图，换来检索和核对，
+- 配乐 → `references/music.md`（先要长度再倒推片长、maximin 切入点）；
+  公版 `references/music-public-domain.md`，不要配乐 `references/music-none.md`
+- 素材来源 → `found` 读 `references/found-images.md`。它不是省事的那条：省掉等出图，换来检索和核对，
   而且**每张都要登记来源与授权**（`check` 会拦，`credits` 导出）
 
 ## 旁白 TTS
@@ -107,7 +108,7 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 
 1. **本机 ComfyUI（有 3090 时的默认）**：`comfy_gen.py`，同一份任务书出图、图生影片、放大，
    也能出配乐（`music`）和音效（`sfx`）。硬件红线、「图/影片/放大不同时跑」、
-   H3 和 Stable Audio 的署名要求都由脚本拦，别绕。见 `references/sourcing.md`「本机生成」、`references/music.md`「一·五」。
+   H3 和 Stable Audio 的署名要求都由脚本拦，别绕。见 `references/local-gen.md`、`references/music.md`「一·五」。
 2. **ChatCut**：`submit_image` / `submit_video` / `submit_music` / `submit_voice`。
    下载要用户的登录会话，走 `chatcut_dl.py` 出下载页。
 3. **ElevenLabs 网页版**（有浏览器面板时）：`el_web_image.py`，见 `references/sourcing.md`。
@@ -160,8 +161,13 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 | 跑 `trace` / `measure` / `motion`，或两者对不上 | `references/measuring.md` |
 | 静帧模式、视频镜、素材分辨率与 `budget` | `references/visuals.md` |
 | 选画种、字幕极性（`FLIP_SHOTS`）、调色（`GRADE`） | `references/style.md` |
-| 配乐（查库 / 生成 / 公版 / 不要）、片长倒推、切入点、音效 | `references/music.md` |
-| 找图、写出图任务书、本机生成、登记授权 | `references/sourcing.md` |
+| 配乐（查库 / 生成 / 本机生成）、片长倒推、切入点、音效 | `references/music.md` |
+| 公版 / 开放授权的配乐：录音权、去哪儿找、`mquality`、合成音乐床 | `references/music-public-domain.md` |
+| 不要背景音乐 | `references/music-none.md` |
+| 出图的共用硬要求、写出图任务书 | `references/sourcing.md` |
+| 定了画种，写风格前缀和各画种的出图要求 | `references/style-prompts.md` |
+| 自己找公版图 / 图库图，登记授权（`IMG_SOURCE = "found"`） | `references/found-images.md` |
+| 本机 `comfy_gen.py`：出图、图生影片、放大、提示词的坑 | `references/local-gen.md` |
 | 中英双语音轨 | `references/bilingual.md`，出了问题再看 `bilingual-detail.md` |
 | 写发布文案 | `references/publishing.md` |
 | 交付前逐项对一遍 | `references/checklist.md` |
