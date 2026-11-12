@@ -237,6 +237,7 @@ def test_new(tmp):
     ok(v.returncode == 0 and "0 条" in v.stdout, "vid_prompts.py 预设能跑")
     s = subprocess.run([sys.executable, EP, "status", p2], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     ok("film_config.py" in s, "status 认得长片配置")
+    ok("film.py check 还跑不通" in s and "Traceback" not in s, "长片骨架的 status：说 check 还跑不通，不崩、不乱报镜数")
 
 
 def main():

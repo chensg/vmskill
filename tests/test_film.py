@@ -76,7 +76,7 @@ SPEC = {
     "07": ("route", os.path.join(EXT, "map.jpg"), (0.5, 0.5, 0.9), (0.5, 0.5, 0.8), [(0.3, 0.7), (0.5, 0.5), (0.7, 0.3)], {0: "甲", 2: "乙"}, True),
 }
 CARD_BG = {"03": ("kb", os.path.join(EXT, "gate.jpg"), (0.5, 0.5, 0.9), (0.5, 0.5, 0.85)),
-           "06": ("clips", [os.path.join(PROJ, "素材", "影片", "G01.mp4")]),
+           "06": ("clips", [(os.path.join(PROJ, "素材", "影片", "G01.mp4"), 0.5, 1.0)]),     # 整支影片只取一段
            "09": ("kb", os.path.join(EXT, "map.jpg"), (0.5, 0.5, 1.0), (0.5, 0.5, 0.9))}
 CARD_EN = {"03": "TEST FILM", "06": "Chapter Two"}
 CHAPTER_EN = {"冷開場": "Cold Open"}
@@ -146,6 +146,8 @@ def main():
         ok(rc == 0 and "没有缺的" in o and len(re.findall(r"(?m)^\s*鏡", o)) == 9, "check：九镜都有画面")
         ok("片名卡" not in o and "卡底 kb" in o and "SPEC route" in o and "静帧慢推" in o and "影片 G01" in o, "check：每镜的画面来源都认对了")
         total = float(re.search(r"（([\d.]+)s）", o).group(1))
+        st = subprocess.run([sys.executable, EP, "status", p], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+        ok("9 镜，缺画面 0 镜" in st, "episode.py status：长片报几镜、缺几镜（问的是 film.py check）")
         rc, o = film(p, "srt")
         srt = open(os.path.join(out, "测试片.srt"), encoding="utf-8").read()
         ch = open(os.path.join(out, "测试片_章节时间码.txt"), encoding="utf-8").read().splitlines()
@@ -211,10 +213,31 @@ def main():
         rc, o = film(p, "en", "check")
         ok(rc == 1 and "VO_002 超" in o, "英文比槽长：报出哪一条、超多少")
 
+        print("外部影片截段 / 源文件不在")
+        sys.path.insert(0, SCRIPTS)
+        import film as F
+        g01 = os.path.join(p, "素材/影片/G01.mp4")
+        ok(abs(F.clip_dur((g01, 0.5, 1.0)) - 1.0) < 1e-6 and abs(F.clip_dur((g01, 1.5, 9.0)) - 0.5) < 0.1 and abs(F.clip_dur(g01) - 2.0) < 0.1,
+           "clips 的 (路径, 起点, 秒数)：按写的取，超出片尾的按剩下的算")
+        ok(F.spec_sources(("clips", [(g01, 0.5, 1.0)])) == [g01], "截段写法的源文件还是那支影片（沿用判断要用）")
+        cfg_p = os.path.join(p, "build/film_config.py")
+        cfg0 = open(cfg_p, encoding="utf-8").read()
+        open(cfg_p, "w", encoding="utf-8").write(cfg0 + '\nSPEC["04"] = ("kb", os.path.join(EXT, "nope.jpg"), (0.5, 0.5, 0.8), (0.5, 0.5, 0.7))\n')
+        rc, o = film(p, "check")
+        ok(rc == 1 and "源文件不在：nope.jpg" in o, "SPEC 里的路径写错：check 点名哪个文件不在")
+        open(cfg_p, "w", encoding="utf-8").write(cfg0 + "\nMUTE_EXT = True\n")
+        rc, o = film(p, "shots", "06")
+        vol = subprocess.run(["ffmpeg", "-v", "info", "-i", os.path.join(t, "_check_06.wav"), "-af", "volumedetect", "-f", "null", "-"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stderr
+        ok(rc == 0 and re.search(r"max_volume: -(9\d|inf)", vol) is not None, "MUTE_EXT：外部影片的原声不进成片")
+        open(cfg_p, "w", encoding="utf-8").write(cfg0)
+
         print("缺东西")
         os.remove(os.path.join(p, "素材/影片/G08.mp4"))
         rc, o = film(p, "check")
         ok(rc == 1 and re.search(r"鏡\s+08 .*!! 没有画面", o) is not None, "缺影片：check 点名镜 08")
+        st = subprocess.run([sys.executable, EP, "status", p], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+        ok("缺画面 1 镜（08）" in st and "补画面 1 镜" in st, "episode.py status：缺影片时点名镜 08，下一步写补画面")
         rc, o = film(p, "final")
         ok(rc != 0 and "08" in o and "没有画面" in o, "缺影片：final 拒绝")
         rc, o = film(p, "final", "--allow-missing")

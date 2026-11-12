@@ -18,6 +18,7 @@ VID_DIR, VID_PREFIX = "素材/影片", "G"       # [生…] 镜：素材/影片/
 STILL_PAT = "素材/生成/S{n}.png"             # [推] 镜：静帧慢推
 CLIPS = {}                                   # 一镜多条影片：{"21": ["G21a", "G21b"]}
 DIM_CARD = 0.36                              # 卡的底图压到多暗
+MUTE_EXT = False                             # True = 外部影片不带原声（新闻素材带解说、配乐时用）
 
 EXT = os.path.join(PROJ, "素材", "外部")
 CM = lambda n: os.path.join(EXT, "commons", n)
@@ -33,6 +34,7 @@ SPEC = {
     # "116": ("labels", CM("城圖.jpg"), (0.50, 0.47, 0.52), (0.50, 0.47, 0.46),                   # 地图上依次亮地名
     #         [((0.41, 0.49), "普濟"), ((0.55, 0.35), "廣慈")]),
     # "135": ("clips", [os.path.join(EXT, "youtube", "clips", "流冰_A.mp4")]),                    # 外部影片
+    # "105": ("clips", [(os.path.join(EXT, "youtube", "整支.mp4"), 45.5, 11.5)]),                 # 整支影片只取一段：(路径, 起点秒, 取几秒)
     # "102": ("seq", [("kb", CM("x.jpg"), (0.6, 0.4, 0.7), (0.6, 0.4, 0.6)), ("clips", [...])]),  # 先图后影片
 }
 LABEL_NOTE = {}                              # labels 镜右下角的出处角注 {"116": "某某〈某圖〉1882　位置示意"}

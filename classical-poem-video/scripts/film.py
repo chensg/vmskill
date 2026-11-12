@@ -60,6 +60,7 @@ DEFAULTS = dict(
     FINAL_LUFS=-15.0,                 # 混完整体量一次、加一个固定增益到这个数；None = 不归一
     VID_DIR="素材/影片", VID_PREFIX="G", STILL_PAT="素材/生成/S{n}.png",
     CLIPS={}, SPEC={}, CARD_BG={}, DIM_CARD=0.36,
+    MUTE_EXT=False,                   # True = SPEC / CARD_BG 里的外部影片不带原声（新闻素材带解说和配乐时用）
     END_POEM=None,                    # 末镜上竖排的一句，如 ["秖待水流石出"]
     LABEL_NOTE={},                    # labels 镜右下角的出处角注 {镜号: 文字}
     KAI=r"C:\Windows\Fonts\simkai.ttf", KAI_NAME="KaiTi", SUB_FONT="Microsoft JhengHei",
@@ -395,14 +396,14 @@ def r_labels(w, D, src, b0, b1, items, note=None):
 def r_clips(path_v, path_a, D, clips, dim=1.0):
     """影片镜：几条接起来，短了先放慢（最多 15%）再定格；带原片的环境声。返回放慢到的倍率。"""
     n = len(clips)
-    ins = sum((["-i", c] for c in clips), [])
-    has_a = [bool(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", c],
+    ins = sum((["-i", c] if isinstance(c, str) else ["-ss", f"{float(c[1]):.3f}", "-t", f"{clip_dur(c):.3f}", "-i", c[0]] for c in clips), [])
+    has_a = [bool(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", clip_path(c)],
                                  capture_output=True, text=True).stdout.strip()) for c in clips]
     pre = "".join(f"[{k}:v]scale={C.W}:{C.H},fps={C.FPS},setsar=1[v{k}];" for k in range(n))
     pre += "".join((f"[{k}:a]aresample={C.SR},aformat=channel_layouts=mono[a{k}];" if has_a[k] else
-                    f"anullsrc=r={C.SR}:cl=mono,atrim=duration={dur(clips[k]):.3f}[a{k}];") for k in range(n))
+                    f"anullsrc=r={C.SR}:cl=mono,atrim=duration={clip_dur(clips[k]):.3f}[a{k}];") for k in range(n))
     cat = "".join(f"[v{k}][a{k}]" for k in range(n)) + f"concat=n={n}:v=1:a=1[cv0][ca0];"
-    T = sum(dur(c) for c in clips)
+    T = sum(clip_dur(c) for c in clips)
     rate = max(T / D, 0.85) if T < D - 0.4 else 1.0
     slow = (f"[cv0]setpts=PTS/{rate:.4f},fps={C.FPS}[cv];[ca0]atempo={rate:.4f}[ca];" if rate < 1 else "[cv0]null[cv];[ca0]anull[ca];")
     dimf = f",lutyuv=y=val*{dim:.3f}:u=128+(val-128)*0.7:v=128+(val-128)*0.7" if dim < 1 else ""
@@ -414,13 +415,24 @@ def r_clips(path_v, path_a, D, clips, dim=1.0):
     return rate
 
 
+def clip_path(c):
+    """clips 里的一条：路径，或 (路径, 起点秒, 取几秒) —— 整支下载的外部影片只用其中一段。"""
+    return c if isinstance(c, str) else c[0]
+
+
+def clip_dur(c):
+    if isinstance(c, str):
+        return dur(c)
+    return min(float(c[2]), max(0.0, dur(c[0]) - float(c[1])))
+
+
 def silent(path_a, D):
     run(["-f", "lavfi", "-i", f"anullsrc=r={C.SR}:cl=mono", "-t", f"{D:.3f}", path_a])
 
 
 def spec_sources(spec):
     if spec[0] in ("clips",):
-        return list(spec[1])
+        return [clip_path(c) for c in spec[1]]
     if spec[0] == "seq":
         return sum((spec_sources(s) for s in spec[1]), [])
     return [spec[1]]
@@ -430,12 +442,14 @@ def render_spec(spec, D, f_v, f_a, dim=1.0, note=None):
     kind = spec[0]
     if kind == "clips":
         r = r_clips(f_v, f_a, D, spec[1], dim)
+        if C.MUTE_EXT:
+            silent(f_a, D)
         return "外部影片" + ("（放慢 %d%%）" % round(r * 100) if r < 1 else "")
     if kind == "seq":
         parts = []
-        clip_T = sum(dur(c) for s in spec[1] if s[0] == "clips" for c in s[1])
+        clip_T = sum(clip_dur(c) for s in spec[1] if s[0] == "clips" for c in s[1])
         kb_D = max(4.0, D - clip_T)
-        want = [(max(0.5, D - kb_D) if len(spec[1]) == 2 else sum(dur(c) for c in s[1])) if s[0] == "clips" else kb_D
+        want = [(max(0.5, D - kb_D) if len(spec[1]) == 2 else sum(clip_dur(c) for c in s[1])) if s[0] == "clips" else kb_D
                 for s in spec[1]]
         # 各小段的帧数加起来必须等于这一镜的帧数：前几段按累计时间取整，最后一段拿剩下的
         total_f, used, frames = int(round(D * C.FPS)), 0, []
@@ -447,6 +461,8 @@ def render_spec(spec, D, f_v, f_a, dim=1.0, note=None):
             d_ = frames[k] / C.FPS
             if s[0] == "clips":
                 r_clips(pv, pa, d_, s[1], dim)
+                if C.MUTE_EXT:
+                    silent(pa, d_)
             else:
                 render_spec(s, d_, pv, pa, dim, note)
             parts.append((pv, pa))
@@ -633,6 +649,9 @@ def cmd_check(T):
     for s, a, b in T.spans:
         what, srcs, fn = plan(s, T)
         bad += fn is None
+        gone = [os.path.basename(x) for x in srcs if not os.path.exists(x)]      # SPEC 里路径写错，不拦的话要到渲染那一镜才炸
+        if gone:
+            what += "  !! 源文件不在：" + "、".join(gone); bad += 1
         print(f"  鏡{s['n']:>4} [{s['tag']}] {ts(a)} {b - a:5.1f}s  {what}")
     mus = P(C.MUS_DIR)
     for k in sorted(T.segspan):

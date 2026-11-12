@@ -289,6 +289,26 @@ def cmd_status(proj):
 
     if os.path.isfile(os.path.join(proj, "build", "film_config.py")):
         print("配置    build/film_config.py（长片，走 film.py）：逐镜缺什么跑 `python film.py check --proj <项目目录>`")
+        film = next((f for f in (os.path.join(proj, "build", "film.py"), os.path.join(HERE, "film.py")) if os.path.isfile(f)), None)
+        if film:
+            # 长片的进度就是「几镜有画面」：直接问 film.py check，不自己再猜一遍
+            r = subprocess.run([sys.executable, film, "check", "--proj", proj], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace")
+            rows = re.findall(r"(?m)^\s*鏡\s*(\S+) .*$", r.stdout)
+            bad = re.findall(r"(?m)^\s*鏡\s*(\S+) .*!!.*$", r.stdout)
+            head = re.search(r"全片 [\d.]+ 分钟", r.stdout)
+            if rows:
+                print("        %s，%d 镜，缺画面 %d 镜%s" % (head.group(0) if head else "", len(rows), len(bad),
+                                                         ("（%s）" % short_list(bad, 6)) if bad else ""))
+                if bad:
+                    nxt.append("补画面 %d 镜（film.py check）" % len(bad))
+                if re.search(r"配乐 段\d+：.*!!", r.stdout):
+                    print("        配乐有缺的段"); nxt.append("补配乐")
+            else:
+                print("        film.py check 还跑不通（稿子 / 旁白表 / 配置没齐）：%s" % "".join((r.stdout + r.stderr).strip().splitlines()[-1:])[:120])
+        pv = glob.glob(os.path.join(proj, "成片", "*预览*.mp4")) + glob.glob(os.path.join(proj, "门禁二", "*.mp4"))
+        if pv:
+            print("        预览 / 门禁二片 %d 个：%s" % (len(pv), short_list(sorted(os.path.basename(x) for x in pv), 3)))
     elif not cfgs:
         print("配置    没有 segment_config.py / film_config.py（这一支用自己的脚本，或还没开工）")
     for d, c in cfgs:
