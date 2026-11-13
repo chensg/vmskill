@@ -23,7 +23,8 @@
             正文取 BODY[0] 到 BODY[1] 之间。无旁白的镜是卡：说明里有「片名卡」「章節卡」的出正中大字。
   旁白      <项目>/vo_lines.json：[{id, shot, txt, subs:[…]}]；音频 build/vo/<id>.mp3。时间轴归中文旁白。
   画面      [生…] → 素材/影片/<前缀><镜号>.mp4（CLIPS 可给一镜多条）；[推] → 静帧慢推；
-            其余查 SPEC（kb / page / route / labels / clips / seq）和 CARD_BG（卡的底图，压暗）。
+            其余查 SPEC（kb / page / route / labels / clips / seq / quote）和 CARD_BG（卡的底图，压暗）。
+  成品      成片/_tmp_final/NNN.mp4 + .wav + .key；.key 是这一镜的指纹，配方或源文件变了才重渲。
   配乐      素材/配乐/<前缀>_段N_k.mp3，每段接起来（不够长循环），段间 3 秒交叉，被旁白侧链压。
 
 要 numpy、Pillow，ffmpeg / ffprobe 在 PATH 上。配置的写法见 references/long-film.md。
@@ -40,8 +41,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 Image.MAX_IMAGE_PIXELS = None
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+for _s in (sys.stdout, sys.stderr):        # stderr 也转：sys.exit("中文") 走它
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8")
 
 DEFAULTS = dict(
     NAME="成片_横版",                 # 交付物主干：<NAME>.mp4 / .srt / _音轨_eng.m4a
@@ -84,6 +86,14 @@ def load_config(path, proj):
     exec(compile(io.open(path, encoding="utf-8").read(), path, "exec"), ns)
     cfg = dict(DEFAULTS)
     cfg.update({k: v for k, v in ns.items() if k in DEFAULTS})
+    # 写错的键（MUTE_EXTS、CARDBG…）原来静默忽略，配置看着写了、渲出来没生效。只报和认得的键很像的，
+    # 配置里自己起的辅助名（CM、EXT、GEN 这类）不报
+    import difflib
+    for k in sorted(ns):
+        if k.isupper() and k not in DEFAULTS and not callable(ns[k]):
+            near = difflib.get_close_matches(k, list(DEFAULTS), n=1, cutoff=0.75)
+            if near:
+                print("!! 配置里的 %s 不是 film.py 认的键，没生效 —— 是不是 %s？" % (k, near[0]))
     for k, v in cfg.items():
         setattr(C, k, v)
     C.PROJ, C.CONFIG = proj, path
@@ -435,7 +445,46 @@ def spec_sources(spec):
         return [clip_path(c) for c in spec[1]]
     if spec[0] == "seq":
         return sum((spec_sources(s) for s in spec[1]), [])
+    if spec[0] == "quote":
+        return [spec[3]] if len(spec) > 3 and spec[3] else []
     return [spec[1]]
+
+
+def r_quote(w, D, text, source=None, bg=None):
+    """引文板：深底（或压暗的底图）上居中排一段引文，一行一行淡入，末尾出处小字；整体 1.00→1.03 慢推。
+    text 用「｜」或换行分行；没分行的按 16 字一行自动折，分了行但一行超过 24 字（54 号字排不下）的也折。"""
+    lines = [x for x in re.split(r"[｜\n]", text) if x.strip()]
+    if len(lines) == 1 and len(lines[0]) > 16:
+        s = lines[0]; lines = [s[k:k + 16] for k in range(0, len(s), 16)]
+    lines = [ln[k:k + 24] for ln in lines for k in range(0, len(ln), 24)]
+    try:
+        f = ImageFont.truetype(C.KAI, 64 if max(len(x) for x in lines) <= 14 else 54)
+        fs = ImageFont.truetype(C.KAI, 34)
+    except OSError:
+        f = fs = ImageFont.load_default()
+    if bg:
+        base = ImageEnhance.Brightness(kb_frame(prep(bg, [(0.5, 0.5, 1.0)]), (0.5, 0.5, 1.0))[0]).enhance(0.28)
+    else:
+        base = Image.new("RGB", (C.W, C.H), (22, 19, 16))
+    lh = int(f.size * 1.75)
+    y0 = C.H / 2 - (len(lines) * lh + (70 if source else 0)) / 2
+    N = int(round(D * C.FPS))
+    for i in range(N):
+        t = i / max(1, N - 1)
+        fr = base.copy(); d = ImageDraw.Draw(fr)
+        for k, ln in enumerate(lines):
+            a = min(1.0, max(0.0, (t - 0.04 - k * 0.55 / len(lines)) / 0.08))
+            if a > 0:
+                c = int(236 * a + 22 * (1 - a))
+                d.text((C.W / 2, y0 + k * lh + lh / 2), ln, font=f, fill=(c, int(c * 0.95), int(c * 0.86)), anchor="mm")
+        if source and t > 0.62:
+            a = min(1.0, (t - 0.62) / 0.08); c = int(150 * a + 22 * (1 - a))
+            d.text((C.W / 2 + 360, y0 + len(lines) * lh + 40), "—— " + source, font=fs, fill=(c, c, c), anchor="rm")
+        z = 1.0 + 0.03 * ease(t)
+        if z > 1.0005:
+            cw, ch = C.W / z, C.H / z
+            fr = fr.crop((int((C.W - cw) / 2), int((C.H - ch) / 2), int((C.W + cw) / 2), int((C.H + ch) / 2))).resize((C.W, C.H), Image.BICUBIC)
+        w.put(fr)
 
 
 def render_spec(spec, D, f_v, f_a, dim=1.0, note=None):
@@ -447,10 +496,17 @@ def render_spec(spec, D, f_v, f_a, dim=1.0, note=None):
         return "外部影片" + ("（放慢 %d%%）" % round(r * 100) if r < 1 else "")
     if kind == "seq":
         parts = []
-        clip_T = sum(clip_dur(c) for s in spec[1] if s[0] == "clips" for c in s[1])
-        kb_D = max(4.0, D - clip_T)
-        want = [(max(0.5, D - kb_D) if len(spec[1]) == 2 else sum(clip_dur(c) for c in s[1])) if s[0] == "clips" else kb_D
-                for s in spec[1]]
+        # 影片段按自己的长度，其余（照片、地图、引文板）平分剩下的、每段至少 4 秒；最后按比例缩到正好 D。
+        # 原来照片段每段都拿「D − 影片总长」，两张照片（没有影片）就各要整镜长，第二张只剩 1 帧。
+        clip_len = [sum(clip_dur(c) for c in s[1]) if s[0] == "clips" else 0.0 for s in spec[1]]
+        n_still = sum(s[0] != "clips" for s in spec[1])
+        still_D = max(4.0, (D - sum(clip_len)) / n_still) if n_still else 0.0
+        want = [clip_len[k] if s[0] == "clips" else still_D for k, s in enumerate(spec[1])]
+        if n_still and len(spec[1]) > n_still:            # 照片＋影片：照片先占够，影片拿剩下的（至少 0.5 秒）
+            room = max(0.5 * (len(spec[1]) - n_still), D - still_D * n_still)
+            ct = sum(clip_len) or 1.0
+            want = [x * room / ct if s[0] == "clips" else x for x, s in zip(want, spec[1])]
+        want = [x * D / sum(want) for x in want]
         # 各小段的帧数加起来必须等于这一镜的帧数：前几段按累计时间取整，最后一段拿剩下的
         total_f, used, frames = int(round(D * C.FPS)), 0, []
         for k, d_ in enumerate(want):
@@ -480,6 +536,8 @@ def render_spec(spec, D, f_v, f_a, dim=1.0, note=None):
         r_route(wtr, D, spec[1], spec[2], spec[3], spec[4], spec[5], spec[6] if len(spec) > 6 else False)
     elif kind == "labels":
         r_labels(wtr, D, spec[1], spec[2], spec[3], spec[4], spec[5] if len(spec) > 5 else note)
+    elif kind == "quote":
+        r_quote(wtr, D, spec[1], spec[2] if len(spec) > 2 else None, spec[3] if len(spec) > 3 else None)
     else:
         wtr.close(); die("SPEC 里不认识的类型 %r" % kind)
     wtr.close(); silent(f_a, D)
@@ -516,13 +574,37 @@ def plan(s, T):
     return "!! 没有画面（缺 %s）" % want, [], None
 
 
+RENDER_VER = 2      # 渲染函数改了出画结果时加一，旧成品全部作废
+
+
+def shot_sig(s, T):
+    """这一镜「怎么渲」的全部输入，和 plan() 走同样的分支。只改了别的镜的 SPEC，这一镜的指纹不变，成品照旧沿用。"""
+    n = s["n"]
+    what, srcs, fn = plan(s, T)
+    if n in C.SPEC and what.startswith("SPEC"):
+        recipe = ["spec", repr(C.SPEC[n]), C.LABEL_NOTE.get(n), C.MUTE_EXT]
+    elif n in C.CARD_BG and what.startswith("卡底"):
+        recipe = ["card", repr(C.CARD_BG[n]), C.DIM_CARD, C.MUTE_EXT]
+    else:
+        recipe = ["plain", what]
+    files = [[os.path.abspath(x), os.path.getsize(x), int(os.path.getmtime(x))] for x in srcs if os.path.exists(x)]
+    return [RENDER_VER, C.W, C.H, C.FPS, C.SR, recipe, files]
+
+
+def shot_key(s, T, D):
+    import hashlib
+    return hashlib.sha1(json.dumps(shot_sig(s, T) + [int(round(D * C.FPS))], ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def dark(D, f_v, f_a):
     run(["-f", "lavfi", "-i", f"color=c=0x16130f:s={C.W}x{C.H}:r={C.FPS}:d={D + 1:.3f}"] + X264
         + ["-frames:v", str(int(round(D * C.FPS))), f_v]); silent(f_a, D)
 
 
 def render_shots(T, pick, tmp, check_names=False, allow_missing=False, t0=0.0):
-    """渲 pick 选中的镜，返回 [(画面, 环境声)]。成品比配置和所有源文件都新就沿用。
+    """渲 pick 选中的镜，返回 [(画面, 环境声)]。成品旁边的 .key 和这一镜现在的指纹（shot_sig：配方＋源文件大小和时间＋帧数）
+    一样就沿用。原来拿成品和整份 film_config.py 的修改时间比，改一镜的 SPEC，全片九十多镜全部重渲（《拙政園的山茶》一次一个多小时）。
+    没有 .key 的旧成品：按旧规则（比配置和源文件都新）认一次，补写 .key。
 
     **每镜的帧数按帧网格取**：round(止 × FPS) − round(起 × FPS)，而不是 round(镜长 × FPS)。
     后者每镜差零点几帧，一百多镜累积起来画面比旁白晚一秒多，章节卡的大字会压在上一镜的尾巴上。"""
@@ -534,15 +616,25 @@ def render_shots(T, pick, tmp, check_names=False, allow_missing=False, t0=0.0):
     for i, s, a, b, (what, srcs, fn) in todo:
         D = (int(round((b - t0) * C.FPS)) - int(round((a - t0) * C.FPS))) / C.FPS
         stem = os.path.join(tmp, f"_check_{s['n']}" if check_names else f"{i:03d}")
-        f_v, f_a = stem + ".mp4", stem + ".wav"
-        newest = max([cfg_m] + [os.path.getmtime(x) for x in srcs if os.path.exists(x)])
-        if not check_names and os.path.exists(f_v) and os.path.exists(f_a) and os.path.getmtime(f_v) > newest \
-                and abs(dur(f_v) - D) < 0.06:
+        f_v, f_a, f_k = stem + ".mp4", stem + ".wav", stem + ".key"
+        key = shot_key(s, T, D)
+        have = not check_names and os.path.exists(f_v) and os.path.exists(f_a)
+        old = io.open(f_k, encoding="utf-8").read().strip() if have and os.path.exists(f_k) else None
+        if have and old is None:
+            newest = max([cfg_m] + [os.path.getmtime(x) for x in srcs if os.path.exists(x)])
+            if os.path.getmtime(f_v) > newest and abs(dur(f_v) - D) < 0.06:
+                old = key
+        if have and old == key:
             kind = "（沿用）"
-        elif fn in (None, "dark"):
-            dark(D, f_v, f_a); kind = what
         else:
-            kind = fn(D, f_v, f_a)
+            if os.path.exists(f_k):
+                os.remove(f_k)
+            if fn in (None, "dark"):
+                dark(D, f_v, f_a); kind = what
+            else:
+                kind = fn(D, f_v, f_a)
+        if not check_names:            # 缺画面用深底顶的也记：补上画面后 plan 的说明变了，指纹跟着变，会重渲
+            io.open(f_k, "w", encoding="utf-8").write(key)
         out.append((f_v, f_a))
         print(f"  鏡{s['n']:>4} [{s['tag']}] {D:5.1f}s → {kind}", flush=True)
     return out
@@ -646,6 +738,11 @@ def overlay_events(T, t0=0.0, t1=None):
 # ---------------- 命令 ----------------
 def cmd_check(T):
     bad = 0
+    names = {s["n"] for s, _, _ in T.spans}
+    for tab in ("SPEC", "CARD_BG", "CLIPS", "LABEL_NOTE", "CARD_EN"):
+        stray = sorted(k for k in getattr(C, tab) if k not in names)
+        if stray:                     # SPEC["5"] 写成了 "5"，稿子里是 "05"：原来静默不生效
+            print("  !! %s 里这些镜号稿子里没有：%s" % (tab, "、".join(map(str, stray)))); bad += 1
     for s, a, b in T.spans:
         what, srcs, fn = plan(s, T)
         bad += fn is None

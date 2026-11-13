@@ -345,6 +345,72 @@ def cue_checks(M, proj):
     os.remove(out)
 
 
+def short_v2_checks(V, proj):
+    """2026-11-12/13 塔妮娅 Short 跑新做法时撞上的三件：标题条压图、封面用图登记、英文没出不让渲画面。"""
+    print("")
+    print("== Short 新做法：标题条 / 封面登记 / 只渲画面")
+    os.chdir(os.path.join(proj, "build"))
+    W, H = V.W, V.H
+    keep = (V.TOP_BAR, V.CLIPS, V.SHOTS, V.PREP)
+    V.PREP = (W * 2, H * 2)
+    V.TOP_BAR = dict(lines=["甲", "乙"], y=50, gap=30, fs=(20, 16))           # 条底 50+30+8+14=102（画高 320）
+
+    def page(top):        # 深灰底上一张白纸，上沿在画高的 top 处（塔妮娅的实物页就是拼在深灰底上）
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        "color=c=0x2a2a2a:size=%dx%d,drawbox=x=%d:y=%d:w=%d:h=%d:color=white:t=fill"
+                        % (W * 2, H * 2, W // 2, int(H * 2 * top), W, H), "-frames:v", "1", "img01.png"], check=True)
+    V.CLIPS = [dict(src="a.png", zoom=1.0, cx=0.5, cy=0.5, tweak="")]
+    V.SHOTS = [dict(z=(1.0, 1.0), f0=(0.5, 0.5), f1=(0.5, 0.5), motion="static")]
+    page(0.05)
+    got = V.check_topbar()
+    ok(len(got) == 1 and "镜 1" in got[0], "实物页上沿在 5%（y≈16）、标题条底在 102 → check_topbar 报镜 1")
+    V.CLIPS[0]["bar_ok"] = True
+    ok(V.check_topbar() == [], "  这一条写了 bar_ok=True → 不报")
+    del V.CLIPS[0]["bar_ok"]
+    page(0.35)
+    ok(V.check_topbar() == [], "上沿在 35%（y≈112）→ 不报")
+    V.SHOTS = [dict(z=(1.0, 1.6), f0=(0.5, 0.5), f1=(0.5, 0.5))]
+    ok(len(V.check_topbar()) == 1, "  同一张图推到 1.6 倍：上沿被推进条里 → 报（按推拉算到画面上）")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=%dx%d" % (W * 2, H * 2),
+                    "-frames:v", "1", "img01.png"], check=True)
+    ok(V.check_topbar() == [], "满幅场景图（顶上有纹理）→ 不归它管，不报")
+    ok(V.selftest_topbar() is True, "selftest_topbar 自己过")
+    V.TOP_BAR, V.CLIPS, V.SHOTS, V.PREP = keep
+
+    # 封面用的第三方图：COVER_CREDITS 登记，进素材来源表；缺项要报
+    good = dict(title="Таня", holder="H", source="Wikimedia Commons", license="CC BY-SA 4.0", url="https://x")
+    V.COVER_CREDITS = {"封面/她.jpg": dict(good)}
+    txt = "\n".join(V.credits(dry=True))
+    ok("## 封面" in txt and "封面/她.jpg" in txt and "CC BY-SA 4.0" in txt, "COVER_CREDITS 写进素材来源表的「## 封面」")
+    ok(not [b for b in V.check_credits() if "她.jpg" in b], "  登记齐全 → check_credits 不报")
+    V.COVER_CREDITS = {"封面/她.jpg": dict(good, url="")}
+    ok([b for b in V.check_credits() if "她.jpg" in b and "url" in b], "  缺 url → check_credits 报")
+    V.COVER_CREDITS = {}
+
+    # 只渲画面（a）：多音轨那一组降成提示，不拦；check 照旧拦
+    names = [n for n in dir(V) if (n.startswith("check_") and n not in ("check_timeline", "check_langs"))
+             or n.startswith("selftest_")]
+    saved = {n: getattr(V, n) for n in names + ["check_langs", "timeline", "vo_durs", "cut_points", "music_on"]}
+    for n in names:
+        setattr(V, n, (lambda *a, **k: True) if n.startswith("selftest_") else (lambda *a, **k: []))
+    V.check_langs = lambda *a, **k: ["英文音频缺 VO_01a"]
+    V.timeline = lambda: ([], [1.0] * len(V.SHOTS), float(len(V.SHOTS)), [0.0])
+    V.vo_durs = lambda *a, **k: ({}, [])
+    V.cut_points = lambda: []
+    V.music_on = lambda: False
+    try:
+        box = []
+        _, o1 = quiet(lambda: box.append(V.check_timeline()))
+        _, o2 = quiet(lambda: box.append(V.check_timeline(picture_only=True)))
+        ok(len(box) == 2 and box[0] is False and "英文音频缺" in o1, "英文音频没出：check 拦")
+        ok(len(box) == 2 and box[1] is True and "英文音频缺" in o2, "  同样的状态 a（picture_only）：放过，但提示里还看得见")
+    finally:
+        for n, f in saved.items():
+            setattr(V, n, f)
+    src = open(os.path.join(SCRIPTS, "story_core.py"), encoding="utf-8").read()
+    ok('check_timeline(picture_only=(what == "a"))' in src, "main 里 a 走 picture_only")
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="vmskill_test_")
     cwd = os.getcwd()
@@ -361,6 +427,7 @@ def main():
         plate_scenario(H, proj)
         title_checks(H)
         cue_checks(H, proj)
+        short_v2_checks(V, proj)
     finally:
         os.chdir(cwd)
         shutil.rmtree(tmp, ignore_errors=True)

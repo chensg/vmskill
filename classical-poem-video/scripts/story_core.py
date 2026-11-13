@@ -123,6 +123,10 @@ _default("POEM_LEFT", 70)        # POEM_SIDE="left" 时，最左一列离左边�
 _default("POEM_DARK_SHOTS", set())
 # 封面底图不用片里那一镜时填图片路径（相对 build/，要 W:H 同比例）；None＝img<COVER_FROM>.png（11-03《愚夫撰銘》封面专用生成图）
 _default("COVER_SRC", None)
+# 封面用到的第三方图（镜头里没用、只在封面上）。键是文件名，值和 CREDITS 一样五项。
+# 2026-11-13 塔妮娅 Short 封面用了 Commons 上她本人的照片：写进 CREDITS 会报「没有任何一镜用它」，
+# 不写又进不了素材来源表，只好塞进发布文案。
+_default("COVER_CREDITS", {})
 
 # ---- 显式承认的妥协：**必须写理由**，理由每次 check 都打印 ----
 _default("PP_ACCEPT_REASON", "")
@@ -1951,11 +1955,16 @@ def check_credits():
             e = CREDITS[k]
             if k not in used:
                 bad.append("CREDITS 里登记了 %s，但没有任何一镜用它 —— "
-                           "文件名写错了？这条登记不会出现在素材来源表里。" % k)
+                           "文件名写错了？这条登记不会出现在素材来源表里。"
+                           "（只用在封面上的图登记进 COVER_CREDITS）" % k)
                 continue
             miss = [k2 for k2 in need if not str(e.get(k2, "")).strip()]
             if miss:
                 bad.append("素材 %s 的来源登记缺 %s" % (k, "/".join(miss)))
+    for k in sorted(COVER_CREDITS):
+        miss = [k2 for k2 in need if not str(COVER_CREDITS[k].get(k2, "")).strip()]
+        if miss:
+            bad.append("封面用图 %s 的来源登记（COVER_CREDITS）缺 %s" % (k, "/".join(miss)))
     if MUSIC_MODE not in ("generated", "public_domain", "library", "none"):
         bad.append("MUSIC_MODE=%r 不认识，只能是 'generated' / 'public_domain' / 'library' / 'none'"
                    % MUSIC_MODE)
@@ -2181,7 +2190,10 @@ def selftest_sfx():
     return n >= 2 and now == 0
 
 
-def check_timeline():
+def check_timeline(picture_only=False):
+    """`picture_only=True` 是 `a`（只渲画面）用的：多音轨那一组（英文稿 / 英文音频 / 对槽）
+    跟画面无关，降成提示，不拦。2026-11-12 塔妮娅 Short：LANGS 写了 en、英文还没出，
+    想先渲画面看图只能临时改 LANGS。`check` / `b` / `c` / `all` 照旧拦。"""
     lines, durs, total, _ = timeline()
     _, missing = vo_durs()
     cuts = cut_points()
@@ -2202,8 +2214,13 @@ def check_timeline():
     bad += check_title(lines)
     bad += check_endcard()
     bad += check_template_leftovers()
-    bad += check_langs()
+    _lb = check_langs()
+    if picture_only:
+        warn += ["（只渲画面，先放过）" + x for x in _lb]
+    else:
+        bad += _lb
     bad += check_sfx()
+    bad += check_topbar()
 
     for st, en, txt, _, _, _ in lines:
         for c in ([] if TIGHT_PACING else cuts):
@@ -2296,6 +2313,7 @@ def check_timeline():
     selftest_video()
     selftest_credits()
     selftest_langs()
+    selftest_topbar()
     for w in warn:
         print("提示: " + w)
     print_carry_over()
@@ -3487,6 +3505,15 @@ def credits(dry=False):
                                 e.get("title", "**缺**"), e.get("holder", "**缺**"),
                                 e.get("source", "**缺**"), e.get("license", "**缺**"),
                                 e.get("url", "**缺**")))
+    if COVER_CREDITS:
+        lines += ["", "## 封面", "", "封面用到 **%d 份第三方素材**：" % len(COVER_CREDITS), "",
+                  "| 文件 | 作品 | 收藏/权利人 | 来源 | 授权 | 链接 |", "|---|---|---|---|---|---|"]
+        for k in sorted(COVER_CREDITS):
+            e = COVER_CREDITS[k]
+            lines.append("| %s | %s | %s | %s | %s | %s |"
+                         % (k, e.get("title", "**缺**"), e.get("holder", "**缺**"),
+                            e.get("source", "**缺**"), e.get("license", "**缺**"),
+                            e.get("url", "**缺**")))
     lines += ["", "## 配乐", ""]
     if not music_on():
         lines.append("无背景音乐（MUSIC_MODE='none'）。")
@@ -4623,6 +4650,110 @@ def check_mode():
     return bad
 
 
+def topbar_bottom():
+    """TOP_BAR 标题条底边在画面上的 y（含底框）。没有标题条返回 None。"""
+    if not TOP_BAR:
+        return None
+    n = len(TOP_BAR["lines"])
+    fs = TOP_BAR.get("fs", (64, 52))
+    last = fs[min(n, 2) - 1]
+    return TOP_BAR.get("y", 250) + (n - 1) * TOP_BAR.get("gap", 96) + last / 2.0 + 14
+
+
+def content_top(path):
+    """贴在纯色底上的图（贴纸台纸、拼好的实物页）内容从哪一行开始，0~1。
+
+    只认**顶上一条和左右两边都是同一个无噪平底**的图（底色不限：塔妮娅的页拼在深灰上）；场景图（天空、墙）顶上有纹理，
+    返回 None —— 标题条压在场景图上是设计如此，不归这里管。"""
+    GW, GH = (320, 180) if LAYOUT == "h" else (180, 320)
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vf",
+                          "scale=%d:%d:flags=area,format=gray" % (GW, GH),
+                          "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True).stdout
+    if len(raw) != GW * GH:
+        return None
+    top = raw[:GW * max(2, GH // 60)]
+    bg = sorted(top)[len(top) // 2]
+    if sum(abs(p - bg) > 10 for p in top) > len(top) * 0.01:
+        return None
+    # 左右两条边也要是同一个底色 —— 只有顶上平（雾天、夜空）的场景图到这里就出去了
+    k = max(2, GW // 40)
+    side = [raw[y * GW + x] for y in range(GH) for x in list(range(k)) + list(range(GW - k, GW))]
+    if sum(abs(p - bg) > 10 for p in side) > len(side) * 0.05:
+        return None
+    for y in range(GH):
+        if sum(abs(p - bg) > 28 for p in raw[y * GW:(y + 1) * GW]) > GW * 0.03:
+            return y / float(GH)
+    return None
+
+
+def check_topbar():
+    """**TOP_BAR 常驻标题条压住了贴图的上沿。**
+
+    竖版 Short 的标题条占到画面上方约五分之一；贴纸版式、拼好的实物页（黑底上一张纸）
+    的上沿一旦落在条下面，页顶的字就被盖掉。成片能渲、check 全过，只有抽帧看得见 ——
+    2026-11-12 塔妮娅 Short 第一版三镜页顶被盖，就是这么漏的。
+
+    量的是 prep 出来的 imgNN（CLIPS 的裁切已经在里面），再按 SHOTS 的推拉算到画面上，
+    起、中、止三个时刻取最高的那一点。只查顶上是平底的图（见 content_top）。
+    确认无妨（比如页顶本来就是空白）在那一条 CLIPS 里写 `bar_ok=True`。"""
+    yb = topbar_bottom()
+    if yb is None:
+        return []
+    bad, skipped = [], 0
+    for n in range(1, min(len(CLIPS), len(SHOTS)) + 1):
+        if is_video(n) or CLIPS[n - 1].get("bar_ok"):
+            continue
+        f = "img%02d.png" % n
+        if not os.path.exists(f):
+            skipped += 1
+            continue
+        yc = content_top(f)
+        if yc is None:
+            continue
+        s = SHOTS[n - 1]
+        st = is_static(n)
+        hi = None
+        for p in ((0.0,) if st else (0.0, 0.5, 1.0)):
+            z = s["z"][0] if st else s["z"][0] + (s["z"][1] - s["z"][0]) * p
+            half = 1 / (2 * z)
+            f0, f1 = s["f0"], (s["f0"] if st else s["f1"])
+            fy = min(max(f0[1] + (f1[1] - f0[1]) * p, half), 1 - half)
+            y = (yc - (fy - half)) * z * H
+            hi = y if hi is None else min(hi, y)
+        # 留 1.5% 画高的余量：纸边擦着条底几个像素看不出来（塔妮娅镜 13 差 5px），压到字才算
+        if hi < yb - 0.015 * H:
+            bad.append("镜 %d 的图上沿在画面 y≈%d，标题条（TOP_BAR）底边在 %d —— 页顶会被压住。"
+                       "把 CLIPS 的 cy 调小/zoom 调小，或换贴纸版式缩小；确认无妨就在这条 CLIPS 写 bar_ok=True"
+                       % (n, max(0, hi), yb))
+    if skipped:
+        print("提示: 还有 %d 镜没 prep，标题条遮挡没查（跑完 prep 再 check）" % skipped)
+    return bad
+
+
+def selftest_topbar():
+    """回归：造一张黑底、上沿在 5% 的白页，content_top 必须量出来；
+    纹理一直铺到顶的图必须返回 None（不然场景图全会被当成贴图报警）。"""
+    if not TOP_BAR:
+        return True
+    import tempfile
+    d = tempfile.mkdtemp(prefix="topbar_")
+    a, b = os.path.join(d, "page.png"), os.path.join(d, "scene.png")
+    size = "%dx%d" % ((320, 180) if LAYOUT == "h" else (180, 320))
+    gh = 180 if LAYOUT == "h" else 320
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=black:size=%s,drawbox=x=20:y=%d:w=120:h=120:color=white:t=fill"
+                    % (size, int(gh * 0.05)), "-frames:v", "1", a])
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=%s" % size, "-frames:v", "1", b])
+    yc, ys = content_top(a), content_top(b)
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+    good = yc is not None and abs(yc - 0.05) < 0.02 and ys is None
+    print("回归自测: 黑底白页上沿 5%% 量得 %s、满幅纹理图 %s —— %s"
+          % (None if yc is None else "%.3f" % yc, ys, "对" if good else "**检查失效了**"))
+    return good
+
+
 def check_safe():
     """**烧进画面的字**有没有撞进平台的操作栏 / 顶部导航 / 底部发布文案区。
     这类问题在成片文件里完全看不出来，只有把片子放进 App 才会发现 ——
@@ -4970,7 +5101,7 @@ def main():
              "mquality": mquality, "credits": credits, "budget": budget,
              "gates": check_gates}[what]()
         sys.exit(0)
-    ok = check_timeline()
+    ok = check_timeline(picture_only=(what == "a"))
     if what == "check":
         sys.exit(0 if ok else 1)
     if not ok:

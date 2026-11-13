@@ -108,6 +108,15 @@ def test_runlog():
         ok(child_dead, "stop 连子进程一起停掉")
         ok(stopped, "stop 在日志末行写 RUNLOG STOPPED")
 
+        # 步骤文件写错的报错走 stderr：没设 PYTHONIOENCODING 时原来打成 \\uXXXX（2026-11-12）
+        bad_steps = os.path.join(tmp, "错的步骤.steps")
+        write(bad_steps, "echo 第一行没写步骤名\n== 收旁白\necho hi\n")
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+        r = subprocess.run([PY, rl, "run", bad_steps], capture_output=True, env=env)
+        err = r.stderr.decode("utf-8", "replace")
+        ok(r.returncode != 0 and "步骤名" in err and "\\u" not in err,
+           "没设 PYTHONIOENCODING：步骤文件写错的报错是中文，不是 \\uXXXX（%s）" % err.strip()[:60])
+
         print("  -- 改坏的版本（应该被抓到）")
         src = io.open(rl, encoding="utf-8").read()
         bad = src.replace('"/T", "/F"', '"/F"').replace("os.killpg(os.getpgid(pid), signal.SIGTERM)", "os.kill(pid, signal.SIGTERM)")

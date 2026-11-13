@@ -140,7 +140,23 @@ def test_deliver(tmp):
     expect(p, "封面", "封面 3MB")
     os.remove(cv)
     expect(p, "封面", "没有封面")
+    for c in ("封面候选_A.png", "_封面_200px.png", "封面_旧.jpg"):
+        open(os.path.join(p, c), "wb").write(small)
+    expect(p, "封面", "只有封面候选 / 下划线开头 / 旧版（2026-11-13 塔妮娅：候选图被数成封面）")
     open(cv, "wb").write(small)
+    f, _, out = deliver(p, "-v")
+    ok(re.search(r"封面.*1 张，1 张在", out) is not None, "封面候选不算：只数到 1 张")
+    for c in ("封面候选_A.png", "_封面_200px.png", "封面_旧.jpg"):
+        os.remove(os.path.join(p, c))
+
+    # 素材来源：CREDITS 是推导式（ast 读不出值）、或只登记了封面用图，也要求有 素材来源.md
+    for what, extra in (("CREDITS 是推导式", 'CREDITS = {k: dict(title="t") for k in ["生成/a.png"]}\n'),
+                        ("只登记了封面用图", 'COVER_CREDITS = {"她.jpg": dict(title="t")}\n')):
+        write(os.path.join(p, "build", "segment_config.py"), CFG + extra)
+        f, rc, out = deliver(p)
+        ok("素材来源" in f and "python make_story_v.py credits" in out,
+           "%s、没有 素材来源.md → 报 [素材来源]，并给出真命令 python make_story_v.py credits" % what)
+    write(os.path.join(p, "build", "segment_config.py"), CFG)
 
     write(os.path.join(p, "build", "segment_config.py"), CFG.replace('"2026-01-01 用户：过"', '""'))
     expect(p, "门禁", "门禁一没签")
@@ -186,6 +202,10 @@ def test_status(tmp):
     write(os.path.join(p, "素材", "生成", "a.png"), "x")
     out = subprocess.run([sys.executable, EP, "status", p], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     ok("zh 2/2" in out and "素材 1/1" in out, "补齐之后：2/2、1/1")
+    for f in ("影片/a.mp4", "影片/_work/b.mp4", "影片/_work/c.mp4", "影片/_work/d/e.mp4", "影片/说明.txt"):
+        write(os.path.join(p, "素材", f), "x")
+    out = subprocess.run([sys.executable, EP, "status", p], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    ok("影片 1" in out, "素材/ 计数不进 _work、不数非媒体文件：影片 1（%s）" % (re.findall(r"影片 \d+", out) or "没找到"))
 
 
 def test_new(tmp):
@@ -206,6 +226,12 @@ def test_new(tmp):
                        encoding="utf-8", errors="replace")
     ok("还是空的" in c.stdout + c.stderr and "Traceback" not in c.stdout + c.stderr, "旁白和镜头表没填时 check 说人话，不掉 IndexError")
     ok("没有夏天" not in open(os.path.join(b, "segment_config.py"), encoding="utf-8").read(), "预设里没有别的片子的内容")
+
+    st = subprocess.run([sys.executable, EP, "status", p], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    ok("查证记录 只有骨架" in st, "new 刚铺的查证记录只有骨架：status 不说「有」")
+    open(os.path.join(p, "查证记录.md"), "a", encoding="utf-8").write("- 1942 年 5 月 13 日，母亲去世｜档案｜A\n")
+    st = subprocess.run([sys.executable, EP, "status", p], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    ok("查证记录 有" in st, "写了一条事实：status 说「有」")
 
     doc = os.path.join(p, "讲述稿.md")
     open(doc, "a", encoding="utf-8").write("我写的稿子\n")
@@ -238,6 +264,12 @@ def test_new(tmp):
     s = subprocess.run([sys.executable, EP, "status", p2], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     ok("film_config.py" in s, "status 认得长片配置")
     ok("film.py check 还跑不通" in s and "Traceback" not in s, "长片骨架的 status：说 check 还跑不通，不崩、不乱报镜数")
+    fc = os.path.join(b2, "film_config.py")
+    src = open(fc, encoding="utf-8").read()
+    src = "\n".join('TITLE_BIG = "拙政園的山茶\\\\N{\\\\fs44}徐燦"' if l.startswith("TITLE_BIG") else l for l in src.splitlines())
+    open(fc, "w", encoding="utf-8").write(src + "\n")
+    s = subprocess.run([sys.executable, EP, "status", p2], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    ok(s.startswith("《拙政園的山茶》"), "长片片名取 film_config 的 TITLE_BIG，不是目录名（%s）" % s.split("  ")[0])
 
 
 def main():

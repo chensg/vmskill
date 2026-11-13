@@ -83,6 +83,21 @@ def run(script):
         apply(script, vo)
         d3 = dur(os.path.join(vo, "VO_002.mp3"))
         ok(1.55 < d3 < 1.85, "无账本：维持老行为，从原件剪（%.2fs）" % d3)
+
+        # 别的前缀（塔妮娅 Short 新旁白叫 SVO_）：目录里只有一种前缀就按它处理；混着几种要 --prefix
+        sv = os.path.join(tmp, "svo")
+        os.makedirs(sv)
+        tone(os.path.join(sv, "SVO_01.mp3"), 1.0)
+        tone(os.path.join(sv, "SVO_02.mp3"), 1.0)
+        out = apply(script, sv)
+        ok(dur(os.path.join(sv, "SVO_01.mp3")) < 1.8, "只有 SVO_*.mp3：认出前缀、照剪（%.2fs）" % dur(os.path.join(sv, "SVO_01.mp3")))
+        tone(os.path.join(sv, "BGM_x.mp3"), 1.0)
+        r = subprocess.run([sys.executable, script, "apply", sv], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        ok(r.returncode != 0 and "--prefix" in r.stdout and "BGM_" in r.stdout, "混着 SVO_ 和 BGM_：不猜，列出前缀、让用 --prefix")
+        tone(os.path.join(sv, "SVO_03.mp3"), 1.0)
+        subprocess.run([sys.executable, script, "apply", sv, "--prefix", "SVO_"], capture_output=True)
+        ok(dur(os.path.join(sv, "SVO_03.mp3")) < 1.8 and dur(os.path.join(sv, "BGM_x.mp3")) > 1.9,
+           "--prefix SVO_：只剪 SVO_，BGM_ 没动")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

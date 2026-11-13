@@ -103,6 +103,14 @@ def dur(path):
                                 capture_output=True, text=True).stdout)
 
 
+def rgb(path, t):
+    """t 秒那一帧缩到 480x270 的平均 RGB 和最亮通道的最大值。"""
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.3f" % t, "-i", path, "-frames:v", "1", "-vf", "scale=480:270",
+                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+    n = len(raw) // 3 or 1
+    return tuple(sum(raw[k::3]) / n for k in range(3)), max(raw) if raw else 0
+
+
 def film(p, *a):
     r = subprocess.run([sys.executable, FILM] + list(a) + ["--proj", p], capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
@@ -185,6 +193,18 @@ def main():
         ff("-f", "lavfi", "-i", "testsrc=s=1920x1080", "-frames:v", "1", os.path.join(p, "素材/生成/S02.png"))
         rc, o = film(p, "final")
         ok(o.count("（沿用）") == 8 and "S02.png 慢推" in o, "换了镜 02 的图：只有那一镜重渲")
+        # 成品沿用按每镜自己的配方（SPEC / CARD_BG 那一条 + 源文件）做指纹，不看整个配置文件的修改时间。
+        # 原来改配置里任何一处，全片都要重渲 —— 徐燦 95 镜换两张图要渲一个多小时（2026-11-13）。
+        cfg_p = os.path.join(p, "build/film_config.py")
+        cfg0 = open(cfg_p, encoding="utf-8").read()
+        time.sleep(1.1)
+        open(cfg_p, "w", encoding="utf-8").write(cfg0 + "\n# 只加一行注释\n")
+        rc, o = film(p, "final")
+        ok(o.count("（沿用）") == 9, "配置里只加了一行注释：九镜全部沿用（实得 %d）" % o.count("（沿用）"))
+        open(cfg_p, "w", encoding="utf-8").write(cfg0.replace("(0.50, 0.38, 0.66)", "(0.50, 0.40, 0.60)"))
+        rc, o = film(p, "final")
+        ok(o.count("（沿用）") == 8, "只改了镜 04 的 SPEC：只有那一镜重渲（沿用 %d）" % o.count("（沿用）"))
+        open(cfg_p, "w", encoding="utf-8").write(cfg0)
 
         print("part / gate2 / shots")
         rc, o = film(p, "part", "2")
@@ -230,6 +250,28 @@ def main():
         vol = subprocess.run(["ffmpeg", "-v", "info", "-i", os.path.join(t, "_check_06.wav"), "-af", "volumedetect", "-f", "null", "-"],
                              capture_output=True, text=True, encoding="utf-8", errors="replace").stderr
         ok(rc == 0 and re.search(r"max_volume: -(9\d|inf)", vol) is not None, "MUTE_EXT：外部影片的原声不进成片")
+        open(cfg_p, "w", encoding="utf-8").write(cfg0)
+
+        print("引文板 / seq 两张照片 / 写错的键")
+        open(cfg_p, "w", encoding="utf-8").write(cfg0 + '\nSKIPP = 1.0\nCARD_EN["77"] = "x"\n')
+        rc, o = film(p, "check")
+        ok("SKIPP" in o and "SKIP？" in o, "配置里写成 SKIPP：check 说它没生效、是不是 SKIP")
+        ok(re.search(r"CARD_EN 里这些镜号稿子里没有：77", o) is not None, "CARD_EN 里有稿子没有的镜号 77：check 报出来")
+        ff("-f", "lavfi", "-i", "color=c=red:s=2400x1600", "-frames:v", "1", os.path.join(p, "素材/外部/red.jpg"))
+        open(cfg_p, "w", encoding="utf-8").write(cfg0 + '\nSPEC["05"] = ("quote", "臣謹奏｜家人俱在", "《某實錄》")\n'
+            'SPEC["04"] = ("seq", [("kb", os.path.join(EXT, "gate.jpg"), (0.5, 0.5, 0.9), (0.5, 0.5, 0.85)),\n'
+            '                      ("kb", os.path.join(EXT, "red.jpg"), (0.5, 0.5, 0.9), (0.5, 0.5, 0.85))])\n')
+        rc, o = film(p, "shots", "04", "05")
+        q, s4 = os.path.join(t, "_check_05.mp4"), os.path.join(t, "_check_04.mp4")
+        ok(rc == 0 and os.path.isfile(q), "SPEC 写 quote（引文板）：渲得出来")
+        if rc == 0 and os.path.isfile(q):
+            (mr, mg, mb), top = rgb(q, dur(q) * 0.9)
+            ok(max(mr, mg, mb) < 90 and top > 150, "引文板：深底（均值 %.0f）上有亮字（最亮 %d）" % (max(mr, mg, mb), top))
+        if rc == 0 and os.path.isfile(s4):
+            (r0, g0, b0), _ = rgb(s4, dur(s4) * 0.75)
+            ok(r0 > 150 and g0 < 80 and b0 < 80, "seq 里两张照片：后半镜是第二张（红图，实得 %.0f/%.0f/%.0f）" % (r0, g0, b0))
+        else:
+            ok(False, "seq 里两张照片：渲得出来")
         open(cfg_p, "w", encoding="utf-8").write(cfg0)
 
         print("缺东西")

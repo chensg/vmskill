@@ -3,6 +3,8 @@
 
   python vo_trim.py measure    # 只量，不动文件
   python vo_trim.py apply      # 剪，原件备份到 vo_orig/
+  python vo_trim.py apply vo_en_raw          # 换目录（英文轨）
+  python vo_trim.py apply vo --prefix SVO_   # 文件名不是 VO_ 开头（目录里只有一种前缀时不用写，自动认）
 
 ===== 为什么要剪 =====
 
@@ -32,10 +34,13 @@ import json
 import subprocess
 import sys
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+# stderr 也要转：sys.exit("中文") 走 stderr，Windows 控制台没设 PYTHONIOENCODING 时
+# 会打成 \uXXXX（2026-11-12 runlog 步骤文件写错，报错一行看不懂）
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VO_DIR = os.path.join(HERE, "vo")
@@ -160,10 +165,25 @@ def main():
     if not os.path.isdir(VO_DIR):
         print("没有 %s —— 先把 mp3 下载并归位（sort_downloads.py）" % VO_DIR); return 1
 
-    files = sorted(f for f in os.listdir(VO_DIR)
-                   if f.lower().endswith(".mp3") and f.startswith("VO_"))
+    # 文件名前缀：缺省 VO_。2026-11-12 塔妮娅 Short 的新旁白起名 SVO_，只认 VO_ 就得先改名。
+    # 目录里没有 VO_、而 mp3 全是同一个前缀时就用那个；混着几种前缀不猜，要 --prefix 指定（--prefix "" 全收）。
+    mp3 = sorted(f for f in os.listdir(VO_DIR) if f.lower().endswith(".mp3"))
+    if "--prefix" in sys.argv:
+        prefix = sys.argv[sys.argv.index("--prefix") + 1]
+    else:
+        prefix = "VO_"
+        if mp3 and not any(f.startswith(prefix) for f in mp3):
+            fams = sorted(set(re.match(r"[^_]*_", f).group(0) if re.match(r"[^_]*_", f) else "" for f in mp3))
+            if len(fams) == 1 and fams[0]:
+                prefix = fams[0]
+                print("没有 VO_*.mp3，目录里的 %d 条都是 %s* —— 按 %s 处理" % (len(mp3), prefix, prefix))
+            else:
+                print("%s 里没有 VO_*.mp3；有的前缀：%s。用 --prefix <前缀> 指定（--prefix \"\" 全收）"
+                      % (VO_DIR, " / ".join(x or "（无前缀）" for x in fams)))
+                return 1
+    files = [f for f in mp3 if f.startswith(prefix)]
     if not files:
-        print("vo/ 里没有 VO_*.mp3"); return 1
+        print("%s 里没有 %s*.mp3" % (VO_DIR, prefix)); return 1
 
     ledger = {}
     if mode == "apply":

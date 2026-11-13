@@ -49,10 +49,13 @@ import subprocess
 import sys
 import time
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-except Exception:
-    pass
+# stderr 也要转：sys.exit("中文") 走 stderr，Windows 控制台没设 PYTHONIOENCODING 时
+# 会打成 \uXXXX（2026-11-12 runlog 步骤文件写错，报错一行看不懂）
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
 
 TAIL = 4
 

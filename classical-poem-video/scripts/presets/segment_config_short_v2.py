@@ -23,7 +23,9 @@ HARD_LIMIT = 180                             # Shorts 硬线
 PRE_DEF, POST_DEF = 0.03, 0.08               # 句内停顿
 GAP_PRE, GAP_POST = 0.12, 0.20               # 镜间停顿
 TIGHT_PACING = True                          # 0 秒开口、边说边切镜；放行「冷开场留白」「转场落静默」两条旧检查
-EN_RATE = 2.8                                # 填：每支先量，不跨片子抄
+EN_RATE = None                               # 先空着：英文出两句后跑 langfit，它按实测算、并打印该填的数
+# 别抄一个数进来。旧预设写 2.8，和 Fish 的实测差很远（2026-11-12 塔妮娅 Short：speed 0.88 时 2.17 词/秒，
+# 1.0 时 2.57）—— 填高了，英文的槽估短、langfit 让你多砍词。语速随音色、speed、稿子都变（记忆 en-rate-is-per-script）。
 
 # ---- 顶部常驻两行标题条：中途刷进来的人一眼知道在讲什么 ----
 TOP_BAR = dict(lines=["填：第一行", "填：第二行"], y=250, gap=109, fs=(76, 62))

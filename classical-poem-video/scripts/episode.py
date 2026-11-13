@@ -26,11 +26,13 @@ import shutil
 import subprocess
 import sys
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+for _s in (sys.stdout, sys.stderr):        # stderr 也转：sys.exit("中文") 走它
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMG_EXT = (".png", ".jpg", ".jpeg", ".webp")
 AUD_EXT = (".mp3", ".wav", ".m4a")
+MEDIA_EXT = IMG_EXT + AUD_EXT + (".mp4", ".mov", ".webm", ".mkv", ".gif", ".tif", ".tiff", ".flac", ".ogg")
 # 这些名字的 mp4 不是上传件：留档件、检查片、段用文件、草稿
 SKIP_VIDEO = re.compile(r"多音轨|预览|預覽|检查|檢查|草稿|分部|段用|480p|_tmp|check", re.I)
 COMMON = ["vo_trim.py", "publish.py", "runlog.py", "chatcut_dl.py", "narr_build.py",
@@ -59,11 +61,13 @@ def load_config(path):
     for node in tree.body:
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
+        tgt = node.targets[0]
         try:
             val = ast.literal_eval(node.value)
         except Exception:
+            if isinstance(tgt, ast.Name):
+                out.setdefault("__computed__", set()).add(tgt.id)
             continue
-        tgt = node.targets[0]
         if isinstance(tgt, ast.Name):
             out[tgt.id] = val
         elif isinstance(tgt, ast.Tuple) and isinstance(val, tuple) and len(tgt.elts) == len(val):
@@ -141,12 +145,46 @@ def srt_info(path):
     return len(m), h * 3600 + mi * 60 + s + ms / 1000.0
 
 
+NOT_COVER = re.compile(r"候选|候選|备选|備選|草稿|旧|舊|备份|備份|candidate|draft|old|backup|bak|_\d+px", re.I)
+
+
 def covers(proj):
+    """交付用的封面。文件名带「封面」、但**候选 / 备份 / 下划线开头**的不算 ——
+    2026-11-13 塔妮娅 Short 项目根里的 `封面候选_A.png` 被当成第三张封面数了进去。"""
     out = []
     for d in (proj, os.path.join(proj, "成片"), os.path.join(proj, "封面")):
-        out += [p for p in glob.glob(os.path.join(d, "*")) if "封面" in os.path.basename(p)
-                and p.lower().endswith(IMG_EXT)]
+        for p in glob.glob(os.path.join(d, "*")):
+            b = os.path.basename(p)
+            if "封面" in b and p.lower().endswith(IMG_EXT) and not b.startswith("_") and not NOT_COVER.search(b):
+                out.append(p)
     return sorted(set(out))
+
+
+def is_skeleton(path):
+    """查证记录只剩 new 铺的骨架（标题、引用说明、空行）—— 算「没写」。"""
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return True
+    return not [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith(("#", ">"))]
+
+
+def project_title(proj, cfgs):
+    """片名：segment_config 的 TITLE → film_config 的 TITLE_BIG 第一行 → 最新讲述稿的「# 」标题 → 目录名。
+    长片没有 segment_config，原来直接落到目录名（徐燦显示《徐燦》而不是《拙政園的山茶》）。"""
+    t = next((c.get("TITLE") for _, c in cfgs if c.get("TITLE")), None)
+    if t:
+        return t
+    fc = load_config(os.path.join(proj, "build", "film_config.py"))
+    big = re.sub(r"\{[^}]*\}", "", str(fc.get("TITLE_BIG", "")).split("\\N")[0]).strip()
+    if big and "__TITLE__" not in big:
+        return big
+    docs = sorted(glob.glob(os.path.join(proj, "讲述稿*.md")), key=os.path.getmtime, reverse=True)
+    for p in [d for d in docs if not re.search(r"(?i)_en\.md$", d)]:
+        m = re.search(r"(?m)^#\s+(.+?)\s*$", open(p, encoding="utf-8").read())
+        if m and m.group(1).strip() != os.path.basename(proj):
+            return m.group(1).strip()
+    return os.path.basename(proj)
 
 
 def chapter_runs(text):
@@ -272,7 +310,7 @@ def cmd_status(proj):
         sys.exit("!!! 没有这个目录：%s" % proj)
     cfgs = find_configs(proj)
     nxt = []
-    title = next((c.get("TITLE") for _, c in cfgs if c.get("TITLE")), None) or os.path.basename(proj)
+    title = project_title(proj, cfgs)
     rev = os.path.join(proj, "build", "ENGINE_COMMIT.txt")
     print("《%s》  %s%s" % (title, proj, "  引擎 " + open(rev, encoding="utf-8").read().split()[0]
                            if os.path.isfile(rev) else ""))
@@ -283,7 +321,8 @@ def cmd_status(proj):
         return datetime.datetime.fromtimestamp(os.path.getmtime(p)).strftime("%m-%d %H:%M")
     print("稿子    %s；查证记录 %s" % (
         ("%s（%s，共 %d 份）" % (os.path.basename(docs[0]), stamp(docs[0]), len(docs))) if docs else "没有讲述稿",
-        "有" if os.path.isfile(os.path.join(proj, "查证记录.md")) else "没有"))
+        "没有" if not os.path.isfile(os.path.join(proj, "查证记录.md"))
+        else "只有骨架（还没写）" if is_skeleton(os.path.join(proj, "查证记录.md")) else "有"))
     if not docs:
         nxt.append("写讲述稿")
 
@@ -343,8 +382,12 @@ def cmd_status(proj):
         subs = []
         for s in sorted(os.listdir(gen)):
             p = os.path.join(gen, s)
-            if os.path.isdir(p):
-                subs.append("%s %d" % (s, sum(len(fs) for _, _, fs in os.walk(p))))
+            if os.path.isdir(p) and not s.startswith("_"):
+                n = 0
+                for root, dirs, fs in os.walk(p):
+                    dirs[:] = [x for x in dirs if not x.startswith("_")]     # _work、_旧 之类的中间目录不算
+                    n += sum(1 for f in fs if not f.startswith("_") and f.lower().endswith(MEDIA_EXT))
+                subs.append("%s %d" % (s, n))
         print("素材/   %s" % ("，".join(subs) if subs else "空"))
 
     vids = find_videos(proj)
@@ -460,10 +503,17 @@ def cmd_deliver(proj, video, kind, mono, verbose):
             add(good, "章节", "章节时间码 %s 组，各 %s 条" % (len(runs), "/".join(str(len(r)) for r in runs)),
                 "简介里的章节时间码不合规：要从 0:00 起、至少 3 条、每段 ≥10 秒、不超过片长（现在 %s）"
                 % (["%d 条，起于 %ds" % (len(r), r[0]) for r in runs] or "一条都没有"))
-    need_credit = any(c.get("CREDITS") or c.get("MUSIC_MODE") == "public_domain" for _, c in cfgs)
-    if need_credit:
+    need = [(d, c) for d, c in cfgs
+            if c.get("CREDITS") or c.get("COVER_CREDITS") or c.get("MUSIC_MODE") == "public_domain"
+            or c.get("IMG_SOURCE") == "found"
+            or {"CREDITS", "COVER_CREDITS"} & c.get("__computed__", set())]
+    if need:
+        d = need[0][0]
+        tpl = next((f for f in ("make_story_v.py", "make_story_h.py") if os.path.isfile(os.path.join(d, f))),
+                   "make_story_v.py")
         add(os.path.isfile(os.path.join(proj, "素材来源.md")), "素材来源", "有 素材来源.md",
-            "用了找来的素材，却没有 素材来源.md —— 跑 credits 导出，署名要跟着片子走")
+            "用了找来的素材，却没有 素材来源.md —— 在 %s 里跑 `python %s credits` 导出，署名要跟着片子走"
+            % (os.path.relpath(d, proj), tpl))
     for d, c in cfgs:
         for k, name in (("GATE_SCRIPT_OK", "门禁一"), ("GATE_PREVIEW_OK", "门禁二")):
             add(bool(str(c.get(k, "")).strip()), "门禁", "%s 已签（%s）" % (name, os.path.relpath(d, proj)),
