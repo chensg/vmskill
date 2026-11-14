@@ -252,6 +252,12 @@ def main():
         ok(rc == 0 and re.search(r"max_volume: -(9\d|inf)", vol) is not None, "MUTE_EXT：外部影片的原声不进成片")
         open(cfg_p, "w", encoding="utf-8").write(cfg0)
 
+        print("SPEC 盖过生成影片")
+        open(cfg_p, "w", encoding="utf-8").write(cfg0 + '\nSPEC["08"] = ("kb", os.path.join(EXT, "gate.jpg"), (0.5, 0.5, 1.0), (0.5, 0.5, 0.9))\n')
+        rc, o = film(p, "check")
+        ok(re.search(r"鏡\s+08 .*SPEC kb", o) is not None, "影片镜 08 的影片还在、SPEC 也写了：用 SPEC（弃用影片改慢推）")
+        open(cfg_p, "w", encoding="utf-8").write(cfg0)
+
         print("引文板 / seq 两张照片 / 写错的键")
         open(cfg_p, "w", encoding="utf-8").write(cfg0 + '\nSKIPP = 1.0\nCARD_EN["77"] = "x"\n')
         rc, o = film(p, "check")

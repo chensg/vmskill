@@ -550,14 +550,16 @@ def plan(s, T):
     ids = C.CLIPS.get(n, [C.VID_PREFIX + n])
     clips = [os.path.join(P(C.VID_DIR), x + ".mp4") for x in ids]
     still = P(C.STILL_PAT.format(n=n))
+    # SPEC 写了就用 SPEC，哪怕这一镜的生成影片也在：弃用一条影片（手坏了、走进现代人）就是在 SPEC 里改写这一镜。
+    # 原来影片优先，SPEC 被静默忽略 —— 2026-11-14 徐燦 L71 写了 4K 慢推，成片里还是那条手坏了的影片。
+    if n in C.SPEC:
+        sp = C.SPEC[n]
+        return "SPEC " + sp[0], spec_sources(sp), lambda D, fv, fa: render_spec(sp, D, fv, fa, 1.0, C.LABEL_NOTE.get(n))
     if s["tag"].startswith("生") and all(os.path.exists(c) for c in clips):
         def go(D, fv, fa):
             r = r_clips(fv, fa, D, clips)
             return "+".join(ids) + (f"（放慢 {r:.0%}）" if r < 1 else "")
         return "影片 " + "+".join(ids), clips, go
-    if n in C.SPEC:
-        sp = C.SPEC[n]
-        return "SPEC " + sp[0], spec_sources(sp), lambda D, fv, fa: render_spec(sp, D, fv, fa, 1.0, C.LABEL_NOTE.get(n))
     if n in C.CARD_BG:
         sp = C.CARD_BG[n]
         return "卡底 " + sp[0], spec_sources(sp), lambda D, fv, fa: "卡底：" + render_spec(sp, D, fv, fa, C.DIM_CARD)
