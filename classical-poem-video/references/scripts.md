@@ -55,6 +55,7 @@
 | `presets/film_config_long.py` | `film.py` 的配置模板：常数、`SPEC`（kb / page / route / labels / clips / seq）、`CARD_BG`、英文卡字 |
 | `presets/vid_prompts.py` / `music_prompts.py` | 影片镜动作提示词、各段配乐描述的模板 |
 | `longfilm/run_pika.py` + `pika_seedvr2.py` | 本机 Pika 8 步 HD → SeedVR2 1080p，按 `vid_prompts.py` 逐条跑，已有成品跳过。工作流在 `comfy/video_pika_h3_*.json`。**收进来后没联机跑过** |
+| `longfilm/fvsr_batch.py` | **默认放大**（11-19）：`素材/影片_720/G*.mp4` 逐条 FlashVSR+ Base tc2 → `素材/影片/` 1920×1080，带原片环境声，已有跳过。路径常量 `FV` 指本机安装 |
 | `longfilm/mm_music.py` | 本机 MiniMax Music3 出纯音乐，读 `music_prompts.py`。**收进来后没联机跑过** |
 | `longfilm/frame_strips.py` | 影片每条抽 6 帧拼成一行，再叠成总表 |
 | `longfilm/sep_vocals.py` | HDemucs 报配乐里的人声占比，出去人声版（用 ComfyUI 的 python 跑） |
