@@ -64,7 +64,7 @@ def write(path, text):
 CFG = ('TITLE, SUBTITLE = "假片", ""\nNARR = [{"vo": "VO_01a", "shot": 1, "txt": "一"}, {"vo": "VO_01b", "shot": 1, "txt": "二"}]\n'
        'CLIPS = [{"src": "生成/a.png"}]\nLANGS = ["zh", "en"]\n'
        'GATE_SCRIPT_OK = "2026-01-01 用户：过"\nGATE_PREVIEW_OK = "豁免：默认不出检查片"\n')
-CHAPTERS = "0:00 冷开场\n1:30 第二章\n3:10 第三章\n"
+CHAPTERS = "0:00 城门那一夜\n1:30 第二章\n3:10 第三章\n"
 
 
 def project(tmp, name, kind="short", dur=6.0):
@@ -173,7 +173,7 @@ def test_deliver(tmp):
     f, rc, out = deliver(p)
     ok(not (f & CORE), "齐全的长片：含章节时间码都不报（报了 %s）" % sorted(f & CORE))
     pub = os.path.join(p, "发布文案.md")
-    for what, text in (("只有两条章节", "0:00 冷开场\n1:30 第二章\n"), ("第一条不是 0:00", "0:05 一\n1:30 二\n3:10 三\n"),
+    for what, text in (("只有两条章节", "0:00 开头\n1:30 第二章\n"), ("第一条不是 0:00", "0:05 一\n1:30 二\n3:10 三\n"),
                        ("有一段不到 10 秒", "0:00 一\n0:06 二\n3:10 三\n"), ("时间码超过片长", "0:00 一\n1:30 二\n9:10 三\n"),
                        ("没有章节", "")):
         write(pub, "# 假片\n\n## YouTube\n- 标题：假\n\n" + text)
@@ -181,6 +181,16 @@ def test_deliver(tmp):
     write(pub, "# 假片\n\n" + CHAPTERS + "\n## YouTube (EN)\n\n" + CHAPTERS)
     f, _, _ = deliver(p)
     ok("章节" not in f, "中英两组章节时间码：不报")
+    # 「冷開場」是内部叫法，不能贴出去（用户 2026-11-18）
+    write(pub, "# 假片\n\n## YouTube\n- 标题：假\n- 推荐第 1 条：冷开场就是城门那一夜（注释，不贴出去）\n\n"
+          "0:00 冷開場\n1:30 第二章\n3:10 第三章\n")
+    f, _, out = deliver(p, "-v")
+    ok("发布文案" in f and "内部叫法" in out and "第 7 行" in out, "简介章节写了冷開場：publish.py check 报出那一行，注释里的不算")
+    write(pub, "# 假片\n\n" + CHAPTERS + "\n## YouTube (EN)\n\n" + CHAPTERS)
+    chf = os.path.join(p, "成片", "假片_章节时间码_en.txt")
+    write(chf, "0:00 Cold Open\n1:30 Two\n3:10 Three\n")
+    expect(p, "内部叫法", "成片里的章节时间码写了 Cold Open")
+    os.remove(chf)
     os.remove(os.path.join(p, "封面_en.jpg"))
     expect(p, "封面", "长片没有英文封面")
 

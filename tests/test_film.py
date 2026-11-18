@@ -79,7 +79,8 @@ CARD_BG = {"03": ("kb", os.path.join(EXT, "gate.jpg"), (0.5, 0.5, 0.9), (0.5, 0.
            "06": ("clips", [(os.path.join(PROJ, "素材", "影片", "G01.mp4"), 0.5, 1.0)]),     # 整支影片只取一段
            "09": ("kb", os.path.join(EXT, "map.jpg"), (0.5, 0.5, 1.0), (0.5, 0.5, 0.9))}
 CARD_EN = {"03": "TEST FILM", "06": "Chapter Two"}
-CHAPTER_EN = {"冷開場": "Cold Open"}
+CHAPTER_EN = {"冷開場": "A Night at the Gate"}
+OPEN_NAME = "城門那一夜"
 '''
 
 
@@ -160,7 +161,18 @@ def main():
         srt = open(os.path.join(out, "测试片.srt"), encoding="utf-8").read()
         ch = open(os.path.join(out, "测试片_章节时间码.txt"), encoding="utf-8").read().splitlines()
         ok(srt.count("-->") >= 6 and "床前明月光" in srt, "srt：字幕出来了")
-        ok(len(ch) == 3 and ch[0] == "0:00 冷開場" and ch[1].endswith("第一章 開頭"), "章节时间码：三条，从 0:00 起，全角空格换成半角")
+        ok(len(ch) == 3 and ch[0] == "0:00 城門那一夜" and ch[1].endswith("第一章 開頭"),
+           "章节时间码：三条，从 0:00 起，冷開場换成 OPEN_NAME，全角空格换成半角")
+        # 「冷開場」是内部叫法，不能进简介（用户 2026-11-18）：没写 OPEN_NAME 时 check 报、srt 开工前就停
+        cfg_p = os.path.join(p, "build/film_config.py")
+        cfg0 = open(cfg_p, encoding="utf-8").read()
+        open(cfg_p, "w", encoding="utf-8").write(cfg0.replace('OPEN_NAME = "城門那一夜"', 'OPEN_NAME = "冷開場"')
+                                                 .replace('"A Night at the Gate"', '"Cold Open"'))
+        rc, o = film(p, "check")
+        ok(rc == 1 and "OPEN_NAME" in o and "CHAPTER_EN" in o, "check：章节名还是冷開場 / Cold Open，中英都报")
+        rc, o = film(p, "srt")
+        ok(rc == 1 and "内部叫法" in o, "srt：章节名是内部叫法，不写文件、直接停")
+        open(cfg_p, "w", encoding="utf-8").write(cfg0)
 
         rc, o = film(p, "tsv")
         rows = [l.split("\t") for l in open(os.path.join(p, "build", "_shots.tsv"), encoding="utf-8").read().splitlines()]
@@ -228,7 +240,7 @@ def main():
         ok(rc == 0 and abs(dur(m4a) - total) < 0.2, "en：英文轨和全片等长")
         en = open(os.path.join(out, "测试片.en.srt"), encoding="utf-8").read()
         ok("English line number 001" in en and "TEST FILM" in en and "Chapter Two" in en, "英文字幕：旁白和卡上的字都有")
-        ok(open(os.path.join(out, "测试片_章节时间码_en.txt"), encoding="utf-8").read().startswith("0:00 Cold Open"), "英文章节时间码")
+        ok(open(os.path.join(out, "测试片_章节时间码_en.txt"), encoding="utf-8").read().startswith("0:00 A Night at the Gate"), "英文章节时间码：冷開場用 CHAPTER_EN 的名字")
         ff("-f", "lavfi", "-i", "sine=frequency=330:duration=9", "-ac", "1", os.path.join(p, "build/vo_en/VO_002.mp3"))
         rc, o = film(p, "en", "check")
         ok(rc == 1 and "VO_002 超" in o, "英文比槽长：报出哪一条、超多少")

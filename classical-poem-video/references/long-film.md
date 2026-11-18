@@ -50,7 +50,7 @@ python episode.py new <项目目录> --type long --title 片名
 ## 流程
 
 ```bash
-python film.py check            # 逐镜报画面从哪来，缺的标 !!；各段配乐几条；章节时间码。不渲染
+python film.py check            # 逐镜报画面从哪来，缺的标 !!；各段配乐几条；对外的章节时间码。不渲染
 python film.py tsv              # build/_shots.tsv：镜号、标签、秒数、章、说明、旁白 —— 写提示词、算帧数用
 python film.py gate2            # 门禁二片 → 门禁二/：深底「看稿」画面 + 旁白 + 配乐 + 烧录字幕，交给用户听
 python vid_prompts.py           # 影片镜清单 + 估时

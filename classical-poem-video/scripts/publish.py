@@ -163,6 +163,31 @@ def parse_keywords(path):
     return out
 
 
+# 内部叫法：只在稿子和脚本里用，**不能出现在片子和对外发布的任何地方**（用户 2026-11-18）。
+# 原先长片简介章节第一条就是「00:00 冷開場 / Cold Open」，三支都这样交出去了。
+INTERNAL = re.compile(r"冷[開开][場场]|cold[\s_-]*open", re.I)
+
+
+def internal_terms(path):
+    """发布文案里**会贴出去的那些行**有没有内部叫法。返回 [(行号, 行)]。
+
+    贴出去的是：标题/话题/标签那几条，和顶格的正文行（简介、章节时间码）。
+    注释是列表项、续行、引用块；「## 附…」「…留档」那几节也是留档，不看。"""
+    hits, skip = [], False
+    for n, raw in enumerate(io.open(path, encoding="utf-8"), 1):
+        line = raw.rstrip("\n")
+        m = re.match(r"^#+\s+(.+?)\s*$", line)
+        if m:
+            skip = m.group(1).startswith("附") or "留档" in m.group(1)
+            continue
+        if skip or not line.strip():
+            continue
+        public = re.match(r"^[-*]\s*(标题|话题|标签)[：:]", line) or not re.match(r"^([-*>]\s|\s+\S)", line)
+        if public and INTERNAL.search(line):
+            hits.append((n, line.strip()))
+    return hits
+
+
 def check(path, bilingual=True, found=False):
     """bilingual=False 时跳过英文那些块（只有中文的老片子）。
 
@@ -291,6 +316,11 @@ def check(path, bilingual=True, found=False):
         # YuE2 配乐：个人创作者可变现，署名可选，作者鼓励写 YuE2 —— 只提示不拦。
         if any(str(r.get("model", "")).startswith("YuE2") for r in recs) and "YuE2" not in text:
             warn.append("用了 YuE2 配乐：署名可选，作者鼓励在说明里写「配樂：YuE2 生成」或 #YuE2")
+
+    for n, line in internal_terms(path):
+        bad.append("第 %d 行有内部叫法「%s」，这一行是要贴出去的：%s —— 冷開場只在内部用，"
+                   "章节名写这一段讲的那件事（如「沙嶺的一夜」/ A Night at Sandy Ridge）"
+                   % (n, INTERNAL.search(line).group(0), line[:60]))
 
     print("")
     if counted == 0:

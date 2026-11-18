@@ -51,3 +51,6 @@ FINAL_LUFS = -15.0                           # 混完整片归一到这个数
 SCRIPT_EN = "讲述稿_en.md"                   # `---` 之后每行 `001. English sentence.`，对应 VO_001
 CARD_EN = {}                                 # 无旁白的卡上的大字 → 英文字幕 {"06": "TITLE\nSubtitle"}
 CHAPTER_EN = {}                              # 章节时间码的英文名 {"第一章　尚書公子": "Chapter One: The Minister's Son"}
+                                             # 冷開場也要给：{"冷開場": "A Night at Sandy Ridge"}，不写 Cold Open
+OPEN_NAME = None                             # 冷開場在简介章节里的中文名，取它讲的那件事，如 "沙嶺的一夜"。
+                                             # 「冷開場」是内部叫法，不能出去；不写 srt / gate2 / final 会拦

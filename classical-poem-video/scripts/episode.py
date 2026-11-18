@@ -503,6 +503,15 @@ def cmd_deliver(proj, video, kind, mono, verbose):
             add(good, "章节", "章节时间码 %s 组，各 %s 条" % (len(runs), "/".join(str(len(r)) for r in runs)),
                 "简介里的章节时间码不合规：要从 0:00 起、至少 3 条、每段 ≥10 秒、不超过片长（现在 %s）"
                 % (["%d 条，起于 %ds" % (len(r), r[0]) for r in runs] or "一条都没有"))
+    # 「冷開場」是内部叫法，字幕和章节时间码文件都是要贴出去的（用户 2026-11-18）。发布文案由 publish.py check 管。
+    leak = []
+    for d in (proj, os.path.join(proj, "成片")):
+        for f in sorted(glob.glob(os.path.join(d, "*.srt")) + glob.glob(os.path.join(d, "*章节时间码*.txt"))):
+            if re.search(r"冷[開开][場场]|cold[\s_-]*open", open(f, encoding="utf-8", errors="replace").read(), re.I):
+                leak.append(os.path.basename(f))
+    add(not leak, "内部叫法", "字幕和章节时间码里没有「冷開場 / Cold Open」",
+        "这些要贴出去的文件里有内部叫法「冷開場 / Cold Open」：%s —— 章节名写这一段讲的那件事"
+        "（film.py 用 OPEN_NAME / CHAPTER_EN）" % "、".join(leak))
     need = [(d, c) for d, c in cfgs
             if c.get("CREDITS") or c.get("COVER_CREDITS") or c.get("MUSIC_MODE") == "public_domain"
             or c.get("IMG_SOURCE") == "found"

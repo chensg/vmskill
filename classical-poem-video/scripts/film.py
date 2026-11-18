@@ -67,9 +67,13 @@ DEFAULTS = dict(
     LABEL_NOTE={},                    # labels 镜右下角的出处角注 {镜号: 文字}
     KAI=r"C:\Windows\Fonts\simkai.ttf", KAI_NAME="KaiTi", SUB_FONT="Microsoft JhengHei",
     CARD_EN={}, CHAPTER_EN={}, TEMPO_MAX=1.06, MARGIN=0.25,
+    OPEN_NAME=None,                   # 「冷開場」那段在简介章节里的名字：取它讲的那件事，如 "沙嶺的一夜"；英文写进 CHAPTER_EN
 )
 C = types.SimpleNamespace()
 CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+# 内部叫法：只在稿子和脚本里用，**不能出现在片子和对外发布的任何地方**（用户 2026-11-18）。
+# 原先简介章节第一条就是「0:00 冷開場 / Cold Open」，函可、吴兆骞、徐燦三支都是这样交出去的。
+INTERNAL = re.compile(r"冷[開开][場场]|cold[\s_-]*open", re.I)
 X264 = ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p"]
 
 
@@ -193,6 +197,9 @@ def timeline(shots, need_audio=True):
                 if C.TITLE_BIG:
                     T.centers.append((start, t, C.TITLE_BIG))
             elif "章節卡" in s["desc"] or "章节卡" in s["desc"]:
+                if INTERNAL.search(s["chapter"] or ""):
+                    die("镜 %s 是章节卡，可它在「%s」里 —— 卡上的大字就是章名，内部叫法会上屏。冷開場不放章节卡"
+                        % (s["n"], s["chapter"]))
                 c = s["chapter"].split("　")
                 T.centers.append((start, t, "{\\fs50}" + c[0] + "\\N{\\fs110}" + (c[1] if len(c) > 1 else "")))
         else:
@@ -240,11 +247,37 @@ def write_srt(path, subs):
             f.write(f"{i}\n{ts(a, True)} --> {ts(b, True)}\n{line}\n\n")
 
 
-def write_chapters(path, chapters, names=None):
+def public_chapters(chapters, en=False):
+    """章节时间码是要贴进简介的。返回 ([(秒, 对外名字)], [问题])。
+
+    「冷開場」是内部叫法：中文用 OPEN_NAME，英文用 CHAPTER_EN 里给它写的名字；
+    没写、或写出来的还是「冷開場 / Cold Open」，都算问题。"""
+    out, bad = [], []
+    for a, ch in chapters:
+        if en:
+            nm = C.CHAPTER_EN.get(ch, ch.replace(chr(0x3000), " "))
+        else:
+            nm = (C.OPEN_NAME or "") if INTERNAL.search(ch) else ch.replace(chr(0x3000), " ")
+        nm = (nm or "").strip()
+        if not nm or INTERNAL.search(nm):
+            if en:
+                bad.append("英文章节「%s」没有对外的名字：在 CHAPTER_EN 里给 \"%s\" 写一个，取这一段讲的那件事"
+                           "（如 \"A Night at Sandy Ridge\"），不要写 Cold Open" % (nm or ch, ch))
+            else:
+                bad.append("「%s」是内部叫法，不能进简介的章节时间码：在 film_config.py 写 OPEN_NAME = \"…\"，"
+                           "取这一段讲的那件事（如 \"沙嶺的一夜\"）" % ch)
+        out.append((a, nm))
+    return out, bad
+
+
+def write_chapters(path, chapters, en=False):
+    rows, bad = public_chapters(chapters, en)
+    if bad:
+        die("；".join(bad))
     with io.open(path, "w", encoding="utf-8") as f:
-        for a, ch in chapters:
+        for a, nm in rows:
             m, s_ = divmod(int(a), 60)
-            f.write(f"{m}:{s_:02d} {(names or {}).get(ch, ch.replace(chr(0x3000), ' '))}\n")
+            f.write(f"{m}:{s_:02d} {nm}\n")
 
 
 # ---------------- 帧生成器 ----------------
@@ -758,7 +791,11 @@ def cmd_check(T):
                  if re.match(r"%s_段%d_\d+\.mp3$" % (re.escape(C.MUS_PREFIX), k), f)])
         print(f"  配乐 段{k}：{n} 条" + ("  !! 没有" if not n else ""))
         bad += not n
-    print("章节：" + "；".join(f"{int(a) // 60}:{int(a) % 60:02d} {ch}" for a, ch in T.chapters))
+    rows, why = public_chapters(T.chapters)
+    why += public_chapters(T.chapters, en=True)[1]
+    print("章节（对外）：" + "；".join(f"{int(a) // 60}:{int(a) % 60:02d} {nm or '？'}" for a, nm in rows))
+    for w in why:
+        print("  !! " + w); bad += 1
     print("没有缺的。" if not bad else "!! 有 %d 处缺东西，见上面带 !! 的行。" % bad)
     sys.exit(1 if bad else 0)
 
@@ -947,7 +984,7 @@ def cmd_en(T, shots, out, check_only):
         if s["n"] in C.CARD_EN:
             cards.append((a + (0.8 if s is shots[-1] else 0.3), b - 0.3, C.CARD_EN[s["n"]]))
     write_srt(os.path.join(out, C.NAME + ".en.srt"), sorted(subs + cards))
-    write_chapters(os.path.join(out, C.NAME + "_章节时间码_en.txt"), T.chapters, C.CHAPTER_EN)
+    write_chapters(os.path.join(out, C.NAME + "_章节时间码_en.txt"), T.chapters, en=True)
     print("EN_DONE", m4a, f"{dur(m4a):.3f}s", "字幕", len(subs) + len(cards), "条")
 
 
@@ -975,6 +1012,10 @@ def main(argv):
         os.makedirs(out, exist_ok=True)
     shots = read_shots()
     T = timeline(shots)
+    if what in ("srt", "gate2", "final", "en"):       # 会写章节时间码的命令开工前就拦，别渲完一小时才在最后一步死
+        why = public_chapters(T.chapters, en=(what == "en"))[1]
+        if why:
+            die("；".join(why))
     if what == "check":
         cmd_check(T)
     elif what == "srt":
