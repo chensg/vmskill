@@ -442,7 +442,7 @@ def r_clips(path_v, path_a, D, clips, dim=1.0):
     ins = sum((["-i", c] if isinstance(c, str) else ["-ss", f"{float(c[1]):.3f}", "-t", f"{clip_dur(c):.3f}", "-i", c[0]] for c in clips), [])
     has_a = [bool(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", clip_path(c)],
                                  capture_output=True, text=True).stdout.strip()) for c in clips]
-    pre = "".join(f"[{k}:v]scale={C.W}:{C.H},fps={C.FPS},setsar=1[v{k}];" for k in range(n))
+    pre = "".join(f"[{k}:v]scale={C.W}:{C.H}:force_original_aspect_ratio=increase,crop={C.W}:{C.H},fps={C.FPS},setsar=1[v{k}];" for k in range(n))   # 比例不同就裁，不拉伸
     pre += "".join((f"[{k}:a]aresample={C.SR},aformat=channel_layouts=mono[a{k}];" if has_a[k] else
                     f"anullsrc=r={C.SR}:cl=mono,atrim=duration={clip_dur(clips[k]):.3f}[a{k}];") for k in range(n))
     cat = "".join(f"[v{k}][a{k}]" for k in range(n)) + f"concat=n={n}:v=1:a=1[cv0][ca0];"
