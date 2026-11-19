@@ -1026,6 +1026,15 @@ def main(argv):
         why = public_chapters(T.chapters, en=(what == "en"))[1]
         if why:
             die("；".join(why))
+    if what in ("check", "part", "final"):
+        # SPEC 优先于影片，所以影片出齐后还留着门禁二的「[生] 镜补慢推」，整片会静悄悄全是静帧
+        # （2026-11-20《一僧一僕》720 预览和正式版都是这样出的）。故意弃用的也列出来，让人看一眼。
+        hid = [s["n"] for s in shots if s["tag"].startswith("生") and s["n"] in C.SPEC
+               and all(os.path.exists(os.path.join(P(C.VID_DIR), x + ".mp4"))
+                       for x in C.CLIPS.get(s["n"], [C.VID_PREFIX + s["n"]]))]
+        if hid:
+            print("!! 这 %d 个 [生] 镜影片都在，却被 SPEC 盖掉、出的是 SPEC 画面：%s" % (len(hid), "、".join(hid)))
+            print("   故意弃用的不用管；否则检查 film_config.py 有没有无条件往 SPEC 里补慢推")
     if what == "check":
         cmd_check(T)
     elif what == "srt":
