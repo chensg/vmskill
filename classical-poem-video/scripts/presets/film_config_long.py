@@ -44,6 +44,7 @@ CARD_BG = {
 
 # ---- 声音 ----
 MUS_DIR, MUS_PREFIX, SKIP = "素材/配乐", "MM", 2.0   # 素材/配乐/MM_段N_k.mp3；每条开头略过 SKIP 秒
+NO_MUSIC = False   # True：不配乐（门禁二「配乐先不用」），只混旁白
 VO_LUFS, MUS_DB, AMB_DB = -16, -24, -32
 FINAL_LUFS = -15.0                           # 混完整片归一到这个数
 

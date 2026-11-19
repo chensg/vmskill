@@ -57,7 +57,7 @@ DEFAULTS = dict(
     SR=48000, FPS=24, W=1920, H=1080,
     GAP=0.7, CARD=3.0, ENDHOLD=5.0,   # 镜间、无旁白的卡停几秒、全片末镜停几秒
     TAIL=0.0,                         # 末镜之后再留白几秒
-    MUS_DIR="素材/配乐", MUS_PREFIX="MM", SKIP=5.0,
+    MUS_DIR="素材/配乐", MUS_PREFIX="MM", SKIP=5.0, NO_MUSIC=False,
     VO_LUFS=-16, MUS_DB=-24, AMB_DB=-32,
     FINAL_LUFS=-15.0,                 # 混完整体量一次、加一个固定增益到这个数；None = 不归一
     VID_DIR="素材/影片", VID_PREFIX="G", STILL_PAT="素材/生成/S{n}.png",
@@ -314,6 +314,8 @@ def kb_frame(im, b):
     """框 b＝(中心x, 中心y, 宽)，都是原图的比例；高按画幅比自动算。"""
     cx, cy, w = b
     pw = w * im.width; ph = pw / (C.W / C.H)
+    if ph > im.height:       # 比画幅还宽的图（全景照）：框高顶到原图高为止，不然上下露黑边
+        ph = im.height; pw = ph * (C.W / C.H)
     x0 = min(max(cx * im.width - pw / 2, 0), im.width - pw); y0 = min(max(cy * im.height - ph / 2, 0), im.height - ph)
     return im.transform((C.W, C.H), Image.EXTENT, (x0, y0, x0 + pw, y0 + ph), Image.BICUBIC), (x0, y0, pw, ph)
 
@@ -714,10 +716,16 @@ def beds(segspan, total_end):
 
 
 def mix(vo_f32, amb, segspan, total_end, out_m4a, bitrate="256k"):
-    ins, fc, c, idx = beds(segspan, total_end)
-    ins += ["-f", "f32le", "-ar", str(C.SR), "-ac", "1", "-i", vo_f32]
-    fc.append(f"[{idx}]loudnorm=I={C.VO_LUFS}:TP=-1.5:LRA=11,aresample={C.SR},asplit=2[vo1][vo2]")
-    fc.append(f"[{c}][vo2]sidechaincompress=threshold=0.02:ratio=6:attack=40:release=700[duck]")
+    if C.NO_MUSIC:   # 门禁二「配乐先不用」：只混旁白（和环境声）
+        ins, fc, idx = [], [], 0
+        ins += ["-f", "f32le", "-ar", str(C.SR), "-ac", "1", "-i", vo_f32]
+        fc.append(f"[{idx}]loudnorm=I={C.VO_LUFS}:TP=-1.5:LRA=11,aresample={C.SR}[vo1]")
+        fc.append("anullsrc=r=%d:cl=mono[duck]" % C.SR)
+    else:
+        ins, fc, c, idx = beds(segspan, total_end)
+        ins += ["-f", "f32le", "-ar", str(C.SR), "-ac", "1", "-i", vo_f32]
+        fc.append(f"[{idx}]loudnorm=I={C.VO_LUFS}:TP=-1.5:LRA=11,aresample={C.SR},asplit=2[vo1][vo2]")
+        fc.append(f"[{c}][vo2]sidechaincompress=threshold=0.02:ratio=6:attack=40:release=700[duck]")
     if amb:
         ins += ["-i", amb]
         fc.append(f"[{idx + 1}]loudnorm=I={C.AMB_DB}:TP=-6:LRA=15,aresample={C.SR}[amb]")
@@ -786,7 +794,9 @@ def cmd_check(T):
             what += "  !! 源文件不在：" + "、".join(gone); bad += 1
         print(f"  鏡{s['n']:>4} [{s['tag']}] {ts(a)} {b - a:5.1f}s  {what}")
     mus = P(C.MUS_DIR)
-    for k in sorted(T.segspan):
+    if C.NO_MUSIC:
+        print("  配乐：NO_MUSIC，不配")
+    for k in ([] if C.NO_MUSIC else sorted(T.segspan)):
         n = len([f for f in (os.listdir(mus) if os.path.isdir(mus) else [])
                  if re.match(r"%s_段%d_\d+\.mp3$" % (re.escape(C.MUS_PREFIX), k), f)])
         print(f"  配乐 段{k}：{n} 条" + ("  !! 没有" if not n else ""))
