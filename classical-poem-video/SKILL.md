@@ -180,6 +180,7 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 | 定了画种，写风格前缀和各画种的出图要求 | `references/style-prompts.md` |
 | 自己找公版图 / 图库图，登记授权（`IMG_SOURCE = "found"`） | `references/found-images.md` |
 | 本机 `comfy_gen.py`：出图、图生影片、放大、提示词的坑 | `references/local-gen.md` |
+| 卡通画风（粗线漫画）：角色定妆、参考图出镜、空镜文生图、图生动画 | `references/cartoon.md` |
 | 中英双语音轨 | `references/bilingual.md`，出了问题再看 `bilingual-detail.md` |
 | 写发布文案 | `references/publishing.md` |
 | 交付前逐项对一遍 | `references/checklist.md` |
@@ -200,6 +201,7 @@ description: 把一个真实故事、一首古诗词或一首成品歌做成短�
 - 诗词 / MV：`make_v.py`、`lyric_sync.py`
 - 旁白：`narr_build.py`（稿子拆成一句一条）、`vo_trim.py`（剪静音）、`vo_split.py`（切真人朗读）、`el_tts.py`
 - 出图与生成：`comfy_gen.py` + `comfy/`、`el_web_image.py` / `.js`、`upscale.py`
+- 卡通片：`cartoon_jobs.py`（配置 `presets/cartoon_config.py`）、`qwen_edit.py`（Qwen-Image-Edit-2511 参考图出图 / 修图）
 - 素材与下载：`chatcut_dl.py`、`sort_downloads.py`、`music_index.py`、`sfx_index.py`
 - 开片 / 看状态 / 交付检查：`episode.py`（预设在 `presets/`）
 - 横版长片：`film.py`（合成）、`longfilm/`（`run_pika.py`、`pika_seedvr2.py`、`mm_music.py`、`frame_strips.py`、`sep_vocals.py`、`fish_en.py`）

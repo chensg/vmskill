@@ -210,7 +210,7 @@ def timeline(shots, need_audio=True):
             L = len(a) / C.SR
             s["secs"] = L
             parts = [c for x in s["vo"]["subs"] for c in chunk(x)]
-            wts = [max(1, len(CJK.findall(x))) for x in parts]
+            wts = [len(CJK.findall(x)) or max(1, len(x)) for x in parts]   # 没有汉字（英文主轨）就按字符数
             acc, sub_t = t, []
             for x, k in zip(parts, wts):
                 d = L * k / sum(wts)

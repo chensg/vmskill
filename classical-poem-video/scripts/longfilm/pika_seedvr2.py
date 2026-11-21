@@ -83,6 +83,8 @@ ap.add_argument("--frames", type=int, default=124); ap.add_argument("--seed", ty
 ap.add_argument("--wf", choices=list(PIKA_WF), default="6")
 ap.add_argument("--last", help="尾帧图（首尾帧生成）")
 ap.add_argument("--name", help="输出档名（默认用首帧图档名；同一张首帧跑多个版本时必须给）")
+ap.add_argument("--up", choices=["seedvr2", "none"], default="seedvr2",
+                help="none＝只出 1280x704 原片（试稿、或之后交给 fvsr_batch.py 放大）")
 a = ap.parse_args()
 os.makedirs(a.outdir, exist_ok=True)
 stem = a.name or os.path.splitext(os.path.basename(a.image))[0]
@@ -105,6 +107,11 @@ if not os.path.exists(p720):
     wf["8"]["inputs"]["noise_seed"] = a.seed
     wf["16"]["inputs"]["filename_prefix"] = "Pika_H3_Original/%s_%s" % (stem, a.wf)
     run(wf, "16", p720, "Pika %s 1280x704" % a.wf)
+
+if a.up == "none":
+    req("/free", {"unload_models": True, "free_memory": True})
+    print("DONE", p720)
+    sys.exit(0)
 
 raw = os.path.join(a.outdir, stem + "_%s_seedvr2_raw.mp4" % a.wf)
 wf = json.load(open(SVR_WF, encoding="utf-8"))
