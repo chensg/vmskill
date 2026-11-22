@@ -95,6 +95,7 @@ python episode.py deliver <项目目录>
   点亮的字贴着框边就会被切掉（《拙政園的山茶》镜 99 第一版切掉了「閨」字）。坐标用带网格的图读，别估。
 - **`MUTE_EXT = True`**：外部影片（`SPEC` / `CARD_BG` 里的 `clips`）不带原声。新闻素材、游记带解说和配乐时用；
   缺省 `False`，生成影片的环境声不受影响。
+- **`MUTE_GEN = True`**：[生] 镜的生成影片不带原声（卡通片用，H3 会给人物配喊叫声）。缺省 `False`，写实片照旧带环境声。
 - `check` 会核 `SPEC` / `CARD_BG` 里每个源文件在不在，路径写错当场报，不用等渲到那一镜。
 - 原页找不到、只有文字的引文（徐燦镜 49 那道旨）用 `quote`。
 - **配置里写错的键会提示**：和认得的键很像（`MUTE_EXTS`、`SKIPP`）的，`check` / `final` 开头打一行「是不是 XX？」；`SPEC` / `CARD_BG` / `CLIPS` / `LABEL_NOTE` / `CARD_EN` 里写了稿子没有的镜号，`check` 报出来。

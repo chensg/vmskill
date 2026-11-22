@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """按 vid_prompts.V 逐条跑 Pika 8 步 HD → SeedVR2 1080p，已有成品就跳过。
 python -X utf8 run_pika.py G01 G03 ...   （不给就全跑；长任务用 runlog.py 起）
+python -X utf8 run_pika.py --up none [id…]   只出 1280x704 原片 → 素材/影片_720/<id>.mp4，再交给 fvsr_batch.py 放大
+                                         （FlashVSR+ Base tc2 是视频放大的默认，11-19 用户定）
 提示词和帧数来自同目录的 vid_prompts.py（每支片自己的，模板在 presets/vid_prompts.py）。
 成品：素材/影片/<id>.mp4（1920×1080，带 H3 的环境声）；中间档在 素材/影片/_work/。
 first="@L14b" ＝ 取那条成品的最后一帧当首帧（拆两条的长镜）。
@@ -18,12 +20,17 @@ OUT = os.path.join(PROJ, "素材", "影片")
 WORK = os.path.join(OUT, "_work")
 PIKA = os.path.join(HERE, "pika_seedvr2.py")
 os.makedirs(WORK, exist_ok=True)
-ids = sys.argv[1:] or list(V)
+args = sys.argv[1:]
+UP = "seedvr2"
+if "--up" in args:
+    i = args.index("--up"); UP = args[i + 1]; del args[i:i + 2]
+OUT720 = os.path.join(PROJ, "素材", "影片_720")
+ids = args or list(V)
 t00 = time.time()
 for n, id in enumerate(ids, 1):
     shot, first, last, prompt, _ = V[id]
-    dst = os.path.join(OUT, id + ".mp4")
-    if os.path.exists(dst):
+    dst = os.path.join(OUT, id + ".mp4") if UP != "none" else os.path.join(OUT720, id + ".mp4")
+    if os.path.exists(dst) or (UP == "none" and os.path.exists(os.path.join(OUT, id + ".mp4"))):
         print("跳过 %s（已有）" % id); continue
     if first.startswith("@"):
         src = os.path.join(OUT, first[1:] + ".mp4")
@@ -35,7 +42,7 @@ for n, id in enumerate(ids, 1):
         img = os.path.join(IMG, first + ".png")
     pf = os.path.join(WORK, id + "_prompt.txt")
     open(pf, "w", encoding="utf-8").write(prompt)
-    cmd = [sys.executable, "-X", "utf8", PIKA, img, pf, WORK, "--wf", "8hd", "--frames", str(frames(id)), "--seed", "42", "--name", id]
+    cmd = [sys.executable, "-X", "utf8", PIKA, img, pf, WORK, "--wf", "8hd", "--frames", str(frames(id)), "--seed", "42", "--name", id, "--up", UP]
     if last:
         cmd += ["--last", os.path.join(IMG, last + ".png")]
     t0 = time.time()
@@ -43,6 +50,10 @@ for n, id in enumerate(ids, 1):
     r = subprocess.run(cmd)
     if r.returncode:
         print("!! %s 失败（退出码 %d），跳到下一条" % (id, r.returncode)); continue
-    shutil.copy2(os.path.join(WORK, id + "_pika8hd_1080.mp4"), dst)
+    if UP == "none":
+        os.makedirs(OUT720, exist_ok=True)
+        shutil.copy2(os.path.join(WORK, id + "_pika8hd_704.mp4"), dst)
+    else:
+        shutil.copy2(os.path.join(WORK, id + "_pika8hd_1080.mp4"), dst)
     print("   %s 完成 %.0f 分钟（累计 %.0f 分钟）" % (id, (time.time() - t0) / 60, (time.time() - t00) / 60))
 print("PIKA_BATCH_DONE")

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""把 素材/影片_720/G*.mp4 逐条用 FlashVSR+ Base tc2 放大 → 素材/影片/<同名>.mp4（1920×1080，带原片环境声；已有跳过）。
+"""把 素材/影片_720/*.mp4（G*、卡通片 S*）逐条用 FlashVSR+ Base tc2 放大 → 素材/影片/<同名>.mp4（1920×1080，带原片环境声；已有跳过）。
     python -X utf8 fvsr_batch.py [id…]      （长任务用 runlog.py 起）
 FlashVSR+ 宽高要 128 的倍数：先出 2048×1152，再 lanczos 缩到 1920×1080（16:9 同比例，不拉伸）。
 1280×704 不是 16:9：先居中裁成 1252×704 再进模型。11-19 用户定这一支改用 FlashVSR+ tc2。
@@ -13,7 +13,7 @@ IN = os.path.join(PROJ, "素材", "影片_720")
 OUT = os.path.join(PROJ, "素材", "影片")
 WORK = os.path.join(OUT, "_work")
 os.makedirs(WORK, exist_ok=True)
-ids = sys.argv[1:] or sorted(f[:-4] for f in os.listdir(IN) if f.startswith("G") and f.endswith(".mp4"))
+ids = sys.argv[1:] or sorted(f[:-4] for f in os.listdir(IN) if f.endswith(".mp4"))   # 前缀不限：写实片 G、卡通片 S
 t00 = time.time()
 for n, id in enumerate(ids, 1):
     dst = os.path.join(OUT, id + ".mp4")

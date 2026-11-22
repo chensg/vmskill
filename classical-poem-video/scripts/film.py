@@ -63,6 +63,7 @@ DEFAULTS = dict(
     VID_DIR="素材/影片", VID_PREFIX="G", STILL_PAT="素材/生成/S{n}.png",
     CLIPS={}, SPEC={}, CARD_BG={}, DIM_CARD=0.36,
     MUTE_EXT=False,                   # True = SPEC / CARD_BG 里的外部影片不带原声（新闻素材带解说和配乐时用）
+    MUTE_GEN=False,                   # True = [生] 镜的生成影片不带原声（卡通片：H3 会给人物配喊叫声，references/cartoon.md）
     END_POEM=None,                    # 末镜上竖排的一句，如 ["秖待水流石出"]
     LABEL_NOTE={},                    # labels 镜右下角的出处角注 {镜号: 文字}
     KAI=r"C:\Windows\Fonts\simkai.ttf", KAI_NAME="KaiTi", SUB_FONT="Microsoft JhengHei",
@@ -593,6 +594,8 @@ def plan(s, T):
     if s["tag"].startswith("生") and all(os.path.exists(c) for c in clips):
         def go(D, fv, fa):
             r = r_clips(fv, fa, D, clips)
+            if C.MUTE_GEN:
+                silent(fa, D)
             return "+".join(ids) + (f"（放慢 {r:.0%}）" if r < 1 else "")
         return "影片 " + "+".join(ids), clips, go
     if n in C.CARD_BG:
@@ -623,7 +626,7 @@ def shot_sig(s, T):
     elif n in C.CARD_BG and what.startswith("卡底"):
         recipe = ["card", repr(C.CARD_BG[n]), C.DIM_CARD, C.MUTE_EXT]
     else:
-        recipe = ["plain", what]
+        recipe = ["plain", what] + ([C.MUTE_GEN] if what.startswith("影片") else [])
     files = [[os.path.abspath(x), os.path.getsize(x), int(os.path.getmtime(x))] for x in srcs if os.path.exists(x)]
     return [RENDER_VER, C.W, C.H, C.FPS, C.SR, recipe, files]
 
