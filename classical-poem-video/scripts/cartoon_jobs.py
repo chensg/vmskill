@@ -70,14 +70,16 @@ def do_shots(ns):
         out = os.path.join(RAWD, "S%s.png" % n)
         if os.path.exists(out) or n in C.T2I_SHOTS:
             continue
-        if not os.path.exists(ref_path(k)):
-            print("!! S%s 缺参考图 %s，先跑 refs" % (n, ref_path(k))); continue
+        refs = [ref_path(x) for x in k.split("+")] if k else [ref_path("")]   # "A+B"：两人同框各给一张定妆图（最多 3 张）
+        miss = [r for r in refs if not os.path.exists(r)]
+        if miss:
+            print("!! S%s 缺参考图 %s，先跑 refs" % (n, miss)); continue
         style_only = "" if k else " Use the reference image only for the art style (line work and colors), not for its place or content."
-        wf = qe.build("gen", C.EDIT_STYLE + p + style_only + NOTEXT, [ref_path(k)], True, SHOT_SIZE,
+        wf = qe.build("gen", C.EDIT_STYLE + p + style_only + NOTEXT, refs[:3], True, SHOT_SIZE,
                       getattr(C, "SHOT_SEED", {}).get(n, 21))
         sec, peak = cg.run("qwen_edit", wf, out, "S" + n)
         cg.log(dict(kind="image_edit", model="Qwen-Image-Edit-2511 int8 + Lightning4", license="Apache-2.0", shot=n,
-                    ref=os.path.basename(ref_path(k)), prompt=p, out=os.path.relpath(out, PROJ), sec=round(sec)))
+                    ref="+".join(os.path.basename(r) for r in refs), prompt=p, out=os.path.relpath(out, PROJ), sec=round(sec)))
         print("存 S%s（%.0f 秒）" % (n, sec))
 
 
