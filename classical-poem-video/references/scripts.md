@@ -54,7 +54,8 @@
 | `film.py` | `check`（逐镜画面从哪来、缺什么）、`tsv`、`srt`、`gate2`（门禁二片）、`shots <镜号…>`、`part N`、`final`、`en [check]`。画面按帧网格对齐；整片归一 −15 LUFS；缺画面时 `final` 拒绝；成品比配置和源文件都新才沿用 |
 | `presets/film_config_long.py` | `film.py` 的配置模板：常数、`SPEC`（kb / page / route / labels / clips / seq）、`CARD_BG`、英文卡字 |
 | `presets/vid_prompts.py` / `music_prompts.py` | 影片镜动作提示词、各段配乐描述的模板 |
-| `longfilm/run_pika.py` + `pika_seedvr2.py` | 本机 Pika 8 步 HD → SeedVR2 1080p，按 `vid_prompts.py` 逐条跑，已有成品跳过。工作流在 `comfy/video_pika_h3_*.json`。**收进来后没联机跑过** |
+| `cartoon_jobs.py` + `qwen_edit.py` | 卡通片出图：`refs` 定妆、`shots` 分镜（人物＝编辑模型拿定妆图当参考，空镜＝纯文生图）、`up` 静帧放大、`sheet` 联络表。配置 `presets/cartoon_config.py`，细则 `cartoon.md`。回归 `tests/test_cartoon_jobs.py` |
+| `longfilm/run_pika.py` + `pika_seedvr2.py` | 本机 Pika 8 步 HD → SeedVR2 1080p，按 `vid_prompts.py` 逐条跑，已有成品跳过。工作流在 `comfy/video_pika_h3_*.json`。`pika_seedvr2.py --up none` 只出 1280x704 原片。卡通片用 `vid_prompts.py` 的 `CARTOON = True` |
 | `longfilm/fvsr_batch.py` | **默认放大**（11-19）：`素材/影片_720/G*.mp4` 逐条 FlashVSR+ Base tc2 → `素材/影片/` 1920×1080，带原片环境声，已有跳过。路径常量 `FV` 指本机安装 |
 | `longfilm/mm_music.py` | 本机 MiniMax Music3 出纯音乐，读 `music_prompts.py`。**收进来后没联机跑过** |
 | `longfilm/frame_strips.py` | 影片每条抽 6 帧拼成一行，再叠成总表 |

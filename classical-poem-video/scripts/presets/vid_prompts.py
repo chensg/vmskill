@@ -14,6 +14,16 @@ PREFIX = "G"          # 影片和首帧图的档名前缀：素材/影片/G<镜�
 
 END = (" Natural, small, restrained, realistic human motion; every person stays the same person, "
        "nobody's appearance or age changes; no new people appear. Anyone who walks moves forward in the direction they are facing; nobody walks backward.")
+
+# 卡通片（references/cartoon.md）：CARTOON = True，PREFIX 改 "S"（首帧直接用 素材/生成/S<n>.png，film_config 的 VID_PREFIX 也改 "S"）。
+# 画风句放在最前面，「realistic」那句换掉——11-22 四镜实测这样粗线和平涂守得住。
+CARTOON = False
+CARTOON_HEAD = ("2D flat cartoon animation in exactly the same style as the first frame: thick uniform black outlines stay crisp "
+                "and the same width, flat solid colors with no gradients, no 3D, no realistic shading, no lighting change. "
+                "The drawing style never changes. One single continuous shot with no cut. ")
+if CARTOON:
+    END = (" Small, clear cartoon acting; every character stays the same character; no new people appear. "
+           "Anyone who walks moves forward in the direction they are facing.")
 CAM = " The camera is almost still, a very slow gentle push in."
 STILL = " The camera stays almost still."
 EMPTY = " No person appears anywhere in the frame at any time."
@@ -24,7 +34,7 @@ V = {}  # id → (镜号, 首帧, 尾帧 or None, 提示词, 秒数覆盖 or Non
 def add(shot, prompt, cam=CAM, id=None, first=None, secs=None, last=None):
     id = id or PREFIX + shot
     head = "Use <Picture 1> as the first frame and <Picture 2> as the last frame. " if last else "Use <Picture 1> as the first frame. "
-    V[id] = (shot, first or PREFIX + shot, last, head + prompt + cam + END, secs)
+    V[id] = (shot, first or PREFIX + shot, last, (CARTOON_HEAD if CARTOON else "") + head + prompt + cam + END, secs)
 
 
 # ---- 填：一镜一条。只写「动什么」，画面里有什么首帧图已经定了；声音写在 Audio: 后面 ----
