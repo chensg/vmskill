@@ -459,7 +459,7 @@ def cmd_deliver(proj, video, kind, mono, verbose, en_only=False):
         ("%.1f LUFS，要 %.0f±%.0f" % (i, LUFS_TARGET, LUFS_TOL)) if i is not None else "量不出响度")
 
     zh, en, eng = sidecars(v)
-    for key, p, need in (("字幕en" if en_only else "字幕zh", zh, True), ("字幕en", en, not mono)):
+    for key, p, need in (("字幕en" if en_only else "字幕zh", (zh or en) if en_only else zh, True), ("字幕en", en, not mono)):   # 只出英文：同名 .srt（长片）或 .en.srt（Short）都算
         if not need:
             continue
         if not p:
