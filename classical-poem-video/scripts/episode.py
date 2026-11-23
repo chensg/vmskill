@@ -3,7 +3,8 @@
 
     python episode.py new <项目目录> --type short|long [--title 片名]
     python episode.py status <项目目录>
-    python episode.py deliver <项目目录> [--video 成片.mp4] [--type short|long] [--mono] [-v]
+    python episode.py deliver <项目目录> [--video 成片.mp4] [--type short|long] [--mono | --en-only] [-v]
+        --en-only：只出英文、英文旁白当主轨的片子（第二频道）：同名 .srt 就是英文字幕，不要独立英文轨和第二张封面
 
 new      建 <项目>/build/ 和 素材/，从本脚本所在的 scripts/ 复制常用工具和预设（presets/）：
          Short＝讲述模板 + 引擎 + segment_config.py；长片＝film.py + 生成工具 + film_config.py / vid_prompts.py /
@@ -417,7 +418,8 @@ def cmd_status(proj):
 
 
 # ---------------- deliver ----------------
-def cmd_deliver(proj, video, kind, mono, verbose):
+def cmd_deliver(proj, video, kind, mono, verbose, en_only=False):
+    mono = mono or en_only                      # 只出英文＝单语：主轨就是英文，不另挂英文轨
     proj = os.path.abspath(proj)
     res = []                                    # (级别, 项, 说明)；级别：ok / FAIL / 提醒
 
@@ -457,7 +459,7 @@ def cmd_deliver(proj, video, kind, mono, verbose):
         ("%.1f LUFS，要 %.0f±%.0f" % (i, LUFS_TARGET, LUFS_TOL)) if i is not None else "量不出响度")
 
     zh, en, eng = sidecars(v)
-    for key, p, need in (("字幕zh", zh, True), ("字幕en", en, not mono)):
+    for key, p, need in (("字幕en" if en_only else "字幕zh", zh, True), ("字幕en", en, not mono)):
         if not need:
             continue
         if not p:
@@ -490,7 +492,7 @@ def cmd_deliver(proj, video, kind, mono, verbose):
         found = any(c.get("CREDITS") for _, c in cfgs)
         chk = os.path.join(HERE, "publish.py")
         if os.path.isfile(chk):
-            r = subprocess.run([sys.executable, chk, "check", pub] + (["--mono"] if mono else [])
+            r = subprocess.run([sys.executable, chk, "check", pub] + (["--en-only"] if en_only else ["--mono"] if mono else [])
                                + (["--found"] if found else []),
                                capture_output=True, text=True, encoding="utf-8", errors="replace")
             tail = " / ".join(l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip())[-300:]
@@ -554,7 +556,7 @@ def main(argv):
     elif what == "status":
         cmd_status(proj)
     else:
-        cmd_deliver(proj, opt("--video"), kind, "--mono" in rest, "-v" in rest)
+        cmd_deliver(proj, opt("--video"), kind, "--mono" in rest, "-v" in rest, "--en-only" in rest)
 
 
 if __name__ == "__main__":

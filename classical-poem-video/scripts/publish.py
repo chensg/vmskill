@@ -4,6 +4,7 @@
   python publish.py new  [片名]      # 打印一份 发布文案.md 的骨架（中英两份）
   python publish.py check 发布文案.md # 量每个平台的标题会被切在哪儿
   python publish.py check 发布文案.md --mono   # 只有中文的老片子用这个
+  python publish.py check 发布文案.md --en-only   # 只出英文的片子（第二频道）：只量 YouTube (EN) 那一块
   python publish.py check 发布文案.md --found  # IMG_SOURCE='found'：验来源授权，不验 AI 声明
   python publish.py limits           # 打印当前配置的各平台长度
 
@@ -188,7 +189,7 @@ def internal_terms(path):
     return hits
 
 
-def check(path, bilingual=True, found=False):
+def check(path, bilingual=True, found=False, en_only=False):
     """bilingual=False 时跳过英文那些块（只有中文的老片子）。
 
     **默认要求双语**：从"每支片子都出中英双音轨"那天起，只有中文标题的
@@ -199,10 +200,10 @@ def check(path, bilingual=True, found=False):
     data = parse(path)
     limit = {p[0]: p for p in PLATFORMS}
     bad, warn, counted = [], [], 0
-    plats = [p for p in PLATFORMS if bilingual or p[6] == "zh"]
+    plats = [p for p in PLATFORMS if (p[6] == "en") if en_only] or [p for p in PLATFORMS if bilingual or p[6] == "zh"]
 
     print("")
-    print("=== 标题会被切在哪儿%s ===" % ("" if bilingual else "（--mono：只看中文块）"))
+    print("=== 标题会被切在哪儿%s ===" % ("（--en-only：只看英文块）" if en_only else "" if bilingual else "（--mono：只看中文块）"))
     for name, _, _, _, _, _, lang in plats:
         d = data.get(name)
         if not d:
@@ -567,9 +568,9 @@ if __name__ == "__main__":
         print(TEMPLATE % (sys.argv[2] if len(sys.argv) > 2 else "片名"))
     elif what == "check":
         if len(sys.argv) < 3:
-            sys.exit("用法: python publish.py check 发布文案.md [--mono] [--found]")
+            sys.exit("用法: python publish.py check 发布文案.md [--mono | --en-only] [--found]")
         sys.exit(0 if check(sys.argv[2], "--mono" not in sys.argv,
-                            "--found" in sys.argv) else 1)
+                            "--found" in sys.argv, "--en-only" in sys.argv) else 1)
     elif what == "selftest":
         sys.exit(0 if selftest() else 1)
     else:
