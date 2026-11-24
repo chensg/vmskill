@@ -125,10 +125,11 @@ def run(args):
 
 
 def ts(t, srt=False):
-    h, r = divmod(t, 3600); m, s = divmod(r, 60)
-    if srt:
-        return f"{int(h):02d}:{int(m):02d}:{int(s):02d},{int(round((s % 1) * 1000)) % 1000:03d}"
-    return f"{int(h)}:{int(m):02d}:{s:05.2f}"
+    if srt:   # 先整体取整到毫秒再拆：原来秒和毫秒分开取整，59.9996 会写成 :59,000（少一秒，还会尾早于头）
+        h, r = divmod(int(round(t * 1000)), 3600000); m, r = divmod(r, 60000); s, ms = divmod(r, 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+    h, r = divmod(int(round(t * 100)), 360000); m, r = divmod(r, 6000); s, cs = divmod(r, 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
 def esc(t):
