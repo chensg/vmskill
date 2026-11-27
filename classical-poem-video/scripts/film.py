@@ -32,7 +32,7 @@
 import io
 import json
 import os
-import re
+import re, textwrap
 import subprocess
 import sys
 import types
@@ -491,9 +491,12 @@ def r_quote(w, D, text, source=None, bg=None):
     """引文板：深底（或压暗的底图）上居中排一段引文，一行一行淡入，末尾出处小字；整体 1.00→1.03 慢推。
     text 用「｜」或换行分行；没分行的按 16 字一行自动折，分了行但一行超过 24 字（54 号字排不下）的也折。"""
     lines = [x for x in re.split(r"[｜\n]", text) if x.strip()]
-    if len(lines) == 1 and len(lines[0]) > 16:
+    # 英文按词折（一行约 40 字母）；中文按字折。11-27 以前英文也按 24 字硬切，切出「than a｜nything」
+    latin = lambda x: sum(ord(ch) < 0x2E80 for ch in x) > len(x) * 0.6
+    if len(lines) == 1 and len(lines[0]) > 16 and not latin(lines[0]):
         s = lines[0]; lines = [s[k:k + 16] for k in range(0, len(s), 16)]
-    lines = [ln[k:k + 24] for ln in lines for k in range(0, len(ln), 24)]
+    lines = [y for ln in lines for y in (textwrap.wrap(ln, 40) if latin(ln)
+             else [ln[k:k + 24] for k in range(0, len(ln), 24)])]
     try:
         f = ImageFont.truetype(C.KAI, 64 if max(len(x) for x in lines) <= 14 else 54)
         fs = ImageFont.truetype(C.KAI, 34)
