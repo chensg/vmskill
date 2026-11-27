@@ -75,7 +75,8 @@ def do_shots(ns):
         if miss:
             print("!! S%s 缺参考图 %s，先跑 refs" % (n, miss)); continue
         style_only = "" if k else " Use the reference image only for the art style (line work and colors), not for its place or content."
-        wf = qe.build("gen", C.EDIT_STYLE + p + style_only + NOTEXT, refs[:3], True, SHOT_SIZE,
+        style = C.EDIT_STYLE_W if n in getattr(C, "WOMEN_ONLY", ()) else C.EDIT_STYLE
+        wf = qe.build("gen", style + p + style_only + NOTEXT, refs[:3], True, SHOT_SIZE,
                       getattr(C, "SHOT_SEED", {}).get(n, 21))
         sec, peak = cg.run("qwen_edit", wf, out, "S" + n)
         cg.log(dict(kind="image_edit", model="Qwen-Image-Edit-2511 int8 + Lightning4", license="Apache-2.0", shot=n,

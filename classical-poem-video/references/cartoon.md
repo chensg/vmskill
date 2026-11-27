@@ -44,6 +44,16 @@ python -X utf8 cartoon_jobs.py up              # 放大 → 素材/生成/S<n>.p
 3. **外国味**：纯文生图会冒出西方面孔、罗马拱门、皮鞋、火漆印。中国的东西要点名写成中国的：
    「Chinese stone memorial archway (pailou) with small tiled roofs and three openings」，不要只写「memorial arch」。
    第三轮把六张空镜这样改写、换种子，全过。
+4. **否定句会把东西招来**（2026-11-26 卖妻）：写「no Forbidden City, no palaces, no yellow glazed roofs」，
+   县衙那几镜反而出了紫禁城和黄琉璃瓦。Qwen 两个模型都不懂否定，只认名词。只写要什么
+   （「a plain grey-tiled gatehouse with whitewashed walls」），要的东西写具体就挤掉了不要的。
+5. **全局写「男人剃发留辫」，编辑模型会把女人也剃了**：同一句在 `EDIT_SET` 里，只有女人的镜两轮都出光头女人。
+   剃发只写进有男人的那几镜；只有女人的镜号放进 `WOMEN_ONLY`，`cartoon_jobs.py` 对它们改用 `EDIT_STYLE_W`
+   （配置里 `EDIT_STYLE_W = EDIT_STYLE.replace(EDIT_SET, "...The woman has a full head of thick black hair. ")`）。
+   女人那镜的画面句再写一次「her thick black hair in a bun」。
+6. **「oil lamp」出玻璃罩煤油灯**：清代穷人家点灯改写「a short white candle in a plain brass candlestick」。
+7. **「a man sits on a rock」会出两个**（11-27 余氏 Short 镜 10）：远景里的配角要写「one single ... alone」，
+   再加一句「Exactly two people in the whole picture: ...」（肯定句，不是 no third person）。
 
 ## AI 画不出来的东西：换个拍法
 
